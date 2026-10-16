@@ -1,0 +1,44 @@
+# Environment for testing ldap-cronin in this repository (for development and CI where docker compose is available).
+# Not included in what is carried into an air-gapped environment; there, offline/setup.sh starts everything with docker run only.
+#
+# ad     : clone target (empty Samba4 AD)
+# ad-src : clone source for E2E tests (with sample data). Started with `--profile e2e`.
+name: ldap-cronin
+
+x-ad: &ad
+  build: ./docker/ad
+  cap_add:
+    - SYS_ADMIN
+  environment: &ad-env
+    AD_REALM: ${AD_REALM:-ad.example.com}
+    SAMBA_ADMIN_PASSWORD: ${SAMBA_ADMIN_PASSWORD:-Admin-Passw0rd!}
+  healthcheck:
+    test: ["CMD", "test", "-f", "/tmp/ad-ready"]
+    interval: 3s
+    retries: 60
+
+services:
+  ad:
+    <<: *ad
+    hostname: dc1
+    ports:
+      - "${AD_LDAP_PORT:-12389}:389"
+      - "${AD_LDAPS_PORT:-12636}:636"
+    volumes:
+      - samba-private:/var/lib/samba
+      - samba-etc:/etc/samba
+
+  ad-src:
+    <<: *ad
+    profiles: ["e2e"]
+    hostname: dc2
+    environment:
+      <<: *ad-env
+      SEED_SAMPLE_DATA: "true"
+    ports:
+      - "${AD_SRC_LDAP_PORT:-11389}:389"
+      - "${AD_SRC_LDAPS_PORT:-11636}:636"
+
+volumes:
+  samba-private:
+  samba-etc:

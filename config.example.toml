@@ -1,0 +1,40 @@
+# ldap-cronin example configuration. Do not put passwords here (they are entered at run time without echo; LDAP_CRONIN_*_PASSWORD also works).
+
+[state]                        # optional. Mapping of source GUIDs to target GUIDs (a local file)
+# file = "guid-map.tsv"        # if set, clone records it and diff uses it to detect renames and moves on the target
+
+[source]                       # clone source
+url = "ldaps://src-ad.example.com:636"
+bind_dn = "CN=Administrator,CN=Users,DC=ad,DC=example,DC=com"
+# ca_file = "ca.pem"           # for a self-signed certificate, give the CA, or (for testing only) set the line below to true
+# insecure_skip_verify = true
+# start_tls = true             # to use StartTLS on ldap://
+
+[target]                       # clone target (Samba4 AD / real AD). Setting user passwords requires LDAPS
+url = "ldaps://localhost:12636"
+bind_dn = "CN=Administrator,CN=Users,DC=ad,DC=example,DC=com"
+insecure_skip_verify = true
+
+[clone]
+# profile = "auto"                   # auto (default: asks the source), ad (Active Directory, Samba AD) or ldap (OpenLDAP, 389-ds, ...)
+# root_dn = "o=acme"                 # only for a generic server whose naming context cannot be derived from base_dn
+# Starting point in the source. The domain root (DC=...) cannot be used because it would overwrite built-in accounts.
+# Parent OUs / containers above the starting point are created automatically if they do not exist on the target.
+base_dn = "OU=IDM,DC=ad,DC=example,DC=com"
+objects = ["ou", "group", "user"]   # all of them if omitted
+workers = 8                          # number of parallel connections (1 = sequential). Default 8
+
+# [clone.filters]                    # override the search filter per object type
+# user = "(&(objectCategory=person)(objectClass=user)(department=IT))"
+
+[attributes]
+# By default only the attributes Samba4 has out of the box are copied (see `ldap-cronin list-attrs`; add -profile ldap for generic servers).
+# extra_include = ["extensionAttribute1", "mailNickname"]   # add to all types
+# exclude = ["telephoneNumber"]                             # remove from all types
+# [attributes.include]                                      # replace the default per type
+# user = ["sAMAccountName", "givenName", "sn"]
+
+[mask]
+# The listed attributes are replaced with a fixed string on the target. diff does not compare masked attributes.
+value = "********"
+attributes = ["mail", "telephoneNumber"]

@@ -1,0 +1,52 @@
+# CI
+#   verify : formatting, vet, go mod tidy diff and unit tests (-race)
+#   build  : executables for each OS/architecture (dist/)
+#   e2e    : two Samba4 AD instances (docker compose), the lab, and an OpenLDAP pair, all started with docker.
+#
+# The same checks run locally with `make check` (and the E2E tests with `make e2e`).
+name: ci
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: make fmt-check vet tidy-check
+      - run: make cover
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: make dist VERSION="${GITHUB_REF_NAME}-${GITHUB_SHA::7}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          retention-days: 7
+
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: ./tests/e2e.sh

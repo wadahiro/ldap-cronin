@@ -1,0 +1,706 @@
+package lab
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strings"
+	"time"
+)
+
+// A snapshot is the contents of the docker volumes holding Samba's data, written out to tar files on the host.
+//
+// The approach was chosen by measurement (1600 users, about 60MB of data; total time needed to restore):
+//   - copy volume to volume: 5.5 s. But unused volumes are removed by docker volume prune
+//   - docker commit: 4.0 s. But the password stays in the image's environment variables, and the number of layers is capped
+//   - volume contents to a tar on the host: 6.6 s (adopted). Survives prune, can be carried out as a file, and
+//     the host file is owned by the invoking user
+//
+// Restore time is dominated by Samba startup (about 3 s) and grows in proportion to the data size.
+
+const (
+	metaFileName    = "snapshot.json"
+	guidMapFileName = "guid-map.tsv"
+	snapshotPrefix  = "snapshot-"
+	timestampLayout = "20060102-150405"
+)
+
+var snapshotNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
+
+// ErrNotInteractive means there is no terminal, so interactive input is not possible.
+var ErrNotInteractive = errors.New("cannot prompt interactively (no terminal)")
+
+// The two volumes that hold the lab's data.
+var snapshotVolumes = []struct{ kind, mount, file string }{
+	{"private", "/var/lib/samba", "private.tar"},
+	{"etc", "/etc/samba", "etc.tar"},
+}
+
+// SnapshotFile is a file included in a snapshot.
+type SnapshotFile struct {
+	Volume string `json:"volume"` // private / etc
+	File   string `json:"file"`
+	Size   int64  `json:"size"`
+	SHA256 string `json:"sha256"`
+}
+
+// SnapshotMeta is the snapshot metadata (snapshot.json).
+type SnapshotMeta struct {
+	Name        string         `json:"name"`
+	Note        string         `json:"note,omitempty"`
+	Created     time.Time      `json:"created"`
+	Realm       string         `json:"realm"`
+	NetBIOS     string         `json:"netbios"`
+	Hostname    string         `json:"hostname"`
+	Image       string         `json:"image"`
+	ToolVersion string         `json:"tool_version"`
+	Files       []SnapshotFile `json:"files"`
+	// GUIDMap is a copy of the GUID mapping between source and target (the [state] file that clone records).
+	// Keeping it together with the data lets diff's rename and move detection keep working after a restore.
+	GUIDMap *SnapshotFile `json:"guid_map,omitempty"`
+}
+
+// Size is the total size of the snapshot's files.
+func (m SnapshotMeta) Size() int64 {
+	var n int64
+	for _, f := range m.Files {
+		n += f.Size
+	}
+	return n
+}
+
+// ValidateSnapshotName checks the snapshot name format (it becomes a directory name, so it is limited to alphanumerics, _, . and -).
+func ValidateSnapshotName(name string) error {
+	if !snapshotNamePattern.MatchString(name) {
+		return fmt.Errorf("invalid snapshot name: %q (alphanumerics, _, . and -, up to 64 characters, starting with an alphanumeric)", name)
+	}
+	return nil
+}
+
+// SnapshotOptions are the options for snapshot.
+type SnapshotOptions struct {
+	Name  string // if empty, named automatically from the date and time (never overwrites)
+	Note  string
+	Force bool // overwrite if the same name exists
+	// GUIDMap is the path of the GUID mapping to include in the snapshot (the tool's [state] file). If empty, none is included.
+	GUIDMap string
+}
+
+func (l *Lab) snapshotDir(name string) string { return filepath.Join(l.Dirs.Snapshots, name) }
+
+func tarCreateArgs(image, volume, mount string) []string {
+	return []string{"run", "--rm", "-v", volume + ":" + mount + ":ro", "--cap-add", "SYS_ADMIN", "--entrypoint", "tar", image,
+		// Sockets (ldapi, winbindd pipes, etc.) are created only at runtime, so they are excluded. Their warnings are suppressed too.
+		"-C", mount, "--xattrs", "--xattrs-include=*", "--numeric-owner", "--warning=no-file-ignored", "-cf", "-", "."}
+}
+
+func tarExtractArgs(image, volume, mount string) []string {
+	return []string{"run", "-i", "--rm", "-v", volume + ":" + mount, "--cap-add", "SYS_ADMIN", "--entrypoint", "tar", image,
+		"-C", mount, "--xattrs", "--xattrs-include=*", "--numeric-owner", "-xf", "-"}
+}
+
+func wipeArgs(image, volume, mount string) []string {
+	return []string{"run", "--rm", "-v", volume + ":" + mount, "--entrypoint", "sh", image, "-c", "find " + mount + " -mindepth 1 -delete"}
+}
+
+// Snapshot stops the lab, writes the data to a tar, and returns it to its previous state (started if it was running).
+// Taking one right after a clone lets you return to that state at any time. The GUID mapping ([state] file) stays usable as is
+// (objectGUIDs do not change on restore).
+func (l *Lab) Snapshot(o SnapshotOptions) (SnapshotMeta, error) {
+	var meta SnapshotMeta
+	if err := l.checkDocker(); err != nil {
+		return meta, err
+	}
+	name := o.Name
+	if name == "" {
+		name = snapshotPrefix + l.Now().Format(timestampLayout)
+	}
+	if err := ValidateSnapshotName(name); err != nil {
+		return meta, err
+	}
+	final := l.snapshotDir(name)
+	if _, err := os.Stat(final); err == nil && !o.Force {
+		return meta, fmt.Errorf("snapshot %q already exists (use --force to overwrite)", name)
+	}
+
+	if o.GUIDMap != "" {
+		// Check that the mapping exists first, so we do not fail after stopping.
+		if _, err := os.Stat(o.GUIDMap); err != nil {
+			return meta, fmt.Errorf("GUID mapping %s not found (it is created by running clone with a [state] file): %w", o.GUIDMap, err)
+		}
+	}
+	labels, exists, err := l.inspectLabels(l.container())
+	if err != nil {
+		return meta, err
+	}
+	if !exists {
+		return meta, errors.New("no lab exists; create one with up first, then populate it with clone")
+	}
+	image, err := l.docker("container", "inspect", "--format", "{{.Config.Image}}", l.container())
+	if err != nil {
+		return meta, err
+	}
+	state, err := l.state(l.container())
+	if err != nil {
+		return meta, err
+	}
+	wasRunning := state != "exited"
+
+	if err := os.MkdirAll(l.Dirs.Snapshots, 0o755); err != nil {
+		return meta, err
+	}
+	tmp, err := os.MkdirTemp(l.Dirs.Snapshots, "."+name+".tmp-")
+	if err != nil {
+		return meta, err
+	}
+	defer os.RemoveAll(tmp) // do not leave a partial write behind on failure (after success it has been renamed, so this does nothing)
+
+	// Stop Samba cleanly to capture consistent data, then write it out. Afterwards return to the previous state.
+	if wasRunning {
+		l.logf("Stopping Samba (to capture consistent data)")
+		if _, err := l.docker("stop", "-t", stopTimeoutSec, l.container()); err != nil {
+			return meta, err
+		}
+	}
+	start := l.Now()
+	var files []SnapshotFile
+	var dumpErr error
+	for _, v := range snapshotVolumes {
+		f, err := l.dumpVolume(image, v.kind, v.mount, filepath.Join(tmp, v.file))
+		if err != nil {
+			dumpErr = err
+			break
+		}
+		f.Volume, f.File = v.kind, v.file
+		files = append(files, f)
+	}
+	if wasRunning {
+		l.logf("Restarting Samba")
+		if _, err := l.docker("start", l.container()); err != nil && dumpErr == nil {
+			dumpErr = err
+		} else if err == nil {
+			if err := l.waitHealthy(l.container()); err != nil && dumpErr == nil {
+				dumpErr = err
+			}
+		}
+	}
+	if dumpErr != nil {
+		return meta, fmt.Errorf("could not take the snapshot (the lab was returned to its previous state): %w", dumpErr)
+	}
+
+	meta = SnapshotMeta{
+		Name: name, Note: o.Note, Created: l.Now().UTC(), Realm: labels[labelRealm], NetBIOS: labels[labelNB],
+		Hostname: dcHostname, Image: image, ToolVersion: l.Version, Files: files,
+	}
+	if o.GUIDMap != "" {
+		gm, err := copyWithHash(o.GUIDMap, filepath.Join(tmp, guidMapFileName))
+		if err != nil {
+			return meta, fmt.Errorf("could not include the GUID mapping in the snapshot: %w", err)
+		}
+		gm.Volume, gm.File = "guid-map", guidMapFileName
+		meta.GUIDMap = &gm
+	}
+	raw, err := json.MarshalIndent(meta, "", "  ")
+	if err != nil {
+		return meta, err
+	}
+	if err := os.WriteFile(filepath.Join(tmp, metaFileName), append(raw, '\n'), 0o600); err != nil {
+		return meta, err
+	}
+	if o.Force {
+		if err := os.RemoveAll(final); err != nil {
+			return meta, err
+		}
+	}
+	if err := os.Rename(tmp, final); err != nil {
+		return meta, err
+	}
+	withMap := ""
+	if meta.GUIDMap != nil {
+		withMap = ", with GUID mapping"
+	}
+	l.logf("Snapshot taken: %s (%s%s, %s)", name, humanSize(meta.Size()), withMap, l.Now().Sub(start).Round(100*time.Millisecond))
+	return meta, nil
+}
+
+// dumpVolume writes the volume contents to a host file as a tar (streaming docker's output as is.
+// It does not use docker bind mounts, so the host file is owned by the invoking user).
+func (l *Lab) dumpVolume(image, kind, mount, path string) (SnapshotFile, error) {
+	var sf SnapshotFile
+	out, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return sf, err
+	}
+	h := sha256.New()
+	cw := &countingWriter{w: io.MultiWriter(out, h)}
+	_, derr := l.D.Do(Cmd{Args: tarCreateArgs(image, l.volume(kind), mount), Stdout: cw, Stderr: l.Err})
+	if cerr := out.Close(); derr == nil {
+		derr = cerr
+	}
+	if derr != nil {
+		return sf, derr
+	}
+	sf.Size, sf.SHA256 = cw.n, hex.EncodeToString(h.Sum(nil))
+	return sf, nil
+}
+
+type countingWriter struct {
+	w io.Writer
+	n int64
+}
+
+func (c *countingWriter) Write(p []byte) (int, error) {
+	n, err := c.w.Write(p)
+	c.n += int64(n)
+	return n, err
+}
+
+// Snapshots returns the list of snapshots in the order taken (oldest first).
+func (l *Lab) Snapshots() ([]SnapshotMeta, error) {
+	entries, err := os.ReadDir(l.Dirs.Snapshots)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var out []SnapshotMeta
+	for _, e := range entries {
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		m, err := l.readMeta(e.Name())
+		if err != nil {
+			continue // broken entries and unrelated directories are not listed
+		}
+		out = append(out, m)
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Created.Before(out[j].Created) })
+	return out, nil
+}
+
+func (l *Lab) readMeta(name string) (SnapshotMeta, error) {
+	var m SnapshotMeta
+	raw, err := os.ReadFile(filepath.Join(l.snapshotDir(name), metaFileName))
+	if err != nil {
+		return m, err
+	}
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return m, err
+	}
+	if m.Name != name {
+		return m, fmt.Errorf("name %q in snapshot.json differs from the directory name %q", m.Name, name)
+	}
+	return m, nil
+}
+
+// SnapshotRemove deletes a snapshot.
+func (l *Lab) SnapshotRemove(name string) error {
+	if err := ValidateSnapshotName(name); err != nil {
+		return err
+	}
+	if _, err := l.readMeta(name); err != nil {
+		return fmt.Errorf("snapshot %q not found: %w", name, err)
+	}
+	return os.RemoveAll(l.snapshotDir(name))
+}
+
+// choose lets the user pick from the list when the name is omitted (newest first, which is the default).
+func (l *Lab) choose() (string, error) {
+	list, err := l.Snapshots()
+	if err != nil {
+		return "", err
+	}
+	if len(list) == 0 {
+		return "", errors.New("no snapshots exist; take one with lab snapshot after a clone")
+	}
+	// Sort newest first.
+	items := make([]string, len(list))
+	names := make([]string, len(list))
+	for i := range list {
+		m := list[len(list)-1-i]
+		names[i] = m.Name
+		items[i] = formatSnapshotLine(m)
+	}
+	// Each list line gets a 7-column prefix such as " * 1) ", so shift the header by 7 columns to align the columns.
+	prompt := "Which snapshot to restore?\n       " + snapshotHeader()
+	idx, err := l.Prompt.Choose(prompt, items, 0)
+	if errors.Is(err, ErrNotInteractive) {
+		return "", fmt.Errorf("specify a snapshot name. Candidates:\n  %s\n  %s", snapshotHeader(), strings.Join(items, "\n  "))
+	}
+	if err != nil {
+		return "", err
+	}
+	return names[idx], nil
+}
+
+// snapshotHeader is the list's column header. Column widths match formatSnapshotLine (full-width characters misalign columns, so Latin letters are used).
+func snapshotHeader() string {
+	return fmt.Sprintf("%-24s %-19s  %-24s %8s  %-3s  %s", "NAME", "CREATED", "DOMAIN", "SIZE", "MAP", "NOTE")
+}
+
+func formatSnapshotLine(m SnapshotMeta) string {
+	hasMap := "-"
+	if m.GUIDMap != nil {
+		hasMap = "yes" // includes the GUID mapping
+	}
+	s := fmt.Sprintf("%-24s %s  %-24s %8s  %-3s", m.Name, m.Created.Local().Format("2006-01-02 15:04:05"), m.Realm, humanSize(m.Size()), hasMap)
+	if m.Note != "" {
+		s += "  " + m.Note
+	}
+	return s
+}
+
+// FormatSnapshots formats the list for display (oldest first).
+func FormatSnapshots(list []SnapshotMeta) string {
+	if len(list) == 0 {
+		return "No snapshots\n"
+	}
+	var b strings.Builder
+	b.WriteString(snapshotHeader() + "\n")
+	for _, m := range list {
+		b.WriteString(formatSnapshotLine(m) + "\n")
+	}
+	return b.String()
+}
+
+// RestoreOptions are the options for restore. Used when no lab container exists (when creating a new one from a snapshot).
+type RestoreOptions struct {
+	LDAPPort      int // if omitted: the default lab uses .env or the default, and other instances pick a free port
+	LDAPSPort     int
+	AdminPassword string // if omitted: the SAMBA_ADMIN_PASSWORD environment variable, then .env
+	// GUIDMap is where the GUID mapping included in the snapshot is written back (the tool's [state] file). If empty, it is not written back.
+	GUIDMap string
+}
+
+// Restore is RestoreWith without options.
+func (l *Lab) Restore(name string) (SnapshotMeta, error) {
+	return l.RestoreWith(name, RestoreOptions{})
+}
+
+// RestoreWith returns the lab's data to the snapshot's state. If the name is omitted, it is chosen from a list.
+// If the target container does not exist, it **creates and starts a new one** from the snapshot. By choosing another instance with --instance
+// and changing the ports, you can start a second lab in the snapshot's state alongside the running one.
+// Before restoring, it verifies the snapshot's checksums (if they are broken, the current data is left untouched).
+func (l *Lab) RestoreWith(name string, o RestoreOptions) (SnapshotMeta, error) {
+	var meta SnapshotMeta
+	if err := l.checkDocker(); err != nil {
+		return meta, err
+	}
+	if name == "" {
+		var err error
+		if name, err = l.choose(); err != nil {
+			return meta, err
+		}
+	}
+	if err := ValidateSnapshotName(name); err != nil {
+		return meta, err
+	}
+	meta, err := l.readMeta(name)
+	if err != nil {
+		return meta, fmt.Errorf("snapshot %q not found (list them with lab snapshots): %w", name, err)
+	}
+	if err := l.verifySnapshot(meta); err != nil {
+		return meta, err
+	}
+
+	labels, exists, err := l.inspectLabels(l.container())
+	if err != nil {
+		return meta, err
+	}
+	if !exists {
+		return meta, l.restoreIntoNew(meta, o)
+	}
+	if !strings.EqualFold(labels[labelRealm], meta.Realm) {
+		return meta, fmt.Errorf("the lab's domain (%s) differs from the snapshot's domain (%s). Recreate the lab with the same domain name: lab reset, then lab restore (or lab up --realm %s)",
+			labels[labelRealm], meta.Realm, meta.Realm)
+	}
+	image, err := l.docker("container", "inspect", "--format", "{{.Config.Image}}", l.container())
+	if err != nil {
+		return meta, err
+	}
+
+	start := l.Now()
+	state, err := l.state(l.container())
+	if err != nil {
+		return meta, err
+	}
+	if state != "exited" {
+		l.logf("Stopping Samba")
+		if _, err := l.docker("stop", "-t", stopTimeoutSec, l.container()); err != nil {
+			return meta, err
+		}
+	}
+	l.logf("Writing back snapshot %s", name)
+	if err := l.writeSnapshot(image, meta); err != nil {
+		return meta, err
+	}
+	l.logf("Starting Samba")
+	if _, err := l.docker("start", l.container()); err != nil {
+		return meta, err
+	}
+	if err := l.waitHealthy(l.container()); err != nil {
+		return meta, err
+	}
+	if file, err := ReadEnvFile(l.envPath()); err == nil && file.AdminPassword != "" {
+		file.Realm = meta.Realm
+		if err := l.smokeTest(file); err != nil {
+			return meta, err
+		}
+	}
+	if err := l.installGUIDMap(meta, o.GUIDMap); err != nil {
+		return meta, err
+	}
+	l.logf("Restored: %s (%s)", name, l.Now().Sub(start).Round(100*time.Millisecond))
+	return meta, nil
+}
+
+// writeSnapshot empties the two volumes and extracts the snapshot's tars into them.
+func (l *Lab) writeSnapshot(image string, meta SnapshotMeta) error {
+	for _, v := range snapshotVolumes {
+		if err := l.loadVolume(image, v.kind, v.mount, filepath.Join(l.snapshotDir(meta.Name), v.file)); err != nil {
+			return fmt.Errorf("restore failed midway. The volumes are in a partial state, so run lab restore again: %w", err)
+		}
+	}
+	return nil
+}
+
+// restoreIntoNew creates and starts a new container from a snapshot when no lab container exists.
+// A snapshot is a file on the host and independent of the original volumes, so another lab in the same state can be
+// started with a different volume and host port (change the name with --instance; the original lab keeps running).
+func (l *Lab) restoreIntoNew(meta SnapshotMeta, o RestoreOptions) error {
+	image := meta.Image
+	if !l.imageExists(image) {
+		return fmt.Errorf("image %s not found; load it with lab up, then run lab restore again", image)
+	}
+	file, err := ReadEnvFile(l.envPath())
+	if err != nil {
+		return err
+	}
+	s := Settings{Realm: meta.Realm, NetBIOS: meta.NetBIOS, AdminPassword: o.AdminPassword}
+	if s.AdminPassword == "" {
+		s.AdminPassword = l.Getenv(envPassword)
+	}
+	if s.AdminPassword == "" {
+		s.AdminPassword = file.AdminPassword
+	}
+	if s.AdminPassword == "" {
+		return errors.New("the admin password is unknown. Specify it with --admin-password or the SAMBA_ADMIN_PASSWORD environment variable (the one in effect when the snapshot was taken; it is used to confirm startup completed)")
+	}
+	if s.LDAPPort, s.LDAPSPort, err = l.pickPorts(o, file); err != nil {
+		return err
+	}
+	if err := l.checkPortsFree(s); err != nil {
+		return err
+	}
+	nb, err := s.EffectiveNetBIOS()
+	if err != nil {
+		return err
+	}
+
+	start := l.Now()
+	l.logf("Creating a new lab from snapshot %s: %s (domain %s)", meta.Name, l.container(), meta.Realm)
+	if err := l.writeSnapshot(image, meta); err != nil {
+		return err
+	}
+	if err := l.createContainer(image, s, nb); err != nil {
+		return err
+	}
+	if err := l.waitHealthy(l.container()); err != nil {
+		return err
+	}
+	if err := l.smokeTest(s); err != nil {
+		return err
+	}
+	if l.isMain() {
+		if err := WriteEnvFile(l.envPath(), s); err != nil {
+			return fmt.Errorf("cannot write .env: %w", err)
+		}
+	}
+	if err := l.installGUIDMap(meta, o.GUIDMap); err != nil {
+		return err
+	}
+	base := BaseDN(s.Realm)
+	fmt.Fprintf(l.Out, "\nStarted (%s, %s).\n\n", l.container(), l.Now().Sub(start).Round(100*time.Millisecond))
+	fmt.Fprintf(l.Out, "  Domain          : %s  (NetBIOS: %s)\n  Base DN         : %s\n", s.Realm, nb, base)
+	fmt.Fprintf(l.Out, "  LDAP / LDAPS    : ldap://localhost:%d / ldaps://localhost:%d\n", s.LDAPPort, s.LDAPSPort)
+	fmt.Fprintf(l.Out, "  Administrator   : CN=Administrator,CN=Users,%s (the password is the one in effect when the snapshot was taken)\n", base)
+	if !l.isMain() {
+		fmt.Fprintf(l.Out, "\nThis is a separate instance, so pass --instance %s to the following commands:\n  lab snapshot / restore / down / reset\n", l.Instance)
+	}
+	return nil
+}
+
+// pickPorts decides the published ports of the new container: the specified ones if given, otherwise
+// the default lab uses .env or the default, and other instances pick free ports.
+func (l *Lab) pickPorts(o RestoreOptions, file Settings) (int, int, error) {
+	ldap, ldaps := o.LDAPPort, o.LDAPSPort
+	if l.isMain() {
+		if ldap == 0 {
+			ldap = file.LDAPPort
+		}
+		if ldaps == 0 {
+			ldaps = file.LDAPSPort
+		}
+		if ldap == 0 {
+			ldap = DefaultLDAPPort
+		}
+		if ldaps == 0 {
+			ldaps = DefaultLDAPSPort
+		}
+		return ldap, ldaps, nil
+	}
+	pick := func(p int) (int, error) {
+		if p != 0 {
+			return p, nil
+		}
+		if l.FreePort == nil {
+			return 0, errors.New("cannot pick a free port; specify it with --ldap-port / --ldaps-port")
+		}
+		return l.FreePort()
+	}
+	var err error
+	if ldap, err = pick(ldap); err != nil {
+		return 0, 0, err
+	}
+	if ldaps, err = pick(ldaps); err != nil {
+		return 0, 0, err
+	}
+	if ldap == ldaps {
+		return 0, 0, fmt.Errorf("LDAP and LDAPS cannot use the same port (%d)", ldap)
+	}
+	return ldap, ldaps, nil
+}
+
+// checkPortsFree verifies that no other instance with the same prefix uses the same host port.
+func (l *Lab) checkPortsFree(s Settings) error {
+	list, err := l.Instances()
+	if err != nil {
+		return err
+	}
+	for _, in := range list {
+		if in.Container == l.container() {
+			continue
+		}
+		for _, p := range []int{in.LDAP, in.LDAPS} {
+			if p != 0 && (p == s.LDAPPort || p == s.LDAPSPort) {
+				return fmt.Errorf("port %d is used by instance %s (%s); specify a different port with --ldap-port / --ldaps-port", p, in.Instance, in.Container)
+			}
+		}
+	}
+	return nil
+}
+
+// verifySnapshot verifies file sizes and checksums.
+func (l *Lab) verifySnapshot(m SnapshotMeta) error {
+	if len(m.Files) != len(snapshotVolumes) {
+		return fmt.Errorf("snapshot %q is missing files", m.Name)
+	}
+	for _, f := range m.Files {
+		got, err := fileSHA256(filepath.Join(l.snapshotDir(m.Name), f.File))
+		if err != nil {
+			return fmt.Errorf("cannot verify %s of snapshot %q: %w", f.File, m.Name, err)
+		}
+		if got != f.SHA256 {
+			return fmt.Errorf("%s of snapshot %q is corrupted (checksum mismatch). The current data has not been touched", f.File, m.Name)
+		}
+	}
+	if m.GUIDMap != nil {
+		got, err := fileSHA256(filepath.Join(l.snapshotDir(m.Name), m.GUIDMap.File))
+		if err != nil || got != m.GUIDMap.SHA256 {
+			return fmt.Errorf("the GUID mapping of snapshot %q is corrupted. The current data has not been touched", m.Name)
+		}
+	}
+	return nil
+}
+
+// copyWithHash copies a file with mode 600 and returns its size and SHA-256.
+func copyWithHash(src, dst string) (SnapshotFile, error) {
+	var sf SnapshotFile
+	in, err := os.Open(src)
+	if err != nil {
+		return sf, err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return sf, err
+	}
+	h := sha256.New()
+	cw := &countingWriter{w: io.MultiWriter(out, h)}
+	_, cerr := io.Copy(cw, in)
+	if err := out.Close(); cerr == nil {
+		cerr = err
+	}
+	if cerr != nil {
+		return sf, cerr
+	}
+	sf.Size, sf.SHA256 = cw.n, hex.EncodeToString(h.Sum(nil))
+	return sf, nil
+}
+
+// installGUIDMap writes the GUID mapping included in the snapshot back to dest (an existing file is moved aside to .bak).
+// If dest is empty, it does not write it back and explains how to extract it.
+func (l *Lab) installGUIDMap(meta SnapshotMeta, dest string) error {
+	switch {
+	case meta.GUIDMap == nil && dest != "":
+		l.warnf("This snapshot does not include a GUID mapping. Left %s as it was", dest)
+	case meta.GUIDMap != nil && dest == "":
+		l.logf("This snapshot includes a GUID mapping (%s). To write it back, run restore with --config or --guid-map",
+			filepath.Join(l.snapshotDir(meta.Name), meta.GUIDMap.File))
+	case meta.GUIDMap != nil:
+		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+			return err
+		}
+		backup := ""
+		if _, err := os.Stat(dest); err == nil {
+			backup = dest + ".bak"
+			if err := os.Rename(dest, backup); err != nil {
+				return fmt.Errorf("cannot move the existing mapping aside: %w", err)
+			}
+		}
+		if _, err := copyWithHash(filepath.Join(l.snapshotDir(meta.Name), meta.GUIDMap.File), dest); err != nil {
+			return fmt.Errorf("could not write back the GUID mapping: %w", err)
+		}
+		if backup != "" {
+			l.logf("GUID mapping written back: %s (the original is %s)", dest, backup)
+		} else {
+			l.logf("GUID mapping written back: %s", dest)
+		}
+	}
+	return nil
+}
+
+// loadVolume empties the volume and extracts the tar into it.
+func (l *Lab) loadVolume(image, kind, mount, path string) error {
+	if _, err := l.docker(wipeArgs(image, l.volume(kind), mount)...); err != nil {
+		return err
+	}
+	in, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	_, err = l.D.Do(Cmd{Args: tarExtractArgs(image, l.volume(kind), mount), Stdin: in, Stderr: l.Err})
+	return err
+}
+
+func humanSize(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%dB", n)
+	}
+	div, exp := int64(unit), 0
+	for m := n / unit; m >= unit; m /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f%cB", float64(n)/float64(div), "KMGT"[exp])
+}

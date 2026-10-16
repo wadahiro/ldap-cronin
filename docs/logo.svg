@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 320" role="img" aria-labelledby="t d">
+  <title id="t">LDAP cRONIN</title>
+  <desc id="d">A lone wandering samurai (ronin) in a straw hat with a katana, and a dashed ghost copy of him: a directory clone.</desc>
+
+  <defs>
+    <!-- The ronin. Colors come from custom properties so the same drawing serves as the original and as the clone. -->
+    <g id="ronin" stroke-linejoin="round" stroke-linecap="round">
+      <!-- katana, drawn first so the robe overlaps the scabbard -->
+      <path d="M196 168 L250 226" stroke="var(--ink, #1F2A44)" stroke-width="9" fill="none"/>
+      <path d="M244 220 L262 238" stroke="var(--steel, #C9D3E6)" stroke-width="5" fill="none"/>
+      <circle cx="202" cy="174" r="9" fill="var(--gold, #E8B04B)" stroke="var(--ink, #1F2A44)" stroke-width="3"/>
+      <!-- hakama (wide trousers) -->
+      <path d="M92 186 L72 232 Q150 244 228 232 L208 186 Z" fill="var(--cloth, #34457A)" stroke="var(--ink, #1F2A44)" stroke-width="5"/>
+      <path d="M150 190 L150 238" stroke="var(--ink, #1F2A44)" stroke-width="4" opacity=".6"/>
+      <!-- kimono body -->
+      <path d="M104 112 Q150 98 196 112 L212 190 Q150 202 88 190 Z" fill="var(--robe, #4F6AB8)" stroke="var(--ink, #1F2A44)" stroke-width="5"/>
+      <path d="M132 108 L150 150 L168 108" fill="none" stroke="var(--ink, #1F2A44)" stroke-width="4"/>
+      <!-- obi carrying a tiny directory tree -->
+      <rect x="92" y="160" width="116" height="22" rx="4" fill="var(--gold, #E8B04B)" stroke="var(--ink, #1F2A44)" stroke-width="4"/>
+      <path d="M150 164 L136 178 M150 164 L164 178" stroke="var(--ink, #1F2A44)" stroke-width="3" fill="none"/>
+      <circle cx="150" cy="164" r="4" fill="var(--ink, #1F2A44)"/>
+      <circle cx="136" cy="178" r="3.5" fill="var(--ink, #1F2A44)"/>
+      <circle cx="164" cy="178" r="3.5" fill="var(--ink, #1F2A44)"/>
+      <!-- face in the shade of the hat -->
+      <ellipse cx="150" cy="100" rx="22" ry="17" fill="var(--shade, #1F2A44)"/>
+      <path d="M134 106 Q150 120 166 106" fill="none" stroke="var(--ink, #1F2A44)" stroke-width="4"/>
+      <!-- kasa (straw hat) -->
+      <path d="M62 94 Q150 14 238 94 Q150 80 62 94 Z" fill="var(--straw, #E3B567)" stroke="var(--ink, #1F2A44)" stroke-width="5"/>
+      <path d="M150 38 L112 88 M150 38 L150 86 M150 38 L188 88" stroke="var(--ink, #1F2A44)" stroke-width="2.5" opacity=".45" fill="none"/>
+      <path d="M118 102 Q150 114 182 102" fill="none" stroke="var(--ink, #1F2A44)" stroke-width="3"/>
+    </g>
+  </defs>
+
+  <!-- ground shadows -->
+  <ellipse cx="150" cy="244" rx="92" ry="10" fill="#000" opacity=".10"/>
+  <ellipse cx="410" cy="244" rx="92" ry="10" fill="#000" opacity=".06"/>
+
+  <!-- original -->
+  <use href="#ronin"/>
+
+  <!-- the clone: same drawing, ghostly mint, dashed -->
+  <g transform="translate(260 0)" opacity=".85">
+    <use href="#ronin" style="--ink:#1C7F69; --cloth:#8EDCC3; --robe:#B5EBD8; --straw:#D5F2E6; --gold:#F2D58A; --shade:#1C7F69; --steel:#E9FBF4" stroke-dasharray="10 7"/>
+  </g>
+
+  <!-- copy flow -->
+  <g fill="none" stroke="#F08A3C" stroke-width="9" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M262 150 L278 166 L262 182" opacity=".4"/>
+    <path d="M282 150 L298 166 L282 182" opacity=".7"/>
+    <path d="M302 150 L318 166 L302 182"/>
+  </g>
+
+  <!-- wordmark -->
+  <text x="280" y="298" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-size="40" font-weight="700" letter-spacing="1" fill="#4F6AB8"><tspan>LDAP </tspan><tspan fill="#F08A3C">c</tspan><tspan>RONIN</tspan></text>
+</svg>

@@ -1,0 +1,13 @@
+.env
+/bin/
+/ldap-cronin
+*.tsv
+*.tsv.delta
+*.tsv.tmp
+*.tsv.run*
+*.toml
+!config.example.toml
+/dist/
+/.go/
+coverage.out
+/snapshots/
