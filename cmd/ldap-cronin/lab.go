@@ -22,11 +22,11 @@ import (
 
 const labUsage = `Usage: ldap-cronin lab <command> [flags]
 
-Starts an AD-compatible Samba4 on docker for verification, and takes and restores snapshots.
-Works with docker alone (docker compose is not required).
+Starts a directory server on docker for verification (an AD-compatible Samba4, or OpenLDAP with --profile ldap),
+and takes and restores snapshots. Works with docker alone (docker compose is not required).
 
 Commands:
-  up                 Load the image and start the Samba4 AD. The domain name is decided at this first start
+  up                 Load the image and start the server. The domain name (OpenLDAP: the suffix) is decided at this first start
   down               Stop it (the data stays; running up again resumes with the same settings)
   reset              Delete the domain data and settings (.env). Use this to change the domain name
   status             Show the status
@@ -38,7 +38,9 @@ Commands:
   snapshot-rm name   Delete a snapshot
 
 Flags (common):
-  --state-dir <dir>      Directory where .env is placed (default: .)
+  --profile ad|ldap      The kind of lab: ad (Samba4 AD, default) or ldap (OpenLDAP). Needed only for up and for a restore
+                         that should not take the snapshot's kind; later commands take it from .env or the container
+  --state-dir <dir>      Directory where .env is placed (default: .). An AD and an OpenLDAP lab need separate ones
   --snapshot-dir <dir>   Directory where snapshots are placed (default: <state-dir>/snapshots)
   --bundle-dir <dir>     Carry-in bundle (directory containing IMAGE and images/). Searched for automatically if omitted
   --instance <name>      Instance to operate on (down / reset / status / snapshot / restore).
@@ -46,18 +48,23 @@ Flags (common):
 
 Flags (up):
   --realm <name>            Domain name (e.g. corp.example.local). Can also be set with the AD_REALM environment variable
+  --suffix <dn>             OpenLDAP: the suffix (e.g. dc=example,dc=org). Can also be set with LDAP_SUFFIX
   --admin-password <pw>     Administrator password. Prompted for if omitted (auto-generated if left empty).
-                            It stays in shell history, so the SAMBA_ADMIN_PASSWORD environment variable is recommended
+                            It stays in shell history, so the SAMBA_ADMIN_PASSWORD (OpenLDAP: LDAP_ADMIN_PASSWORD)
+                            environment variable is recommended
+  --schema-dir <dir>        OpenLDAP: LDIFs applied when the directory is created, in name order: schemas
+                            (olcSchemaConfig entries) and cn=config changes (overlays, ACLs, indexes)
   --netbios <name>          NetBIOS domain name (default: the uppercased first label of the domain name; up to 15 characters)
-  --ldap-port <n>           Published LDAP port (default 12389)
-  --ldaps-port <n>          Published LDAPS port (default 12636)
-  --like-source <config>    Connect to the source AD and create the lab with the same domain name, NetBIOS name, and domain SID and GUID
-                            (for native import: clone -native. Samba only. docs/lab.md)
+  --ldap-port <n>           Published LDAP port (default 12389; OpenLDAP 13389)
+  --ldaps-port <n>          Published LDAPS port (default 12636; OpenLDAP 13636)
+  --like-source <config>    Connect to the source and create a lab like it: for AD the same domain name, NetBIOS name, and domain
+                            SID and GUID (for native import: clone -native. docs/lab.md); for a generic server an OpenLDAP lab
+                            with the source's naming context as the suffix
   --domain-sid <sid>        Create the domain with this SID (S-1-5-21-a-b-c)
   --domain-guid <guid>      Create the domain with this GUID
   --with-sample-source      Also start a disposable clone source loaded with sample data, for checking that things work
-  --source-ldap-port <n>    LDAP port of that source (default 11389)
-  --source-ldaps-port <n>   LDAPS port of that source (default 11636)
+  --source-ldap-port <n>    LDAP port of that source (default 11389; OpenLDAP 14389)
+  --source-ldaps-port <n>   LDAPS port of that source (default 11636; OpenLDAP 14636)
   --image <name>            Image name to use (default: the bundle's IMAGE file)
   --reload                  Run docker load again even if the image already exists
   --skip-verify             Skip verifying SHA256SUMS
@@ -87,10 +94,11 @@ Settings are saved in .env; from the second run on, values not specified are tak
 `
 
 type labCommon struct {
-	stateDir, snapshotDir, bundleDir, prefix, instance string
+	stateDir, snapshotDir, bundleDir, prefix, instance, profile string
 }
 
 func (c *labCommon) register(fs *flag.FlagSet) {
+	fs.StringVar(&c.profile, "profile", "", "")
 	fs.StringVar(&c.stateDir, "state-dir", ".", "")
 	fs.StringVar(&c.snapshotDir, "snapshot-dir", "", "")
 	fs.StringVar(&c.bundleDir, "bundle-dir", "", "")
@@ -118,6 +126,7 @@ func runLab(ctx context.Context, args []string, out, errW io.Writer) error {
 		reset     lab.ResetOptions
 		snap      lab.SnapshotOptions
 		realm     string
+		suffix    string
 		password  string
 		netbios   string
 		likeSrc   string
@@ -129,6 +138,8 @@ func runLab(ctx context.Context, args []string, out, errW io.Writer) error {
 	switch sub {
 	case "up":
 		fs.StringVar(&realm, "realm", "", "")
+		fs.StringVar(&suffix, "suffix", "", "")
+		fs.StringVar(&up.SchemaDir, "schema-dir", "", "")
 		fs.StringVar(&password, "admin-password", "", "")
 		fs.StringVar(&netbios, "netbios", "", "")
 		fs.IntVar(&ldapPort, "ldap-port", 0, "")
@@ -174,17 +185,40 @@ func runLab(ctx context.Context, args []string, out, errW io.Writer) error {
 	if err != nil {
 		return err
 	}
+	if sub == "up" && likeSrc != "" {
+		base, err := likeSource(ctx, likeSrc)
+		if err != nil {
+			return fmt.Errorf("--like-source: %w", err)
+		}
+		if c.profile == "" {
+			c.profile = base.Profile // a generic source gets an OpenLDAP lab
+		} else if c.profile != base.Profile {
+			return fmt.Errorf("--like-source: the source is a %s server, not %s", base.Profile, c.profile)
+		}
+		up.Flags = base
+	}
+	// status lists every kind; the rest work on one lab, whose kind is known now.
+	if sub != "status" && sub != "snapshots" && sub != "snapshot-rm" {
+		if err := l.ChooseServer(ctx, c.profile); err != nil {
+			return err
+		}
+	}
 	switch sub {
 	case "up":
-		up.Flags = lab.Settings{Realm: realm, AdminPassword: password, NetBIOS: netbios, LDAPPort: ldapPort, LDAPSPort: ldapsPort,
-			DomainSID: domSID, DomainGUID: domGUID}
-		if likeSrc != "" {
-			base, err := likeSource(ctx, likeSrc)
-			if err != nil {
-				return fmt.Errorf("--like-source: %w", err)
+		domain := realm
+		switch {
+		case realm != "" && suffix != "":
+			return errors.New("give --realm (Samba) or --suffix (OpenLDAP), not both")
+		case suffix != "":
+			if l.Server != lab.OpenLDAP {
+				return errors.New("--suffix is for an OpenLDAP lab (--profile ldap); a Samba lab takes --realm")
 			}
-			up.Flags = mergeLike(base, up.Flags)
+			domain = suffix
+		case realm != "" && l.Server == lab.OpenLDAP:
+			return errors.New("--realm is for a Samba lab; an OpenLDAP lab takes --suffix")
 		}
+		up.Flags = mergeLike(up.Flags, lab.Settings{Domain: domain, AdminPassword: password, NetBIOS: netbios, LDAPPort: ldapPort, LDAPSPort: ldapsPort,
+			DomainSID: domSID, DomainGUID: domGUID})
 		return l.Up(ctx, up)
 	case "down":
 		return l.Down(ctx)
@@ -227,7 +261,7 @@ func mergeLike(base, flags lab.Settings) lab.Settings {
 		dst *string
 		v   string
 	}{
-		{&out.Realm, flags.Realm}, {&out.AdminPassword, flags.AdminPassword}, {&out.NetBIOS, flags.NetBIOS},
+		{&out.Domain, flags.Domain}, {&out.AdminPassword, flags.AdminPassword}, {&out.NetBIOS, flags.NetBIOS},
 		{&out.DomainSID, flags.DomainSID}, {&out.DomainGUID, flags.DomainGUID},
 	} {
 		if f.v != "" {
@@ -330,11 +364,11 @@ type terminalPrompter struct {
 	out io.Writer
 }
 
-func (p *terminalPrompter) Realm(def string) (string, error) {
+func (p *terminalPrompter) Domain(label, def string) (string, error) {
 	if !stdinIsTerminal() {
 		return "", nil
 	}
-	fmt.Fprintf(p.out, "Domain name [%s]: ", def)
+	fmt.Fprintf(p.out, "%s%s [%s]: ", strings.ToUpper(label[:1]), label[1:], def)
 	line, err := p.in.ReadString('\n')
 	if err != nil && line == "" {
 		return "", err

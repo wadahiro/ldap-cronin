@@ -138,7 +138,7 @@ func TestUpPassesTheSourceDomainIdentityToTheFirstBoot(t *testing.T) {
 	fx := newLabFixture(t)
 	fx.withBundle()
 	sid, guid := "S-1-5-21-1111111111-2222222222-3333333333", "12345678-1234-4234-8234-1234567890ab"
-	err := fx.l.Up(context.Background(), UpOptions{Flags: Settings{Realm: "ad.example.com", AdminPassword: "Secret-Passw0rd!", DomainSID: sid, DomainGUID: guid}})
+	err := fx.l.Up(context.Background(), UpOptions{Flags: Settings{Domain: "ad.example.com", AdminPassword: "Secret-Passw0rd!", DomainSID: sid, DomainGUID: guid}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,8 +159,8 @@ func TestUpRejectsAMalformedDomainIdentity(t *testing.T) {
 	fx := newLabFixture(t)
 	fx.withBundle()
 	for _, s := range []Settings{
-		{Realm: "ad.example.com", AdminPassword: "x", DomainSID: "S-1-5-21-1"},
-		{Realm: "ad.example.com", AdminPassword: "x", DomainGUID: "nope"},
+		{Domain: "ad.example.com", AdminPassword: "x", DomainSID: "S-1-5-21-1"},
+		{Domain: "ad.example.com", AdminPassword: "x", DomainGUID: "nope"},
 	} {
 		if err := fx.l.Up(context.Background(), UpOptions{Flags: s}); err == nil {
 			t.Errorf("%+v must be rejected", s)

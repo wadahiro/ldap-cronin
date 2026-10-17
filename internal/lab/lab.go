@@ -34,6 +34,7 @@ const (
 	labelSID      = labelPrefix + "domain-sid"
 	labelGUID     = labelPrefix + "domain-guid"
 	labelLab      = labelPrefix + "lab" // lab prefix; lets containers with the same prefix be listed together
+	labelProfile  = labelPrefix + "profile"
 
 	// MainInstance is the name of the default lab that up creates.
 	MainInstance = "main"
@@ -41,7 +42,8 @@ const (
 
 // Prompter is interactive input. Without a terminal, defaults or auto-generated values are used.
 type Prompter interface {
-	Realm(def string) (string, error)
+	// Domain asks for the lab's domain: label names it ("domain", "suffix"), def is the default.
+	Domain(label, def string) (string, error)
 	// NewPassword asks for the admin password. An empty string means auto-generate.
 	NewPassword() (string, error)
 	// Choose lets the user pick one of items by number and returns the chosen index (def is the default). Without a terminal it returns ErrNotInteractive.
@@ -56,11 +58,17 @@ type Dirs struct {
 }
 
 type Lab struct {
-	D        Docker
-	Out, Err io.Writer
-	Prompt   Prompter
-	Dirs     Dirs
-	Prefix   string // name prefix for containers and volumes
+	// Server is the kind of lab (Samba, OpenLDAP); nil means Samba. ChooseServer sets it from a flag, an existing
+	// container or .env.
+	Server *Server
+	// serverFixed is true when Server came from a flag or an existing container, so a snapshot of another kind is
+	// refused instead of deciding the kind.
+	serverFixed bool
+	D           Docker
+	Out, Err    io.Writer
+	Prompt      Prompter
+	Dirs        Dirs
+	Prefix      string // name prefix for containers and volumes
 	// Instance is the instance being operated on. Empty means the default lab (main).
 	// A second instance started from a snapshot on different ports is told apart by its own name.
 	Instance string
@@ -73,6 +81,59 @@ type Lab struct {
 	HostArch string // "amd64" / "arm64". Used to warn when it differs from the image architecture
 }
 
+func (l *Lab) srv() *Server {
+	if l.Server == nil {
+		return Samba
+	}
+	return l.Server
+}
+
+// ChooseServer decides the kind of lab: profile when given (a flag); otherwise, for the default lab, LAB_PROFILE in
+// .env (an AD and an LDAP lab coexist with separate --state-dir); otherwise the kind of the instance's existing
+// container; otherwise Samba. A restore into a new container with nothing of these takes the snapshot's kind.
+func (l *Lab) ChooseServer(ctx context.Context, profile string) error {
+	l.Server, l.serverFixed = nil, false
+	if profile != "" {
+		s, err := ServerFor(profile)
+		if err != nil {
+			return err
+		}
+		l.Server, l.serverFixed = s, true
+		return nil
+	}
+	if l.isMain() {
+		file, err := ReadEnvFile(l.envPath())
+		if err != nil {
+			return err
+		}
+		if file.Profile != "" {
+			s, err := ServerFor(file.Profile)
+			if err != nil {
+				return fmt.Errorf("%s: %w", l.envPath(), err)
+			}
+			l.Server, l.serverFixed = s, true
+			return nil
+		}
+	}
+	var found []*Server
+	for _, s := range Servers() {
+		probe := *l
+		probe.Server = s
+		if _, exists, err := probe.inspectLabels(ctx, probe.container()); err != nil {
+			return err
+		} else if exists {
+			found = append(found, s)
+		}
+	}
+	switch len(found) {
+	case 1:
+		l.Server, l.serverFixed = found[0], true
+	case 2:
+		return fmt.Errorf("both a Samba and an OpenLDAP lab exist for instance %s; choose one with --profile", l.instanceName())
+	}
+	return nil
+}
+
 func (l *Lab) instanceName() string {
 	if l.Instance == "" {
 		return MainInstance
@@ -82,15 +143,16 @@ func (l *Lab) instanceName() string {
 
 func (l *Lab) isMain() bool { return l.instanceName() == MainInstance }
 
-// Lab container and volume names. main is <prefix>-ad; other instances are <prefix>-ad-<name>.
+// Lab container and volume names. main is <prefix>-<profile> (ldap-cronin-ad, ldap-cronin-ldap); other instances
+// are <prefix>-<profile>-<name>.
 func (l *Lab) container() string {
 	if l.isMain() {
-		return l.Prefix + "-ad"
+		return l.Prefix + "-" + l.srv().Profile
 	}
-	return l.Prefix + "-ad-" + l.Instance
+	return l.Prefix + "-" + l.srv().Profile + "-" + l.Instance
 }
 
-func (l *Lab) sourceContainer() string { return l.Prefix + "-ad-src" }
+func (l *Lab) sourceContainer() string { return l.Prefix + "-" + l.srv().Profile + "-src" }
 
 func (l *Lab) volume(kind string) string { return l.container() + "-" + kind }
 
@@ -122,8 +184,10 @@ type UpOptions struct {
 	SourceLDAP  int
 	SourceLDAPS int
 	Image       string // explicit image name (takes precedence over the IMAGE file)
-	Reload      bool
-	SkipVerify  bool
+	// SchemaDir holds LDIFs (schemas, cn=config changes) the OpenLDAP image applies when the directory is created.
+	SchemaDir  string
+	Reload     bool
+	SkipVerify bool
 }
 
 func (l *Lab) checkDocker(ctx context.Context) error {
@@ -133,14 +197,28 @@ func (l *Lab) checkDocker(ctx context.Context) error {
 	return nil
 }
 
-// Up loads the image, starts the Samba4 AD, and verifies that it works.
-// The domain name is decided at this point (it is not baked into the image).
+// Up loads the image, starts the lab server, and verifies that it works.
+// The domain name (or suffix) is decided at this point (it is not baked into the image).
 func (l *Lab) Up(ctx context.Context, o UpOptions) error {
 	if !l.isMain() {
 		return fmt.Errorf("up starts the default lab. Create other instances from a snapshot: lab restore --instance %s", l.Instance)
 	}
 	if err := l.checkDocker(ctx); err != nil {
 		return err
+	}
+	srv := l.srv()
+	if o.SchemaDir != "" {
+		if srv.SchemaDir == "" {
+			return fmt.Errorf("--schema-dir is for an OpenLDAP lab (--profile %s)", ProfileLDAP)
+		}
+		if st, err := os.Stat(o.SchemaDir); err != nil || !st.IsDir() {
+			return fmt.Errorf("--schema-dir %s is not a directory", o.SchemaDir)
+		}
+	}
+	if file, err := ReadEnvFile(l.envPath()); err != nil {
+		return err
+	} else if file.Domain != "" && file.profile() != srv.Profile {
+		return fmt.Errorf("%s holds the settings of a %s lab; use another --state-dir for a %s lab", l.envPath(), file.profile(), srv.Profile)
 	}
 	image, err := l.prepareImage(ctx, o)
 	if err != nil {
@@ -150,7 +228,7 @@ func (l *Lab) Up(ctx context.Context, o UpOptions) error {
 	if err != nil {
 		return err
 	}
-	nb, err := s.EffectiveNetBIOS()
+	nb, err := l.netbios(s)
 	if err != nil {
 		return err
 	}
@@ -158,8 +236,12 @@ func (l *Lab) Up(ctx context.Context, o UpOptions) error {
 		return fmt.Errorf("cannot write .env: %w", err)
 	}
 
-	l.logf("Starting Samba4 AD (domain: %s / NetBIOS: %s)", s.Realm, nb)
-	if err := l.startLab(ctx, image, s, nb); err != nil {
+	if srv.DomainIdentity {
+		l.logf("Starting %s (%s: %s / NetBIOS: %s)", srv.Product, srv.DomainLabel, s.Domain, nb)
+	} else {
+		l.logf("Starting %s (%s: %s)", srv.Product, srv.DomainLabel, s.Domain)
+	}
+	if err := l.startLab(ctx, image, s, nb, o.SchemaDir); err != nil {
 		return err
 	}
 	if o.WithSource {
@@ -172,6 +254,18 @@ func (l *Lab) Up(ctx context.Context, o UpOptions) error {
 	}
 	l.summary(s, nb, generated, o)
 	return nil
+}
+
+// netbios is the NetBIOS name of a Samba lab (empty for a server without one). It refuses Samba-only settings for
+// other servers.
+func (l *Lab) netbios(s Settings) (string, error) {
+	if l.srv().DomainIdentity {
+		return s.EffectiveNetBIOS()
+	}
+	if s.NetBIOS != "" || s.DomainSID != "" || s.DomainGUID != "" {
+		return "", fmt.Errorf("the NetBIOS name, domain SID and GUID apply only to a Samba lab")
+	}
+	return "", nil
 }
 
 // prepareImage verifies the bundle's integrity and docker-loads the image if it is missing. It returns the image name.
@@ -189,11 +283,10 @@ func (l *Lab) prepareImage(ctx context.Context, o UpOptions) (string, error) {
 		}
 	}
 	if name == "" && hasBundle {
-		b, err := os.ReadFile(filepath.Join(l.Dirs.Bundle, imageFileName))
-		if err != nil {
+		var err error
+		if name, err = bundleImage(l.Dirs.Bundle, l.srv().Profile); err != nil {
 			return "", err
 		}
-		name = strings.TrimSpace(string(b))
 	}
 	if name == "" {
 		return "", errors.New("cannot determine the image: the carry-in bundle (IMAGE file) was not found. Specify the image name with --image, or run from the bundle directory")
@@ -203,14 +296,11 @@ func (l *Lab) prepareImage(ctx context.Context, o UpOptions) (string, error) {
 	if !exists || o.Reload {
 		tar := ""
 		if hasBundle {
-			tar = filepath.Join(l.Dirs.Bundle, imageTarPath)
-			if _, err := os.Stat(tar); err != nil {
-				tar = ""
-			}
+			tar = bundleTar(l.Dirs.Bundle)
 		}
 		switch {
 		case tar != "":
-			l.logf("Loading image: %s", imageTarPath)
+			l.logf("Loading image: %s", tar)
 			if _, err := l.docker(ctx, "load", "-i", tar); err != nil {
 				return "", err
 			}
@@ -239,24 +329,25 @@ func (l *Lab) resolveSettings(flags Settings) (Settings, bool, error) {
 	if err != nil {
 		return Settings{}, false, err
 	}
-	s := Resolve(flags, file, l.Getenv)
+	srv := l.srv()
+	s := Resolve(srv, flags, file, l.Getenv)
 	if s.LDAPPort == 0 {
-		s.LDAPPort = DefaultLDAPPort
+		s.LDAPPort = srv.Ports[0]
 	}
 	if s.LDAPSPort == 0 {
-		s.LDAPSPort = DefaultLDAPSPort
+		s.LDAPSPort = srv.Ports[1]
 	}
-	if s.Realm == "" {
-		r, err := l.Prompt.Realm(DefaultRealm)
+	if s.Domain == "" {
+		r, err := l.Prompt.Domain(srv.DomainLabel, srv.DefaultDomain)
 		if err != nil {
 			return s, false, err
 		}
 		if r == "" {
-			r = DefaultRealm
+			r = srv.DefaultDomain
 		}
-		s.Realm = r
+		s.Domain = r
 	}
-	if err := ValidateRealm(s.Realm); err != nil {
+	if err := srv.ValidateDomain(s.Domain); err != nil {
 		return s, false, err
 	}
 	if err := ValidateDomainIdentity(s.DomainSID, s.DomainGUID); err != nil {
@@ -280,11 +371,15 @@ func (l *Lab) resolveSettings(flags Settings) (Settings, bool, error) {
 }
 
 // runArgs builds the docker run arguments. The password is passed via the environment (-e NAME), not in the arguments.
-func (l *Lab) runArgs(name, hostname, image string, s Settings, nb string, ldap, ldaps int, extra ...string) Cmd {
-	args := []string{"run", "-d", "--name", name, "--hostname", hostname, "--cap-add", "SYS_ADMIN",
-		"-e", "AD_REALM=" + s.Realm, "-e", "SAMBA_ADMIN_PASSWORD", "-e", "SAMBA_DOMAIN=" + nb,
+// verb is run -d, or create when files are copied in before the first start.
+func (l *Lab) runArgs(verb []string, name, hostname, image string, s Settings, nb string, ldap, ldaps int, extra ...string) Cmd {
+	srv := l.srv()
+	args := append(append([]string(nil), verb...), "--name", name, "--hostname", hostname)
+	args = append(args, srv.ExtraArgs...)
+	args = append(args, srv.ContainerEnv(s, nb)...)
+	args = append(args, "-e", srv.Env.Password,
 		"-p", fmt.Sprintf("%d:389", ldap), "-p", fmt.Sprintf("%d:636", ldaps),
-		"--health-cmd", "test -f /tmp/ad-ready", "--health-interval", "3s", "--health-retries", "60"}
+		"--health-cmd", "test -f "+srv.Ready, "--health-interval", "3s", "--health-retries", "60")
 	// The SID and GUID are not secret, so pass them with values. They are only used when the domain is created (first start).
 	if s.DomainSID != "" {
 		args = append(args, "-e", envSID+"="+s.DomainSID)
@@ -294,11 +389,11 @@ func (l *Lab) runArgs(name, hostname, image string, s Settings, nb string, ldap,
 	}
 	args = append(args, extra...)
 	args = append(args, image)
-	return Cmd{Args: args, Env: []string{"SAMBA_ADMIN_PASSWORD=" + s.AdminPassword}}
+	return Cmd{Args: args, Env: []string{srv.Env.Password + "=" + s.AdminPassword}}
 }
 
 // startLab starts the clone target container. If it already exists, it is reused only when the settings match.
-func (l *Lab) startLab(ctx context.Context, image string, s Settings, nb string) error {
+func (l *Lab) startLab(ctx context.Context, image string, s Settings, nb, schemaDir string) error {
 	name := l.container()
 	labels, exists, err := l.inspectLabels(ctx, name)
 	if err != nil {
@@ -312,6 +407,9 @@ func (l *Lab) startLab(ctx context.Context, image string, s Settings, nb string)
 		if err != nil {
 			return err
 		}
+		if schemaDir != "" {
+			l.warnf("--schema-dir applies only when the directory is created; %s already exists, so it is ignored", name)
+		}
 		if state == "healthy" || state == "starting" {
 			l.logf("Already running: %s (to recreate it, run ./setup.sh reset)", name)
 			return nil
@@ -323,7 +421,7 @@ func (l *Lab) startLab(ctx context.Context, image string, s Settings, nb string)
 		return l.waitHealthy(ctx, name)
 	}
 	l.logf("Starting: %s", name)
-	if err := l.createContainer(ctx, image, s, nb); err != nil {
+	if err := l.createContainer(ctx, image, s, nb, schemaDir); err != nil {
 		return err
 	}
 	return l.waitHealthy(ctx, name)
@@ -331,24 +429,44 @@ func (l *Lab) startLab(ctx context.Context, image string, s Settings, nb string)
 
 // createContainer creates the lab container with docker run (it does not wait for healthy).
 // The domain, ports and instance name are kept in labels, to detect configuration mismatches and to list instances later.
-func (l *Lab) createContainer(ctx context.Context, image string, s Settings, nb string) error {
-	extra := []string{
-		"-v", l.volume("private") + ":/var/lib/samba", "-v", l.volume("etc") + ":/etc/samba",
-		"--label", labelRealm + "=" + s.Realm,
-		"--label", labelLDAP + "=" + strconv.Itoa(s.LDAPPort),
-		"--label", labelLDAPS + "=" + strconv.Itoa(s.LDAPSPort),
-		"--label", labelNB + "=" + nb,
-		"--label", labelInstance + "=" + l.instanceName(),
-		"--label", labelLab + "=" + l.Prefix,
+// schemaDir, when set, is copied into the image's schema directory before the first start, so the directory is
+// created with it. A restore needs none: what it applied is in the configuration volume.
+func (l *Lab) createContainer(ctx context.Context, image string, s Settings, nb, schemaDir string) error {
+	var extra []string
+	for _, v := range l.srv().Volumes {
+		extra = append(extra, "-v", l.volume(v.Kind)+":"+v.Mount)
 	}
+	extra = append(extra,
+		"--label", labelProfile+"="+l.srv().Profile,
+		"--label", labelRealm+"="+s.Domain,
+		"--label", labelLDAP+"="+strconv.Itoa(s.LDAPPort),
+		"--label", labelLDAPS+"="+strconv.Itoa(s.LDAPSPort),
+		"--label", labelNB+"="+nb,
+		"--label", labelInstance+"="+l.instanceName(),
+		"--label", labelLab+"="+l.Prefix,
+	)
 	if s.DomainSID != "" {
 		extra = append(extra, "--label", labelSID+"="+s.DomainSID)
 	}
 	if s.DomainGUID != "" {
 		extra = append(extra, "--label", labelGUID+"="+s.DomainGUID)
 	}
-	if _, err := l.D.Do(ctx, l.runArgs(l.container(), dcHostname, image, s, nb, s.LDAPPort, s.LDAPSPort, extra...)); err != nil {
-		return fmt.Errorf("docker run failed (the port may be in use; change it with --ldap-port / --ldaps-port): %w", err)
+	srv := l.srv()
+	if schemaDir == "" {
+		if _, err := l.D.Do(ctx, l.runArgs([]string{"run", "-d"}, l.container(), srv.Hostname, image, s, nb, s.LDAPPort, s.LDAPSPort, extra...)); err != nil {
+			return fmt.Errorf("docker run failed (the port may be in use; change it with --ldap-port / --ldaps-port): %w", err)
+		}
+		return nil
+	}
+	if _, err := l.D.Do(ctx, l.runArgs([]string{"create"}, l.container(), srv.Hostname, image, s, nb, s.LDAPPort, s.LDAPSPort, extra...)); err != nil {
+		return fmt.Errorf("docker create failed: %w", err)
+	}
+	l.logf("Copying %s into %s", schemaDir, srv.SchemaDir)
+	if _, err := l.docker(ctx, "cp", filepath.Clean(schemaDir)+"/.", l.container()+":"+srv.SchemaDir+"/"); err != nil {
+		return err
+	}
+	if _, err := l.docker(ctx, "start", l.container()); err != nil {
+		return fmt.Errorf("docker start failed (the port may be in use; change it with --ldap-port / --ldaps-port): %w", err)
 	}
 	return nil
 }
@@ -363,15 +481,16 @@ func (l *Lab) startSource(ctx context.Context, image string, s Settings, nb stri
 			return err
 		}
 	}
+	srv := l.srv()
 	ldap, ldaps := o.SourceLDAP, o.SourceLDAPS
 	if ldap == 0 {
-		ldap = DefaultSrcLDAP
+		ldap = srv.Ports[2]
 	}
 	if ldaps == 0 {
-		ldaps = DefaultSrcLDAPS
+		ldaps = srv.Ports[3]
 	}
 	l.logf("Starting: %s (clone source for testing; loaded with sample data, data is not persisted)", name)
-	if _, err := l.D.Do(ctx, l.runArgs(name, srcHostname, image, s, nb, ldap, ldaps, "-e", "SEED_SAMPLE_DATA=true")); err != nil {
+	if _, err := l.D.Do(ctx, l.runArgs([]string{"run", "-d"}, name, srv.SourceHostname, image, s, nb, ldap, ldaps, "-e", "SEED_SAMPLE_DATA=true")); err != nil {
 		return fmt.Errorf("docker run failed (the port may be in use): %w", err)
 	}
 	return l.waitHealthy(ctx, name)
@@ -398,8 +517,8 @@ func (l *Lab) inspectLabels(ctx context.Context, name string) (labels map[string
 // checkLabels verifies that the existing container's settings match the current ones. On mismatch it fails without destroying anything.
 func checkLabels(labels map[string]string, s Settings) error {
 	var diffs []string
-	if r := labels[labelRealm]; !strings.EqualFold(r, s.Realm) {
-		diffs = append(diffs, fmt.Sprintf("domain %s (specified: %s)", r, s.Realm))
+	if r := labels[labelRealm]; !strings.EqualFold(r, s.Domain) {
+		diffs = append(diffs, fmt.Sprintf("domain %s (specified: %s)", r, s.Domain))
 	}
 	if p := labels[labelLDAP]; p != strconv.Itoa(s.LDAPPort) {
 		diffs = append(diffs, fmt.Sprintf("LDAP port %s (specified: %d)", p, s.LDAPPort))
@@ -431,7 +550,7 @@ func (l *Lab) waitHealthy(ctx context.Context, name string) error {
 			return nil
 		case "exited":
 			l.dumpLogs(ctx, name)
-			return errors.New("startup failed. If you specified a different domain name from the existing data, delete it with ./setup.sh reset and start over")
+			return errors.New("startup failed (the log is above). If you specified a different domain name or suffix from the existing data, delete it with ./setup.sh reset and start over")
 		}
 		if err := ctx.Err(); err != nil {
 			return err
@@ -448,11 +567,12 @@ func (l *Lab) dumpLogs(ctx context.Context, name string) {
 
 // smokeTest verifies that an admin search works over LDAPS. The password is passed via the environment.
 func (l *Lab) smokeTest(ctx context.Context, s Settings) error {
-	base := BaseDN(s.Realm)
+	srv := l.srv()
+	base := srv.BaseDN(s.Domain)
 	l.logf("Smoke test (searching as admin over LDAPS)")
 	_, err := l.D.Do(ctx, Cmd{
 		Args: []string{"exec", "-e", "LDAPTLS_REQCERT=never", "-e", "LDAP_PW", l.container(), "sh", "-c",
-			`ldapsearch -x -H ldaps://127.0.0.1 -D "CN=Administrator,CN=Users,` + base + `" -w "$LDAP_PW" -b "` + base + `" -s base dn`},
+			`ldapsearch -x -H ldaps://127.0.0.1 -D "` + srv.AdminDN(s.Domain) + `" -w "$LDAP_PW" -b "` + base + `" -s base dn`},
 		Env: []string{"LDAP_PW=" + s.AdminPassword},
 	})
 	if err != nil {
@@ -462,17 +582,20 @@ func (l *Lab) smokeTest(ctx context.Context, s Settings) error {
 }
 
 func (l *Lab) summary(s Settings, nb string, generated bool, o UpOptions) {
-	base := BaseDN(s.Realm)
+	srv := l.srv()
+	base := srv.BaseDN(s.Domain)
 	w := l.Out
-	fmt.Fprintf(w, "\nStarted.\n\n")
-	fmt.Fprintf(w, "  Domain          : %s  (NetBIOS: %s)\n", s.Realm, nb)
+	fmt.Fprintf(w, "\nStarted (%s).\n\n", srv.Product)
+	if srv.DomainIdentity {
+		fmt.Fprintf(w, "  Domain          : %s  (NetBIOS: %s)\n", s.Domain, nb)
+	}
 	fmt.Fprintf(w, "  Base DN         : %s\n", base)
-	fmt.Fprintf(w, "  Administrator   : CN=Administrator,CN=Users,%s\n", base)
+	fmt.Fprintf(w, "  Administrator   : %s\n", srv.AdminDN(s.Domain))
 	fmt.Fprintf(w, "  LDAP / LDAPS    : ldap://localhost:%d / ldaps://localhost:%d  (self-signed certificate)\n", s.LDAPPort, s.LDAPSPort)
 	if o.WithSource {
 		ldaps := o.SourceLDAPS
 		if ldaps == 0 {
-			ldaps = DefaultSrcLDAPS
+			ldaps = srv.Ports[3]
 		}
 		fmt.Fprintf(w, "  Clone source    : ldaps://localhost:%d  (test; loaded with sample data. Same administrator and password)\n", ldaps)
 	}
@@ -482,7 +605,7 @@ func (l *Lab) summary(s Settings, nb string, generated bool, o UpOptions) {
 		fmt.Fprintf(w, "  Admin password  : (the one you specified; saved in .env)\n")
 	}
 	fmt.Fprintf(w, "\nExample tool configuration ([target] in config.toml):\n\n")
-	fmt.Fprintf(w, "  [target]\n  url = \"ldaps://localhost:%d\"\n  bind_dn = \"CN=Administrator,CN=Users,%s\"\n  insecure_skip_verify = true   # because of the self-signed certificate\n\n", s.LDAPSPort, base)
+	fmt.Fprintf(w, "  [target]\n  url = \"ldaps://localhost:%d\"\n  bind_dn = \"%s\"\n  insecure_skip_verify = true   # because of the self-signed certificate\n\n", s.LDAPSPort, srv.AdminDN(s.Domain))
 	fmt.Fprintf(w, "After cloning, you can take a snapshot so you can always roll back:\n\n")
 	fmt.Fprintf(w, "  ldap-cronin clone -config config.toml\n  ldap-cronin lab snapshot            # take\n  ldap-cronin lab restore             # roll back (a few seconds)\n\n")
 	fmt.Fprintf(w, "Stop: lab down    Delete everything including domain data: lab reset\n")
@@ -551,8 +674,8 @@ func (l *Lab) Reset(ctx context.Context, o ResetOptions) error {
 			}
 		}
 	}
-	for _, kind := range []string{"private", "etc"} {
-		if _, err := l.docker(ctx, "volume", "rm", "-f", l.volume(kind)); err != nil {
+	for _, v := range l.srv().Volumes {
+		if _, err := l.docker(ctx, "volume", "rm", "-f", l.volume(v.Kind)); err != nil {
 			return err
 		}
 	}
@@ -581,10 +704,11 @@ func (l *Lab) Reset(ctx context.Context, o ResetOptions) error {
 
 // InstanceInfo is a running (or stopped) lab instance.
 type InstanceInfo struct {
+	Profile   string
 	Instance  string
 	Container string
 	State     string
-	Realm     string
+	Domain    string
 	LDAP      int
 	LDAPS     int
 }
@@ -592,7 +716,7 @@ type InstanceInfo struct {
 // Instances lists the lab instances with the same prefix (the default lab and those created from snapshots).
 func (l *Lab) Instances(ctx context.Context) ([]InstanceInfo, error) {
 	format := "{{.Names}}\t{{.State}}\t{{.Label \"" + labelInstance + "\"}}\t{{.Label \"" + labelRealm + "\"}}\t{{.Label \"" +
-		labelLDAP + "\"}}\t{{.Label \"" + labelLDAPS + "\"}}"
+		labelLDAP + "\"}}\t{{.Label \"" + labelLDAPS + "\"}}\t{{.Label \"" + labelProfile + "\"}}"
 	out, err := l.docker(ctx, "container", "ls", "-a", "--filter", "label="+labelLab+"="+l.Prefix, "--format", format)
 	if err != nil {
 		return nil, err
@@ -600,12 +724,16 @@ func (l *Lab) Instances(ctx context.Context) ([]InstanceInfo, error) {
 	var list []InstanceInfo
 	for _, line := range strings.Split(out, "\n") {
 		f := strings.Split(line, "\t")
-		if len(f) != 6 {
+		if len(f) != 7 {
 			continue
 		}
 		ldap, _ := strconv.Atoi(f[4])
 		ldaps, _ := strconv.Atoi(f[5])
-		list = append(list, InstanceInfo{Container: f[0], State: f[1], Instance: f[2], Realm: f[3], LDAP: ldap, LDAPS: ldaps})
+		prof := f[6]
+		if prof == "" {
+			prof = ProfileAD // containers created before there was a choice
+		}
+		list = append(list, InstanceInfo{Profile: prof, Container: f[0], State: f[1], Instance: f[2], Domain: f[3], LDAP: ldap, LDAPS: ldaps})
 	}
 	sort.SliceStable(list, func(i, j int) bool {
 		if (list[i].Instance == MainInstance) != (list[j].Instance == MainInstance) {
@@ -629,7 +757,7 @@ func (l *Lab) Status(ctx context.Context) error {
 		fmt.Fprintln(l.Out, "Lab: none (create one with up)")
 	}
 	for _, in := range list {
-		fmt.Fprintf(l.Out, "Lab %-10s %-24s state=%-8s domain=%s  LDAP=%d LDAPS=%d\n", in.Instance, in.Container, in.State, in.Realm, in.LDAP, in.LDAPS)
+		fmt.Fprintf(l.Out, "Lab %-10s %-24s %-4s state=%-8s domain=%s  LDAP=%d LDAPS=%d\n", in.Instance, in.Container, in.Profile, in.State, in.Domain, in.LDAP, in.LDAPS)
 	}
 	snaps, err := l.Snapshots()
 	if err != nil {

@@ -14,14 +14,22 @@ import (
 	"github.com/wadahiro/ldap-cronin/internal/profile"
 )
 
-// LikeSource returns the lab settings for a lab of the same domain as the source (name, NetBIOS name, SID, GUID),
-// so a native import can keep the source's objectSid and objectGUID.
+// LikeSource returns the lab settings for a lab like the source: for AD the same domain (name, NetBIOS name, SID,
+// GUID), so a native import can keep the source's objectSid and objectGUID; for a generic server an OpenLDAP lab
+// with the source's naming context as its suffix.
 func (s *Session) LikeSource(ctx context.Context) (lab.Settings, error) {
+	if s.Job.Profile.Native == nil {
+		root, err := plan.Root(ctx, s.Src, s.Job)
+		if err != nil {
+			return lab.Settings{}, err
+		}
+		return lab.Settings{Profile: lab.ProfileLDAP, Domain: root}, nil
+	}
 	d, err := s.domain(ctx)
 	if err != nil {
 		return lab.Settings{}, err
 	}
-	return lab.Settings{Realm: d.Realm, NetBIOS: d.NetBIOS, DomainSID: d.SID, DomainGUID: d.GUID}, nil
+	return lab.Settings{Profile: lab.ProfileAD, Domain: d.Realm, NetBIOS: d.NetBIOS, DomainSID: d.SID, DomainGUID: d.GUID}, nil
 }
 
 func (s *Session) domain(ctx context.Context) (profile.Domain, error) {

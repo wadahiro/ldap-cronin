@@ -5,7 +5,7 @@ ldap-cronin (LDAP cRONIN): a Go CLI that clones OUs, groups and users between LD
 ## Commands
 
 - `make check` — format, vet, tidy, unit tests (`-race`) and build. Run before finishing any change.
-- `make e2e` — E2E against real servers; needs docker and takes about 6 minutes. Run it when touching `internal/lab`, `ldapdir`, `clone`, `diff`, `profile`, `identity`, `plan` or `app`.
+- `make e2e` — E2E against real servers; needs docker and takes about 6 minutes. Run it when touching `internal/lab`, `ldapdir`, `clone`, `diff`, `profile`, `identity`, `plan`, `app` or `docker/`.
 - `make fmt` — gofmt.
 
 ## Conventions
@@ -20,5 +20,5 @@ ldap-cronin (LDAP cRONIN): a Go CLI that clones OUs, groups and users between LD
 ## Gotchas
 
 - Unit tests use `internal/fakedir`; keep it behaving like a real server (it rejects missing parents and dangling references).
-- `lab` and `clone -native` are AD/Samba only. Native import uses unsupported Samba internals (tested on 4.19.5); keep that stated wherever it is documented.
+- `lab` serves both kinds (Samba4 AD, OpenLDAP); everything that differs between them is in `lab.Server` (`internal/lab/server.go`). `clone -native` is AD/Samba only. Native import uses unsupported Samba internals (tested on 4.19.5); keep that stated wherever it is documented.
 - Change docs together with behavior: `README.md` stays short, details live in `docs/`. Keep relative links and anchors valid.

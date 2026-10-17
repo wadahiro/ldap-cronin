@@ -139,6 +139,14 @@ func (f *fakeDocker) Do(ctx context.Context, c Cmd) (string, error) {
 		return "", nil
 	case "run":
 		return f.run(c)
+	case "create": // a container started later, after files are copied in
+		f.addContainer(a, false)
+		return "id", nil
+	case "cp":
+		if _, ok := f.containers[strings.SplitN(a[len(a)-1], ":", 2)[0]]; !ok {
+			return "", notFound("container")
+		}
+		return "", nil
 	}
 	return "", fmt.Errorf("fake: unsupported docker command: %v", a)
 }
@@ -167,7 +175,7 @@ func (f *fakeDocker) list(c Cmd) string {
 			state = "running"
 		}
 		lines = append(lines, strings.Join([]string{n, state, ct.labels["ldap-cronin.instance"], ct.labels["ldap-cronin.realm"],
-			ct.labels["ldap-cronin.ldap-port"], ct.labels["ldap-cronin.ldaps-port"]}, "\t"))
+			ct.labels["ldap-cronin.ldap-port"], ct.labels["ldap-cronin.ldaps-port"], ct.labels["ldap-cronin.profile"]}, "\t"))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -206,15 +214,7 @@ func (f *fakeDocker) run(c Cmd) (string, error) {
 	}
 	switch {
 	case a[1] == "-d": // start a container
-		name := argAfter(a, "--name")
-		labels := map[string]string{}
-		for i := 0; i+1 < len(a); i++ {
-			if a[i] == "--label" {
-				k, v, _ := strings.Cut(a[i+1], "=")
-				labels[k] = v
-			}
-		}
-		f.containers[name] = &fakeContainer{labels: labels, image: a[len(a)-1], running: true}
+		f.addContainer(a, true)
 		return "id", nil
 	case contains(a, "-cf"): // create a tar
 		vol := volumeOf(a)
@@ -236,6 +236,17 @@ func (f *fakeDocker) run(c Cmd) (string, error) {
 		return "", nil
 	}
 	return "", fmt.Errorf("fake: unsupported run: %v", a)
+}
+
+func (f *fakeDocker) addContainer(a []string, running bool) {
+	labels := map[string]string{}
+	for i := 0; i+1 < len(a); i++ {
+		if a[i] == "--label" {
+			k, v, _ := strings.Cut(a[i+1], "=")
+			labels[k] = v
+		}
+	}
+	f.containers[argAfter(a, "--name")] = &fakeContainer{labels: labels, image: a[len(a)-1], running: running}
 }
 
 func contains(list []string, s string) bool {
@@ -263,8 +274,8 @@ type fakePrompt struct {
 	chosePrompt     string
 }
 
-func (p *fakePrompt) Realm(def string) (string, error) { return p.realm, nil }
-func (p *fakePrompt) NewPassword() (string, error)     { return p.password, nil }
+func (p *fakePrompt) Domain(_, def string) (string, error) { return p.realm, nil }
+func (p *fakePrompt) NewPassword() (string, error)         { return p.password, nil }
 func (p *fakePrompt) Choose(prompt string, items []string, def int) (int, error) {
 	p.chooseItems = items
 	p.chosePrompt = prompt
@@ -329,7 +340,7 @@ func must(t *testing.T, err error) {
 func (fx *labFixture) up(realm string) {
 	fx.t.Helper()
 	fx.withBundle()
-	must(fx.t, fx.l.Up(context.Background(), UpOptions{Flags: Settings{Realm: realm, AdminPassword: "Secret-Passw0rd!"}}))
+	must(fx.t, fx.l.Up(context.Background(), UpOptions{Flags: Settings{Domain: realm, AdminPassword: "Secret-Passw0rd!"}}))
 }
 
 // ---- fake of the native helper program ----

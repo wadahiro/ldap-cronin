@@ -16,7 +16,8 @@ import (
 	"time"
 )
 
-// A snapshot is the contents of the docker volumes holding Samba's data, written out to tar files on the host.
+// A snapshot is the contents of the docker volumes holding the lab server's data (Samba or OpenLDAP), written out to
+// tar files on the host.
 //
 // The approach was chosen by measurement (1600 users, about 60MB of data; total time needed to restore):
 //   - copy volume to volume: 5.5 s. But unused volumes are removed by docker volume prune
@@ -24,7 +25,7 @@ import (
 //   - volume contents to a tar on the host: 6.6 s (adopted). Survives prune, can be carried out as a file, and
 //     the host file is owned by the invoking user
 //
-// Restore time is dominated by Samba startup (about 3 s) and grows in proportion to the data size.
+// Restore time is dominated by the server's startup (Samba about 3 s, OpenLDAP under 1 s) and grows in proportion to the data size.
 
 const (
 	metaFileName    = "snapshot.json"
@@ -37,12 +38,6 @@ var snapshotNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`
 // ErrNotInteractive means there is no terminal, so interactive input is not possible.
 var ErrNotInteractive = errors.New("cannot prompt interactively (no terminal)")
 
-// The two volumes that hold the lab's data.
-var snapshotVolumes = []struct{ kind, mount, file string }{
-	{"private", "/var/lib/samba", "private.tar"},
-	{"etc", "/etc/samba", "etc.tar"},
-}
-
 // SnapshotFile is a file included in a snapshot.
 type SnapshotFile struct {
 	Volume string `json:"volume"` // private / etc
@@ -53,10 +48,15 @@ type SnapshotFile struct {
 
 // SnapshotMeta is the snapshot metadata (snapshot.json).
 type SnapshotMeta struct {
-	Name        string         `json:"name"`
-	Note        string         `json:"note,omitempty"`
-	Created     time.Time      `json:"created"`
-	Realm       string         `json:"realm"`
+	Name    string    `json:"name"`
+	Note    string    `json:"note,omitempty"`
+	Created time.Time `json:"created"`
+	// Profile is the server type of the lab (ad, ldap). Snapshots written before there was a choice have none: ad.
+	Profile string `json:"profile,omitempty"`
+	// Domain is the realm of a Samba lab, or the suffix of an OpenLDAP lab.
+	Domain string `json:"domain"`
+	// LegacyRealm is where snapshots of earlier versions kept the realm; readMeta moves it to Domain.
+	LegacyRealm string         `json:"realm,omitempty"`
 	NetBIOS     string         `json:"netbios"`
 	Hostname    string         `json:"hostname"`
 	Image       string         `json:"image"`
@@ -151,12 +151,12 @@ func (l *Lab) Snapshot(ctx context.Context, o SnapshotOptions) (SnapshotMeta, er
 	}
 	defer os.RemoveAll(tmp) // do not leave a partial write behind on failure (after success it has been renamed, so this does nothing)
 
-	// Stop Samba cleanly to capture consistent data, then write it out. Afterwards return to the previous state.
+	// Stop the server cleanly to capture consistent data, then write it out. Afterwards return to the previous state.
 	// Writing out may be interrupted (the partial snapshot is discarded), but returning the lab to its previous state
 	// may not: an interrupted run must never leave the lab stopped.
 	restore := context.WithoutCancel(ctx)
 	if wasRunning {
-		l.logf("Stopping Samba (to capture consistent data)")
+		l.logf("Stopping %s (to capture consistent data)", l.srv().Product)
 		if _, err := l.docker(restore, "stop", "-t", stopTimeoutSec, l.container()); err != nil {
 			return meta, err
 		}
@@ -164,17 +164,17 @@ func (l *Lab) Snapshot(ctx context.Context, o SnapshotOptions) (SnapshotMeta, er
 	start := l.Now()
 	var files []SnapshotFile
 	var dumpErr error
-	for _, v := range snapshotVolumes {
-		f, err := l.dumpVolume(ctx, image, v.kind, v.mount, filepath.Join(tmp, v.file))
+	for _, v := range l.srv().Volumes {
+		f, err := l.dumpVolume(ctx, image, v.Kind, v.Mount, filepath.Join(tmp, v.File))
 		if err != nil {
 			dumpErr = err
 			break
 		}
-		f.Volume, f.File = v.kind, v.file
+		f.Volume, f.File = v.Kind, v.File
 		files = append(files, f)
 	}
 	if wasRunning {
-		l.logf("Restarting Samba")
+		l.logf("Restarting %s", l.srv().Product)
 		if _, err := l.docker(restore, "start", l.container()); err != nil && dumpErr == nil {
 			dumpErr = err
 		} else if err == nil {
@@ -188,8 +188,8 @@ func (l *Lab) Snapshot(ctx context.Context, o SnapshotOptions) (SnapshotMeta, er
 	}
 
 	meta = SnapshotMeta{
-		Name: name, Note: o.Note, Created: l.Now().UTC(), Realm: labels[labelRealm], NetBIOS: labels[labelNB],
-		Hostname: dcHostname, Image: image, ToolVersion: l.Version, Files: files,
+		Name: name, Note: o.Note, Created: l.Now().UTC(), Profile: l.srv().Profile, Domain: labels[labelRealm], NetBIOS: labels[labelNB],
+		Hostname: l.srv().Hostname, Image: image, ToolVersion: l.Version, Files: files,
 	}
 	raw, err := json.MarshalIndent(meta, "", "  ")
 	if err != nil {
@@ -275,6 +275,12 @@ func (l *Lab) readMeta(name string) (SnapshotMeta, error) {
 	if err := json.Unmarshal(raw, &m); err != nil {
 		return m, err
 	}
+	if m.Domain == "" {
+		m.Domain, m.LegacyRealm = m.LegacyRealm, ""
+	}
+	if m.Profile == "" {
+		m.Profile = ProfileAD
+	}
 	if m.Name != name {
 		return m, fmt.Errorf("name %q in snapshot.json differs from the directory name %q", m.Name, name)
 	}
@@ -327,7 +333,7 @@ func snapshotHeader() string {
 }
 
 func formatSnapshotLine(m SnapshotMeta) string {
-	s := fmt.Sprintf("%-24s %s  %-24s %8s", m.Name, m.Created.Local().Format("2006-01-02 15:04:05"), m.Realm, humanSize(m.Size()))
+	s := fmt.Sprintf("%-24s %s  %-24s %8s", m.Name, m.Created.Local().Format("2006-01-02 15:04:05"), m.Domain, humanSize(m.Size()))
 	if m.Note != "" {
 		s += "  " + m.Note
 	}
@@ -351,7 +357,7 @@ func FormatSnapshots(list []SnapshotMeta) string {
 type RestoreOptions struct {
 	LDAPPort      int // if omitted: the default lab uses .env or the default, and other instances pick a free port
 	LDAPSPort     int
-	AdminPassword string // if omitted: the SAMBA_ADMIN_PASSWORD environment variable, then .env
+	AdminPassword string // if omitted: the server's password environment variable (SAMBA_ADMIN_PASSWORD, LDAP_ADMIN_PASSWORD), then .env
 }
 
 // Restore is RestoreWith without options.
@@ -381,6 +387,9 @@ func (l *Lab) RestoreWith(ctx context.Context, name string, o RestoreOptions) (S
 	if err != nil {
 		return meta, fmt.Errorf("snapshot %q not found (list them with lab snapshots): %w", name, err)
 	}
+	if err := l.adoptServer(meta); err != nil {
+		return meta, err
+	}
 	if err := l.verifySnapshot(meta); err != nil {
 		return meta, err
 	}
@@ -392,9 +401,9 @@ func (l *Lab) RestoreWith(ctx context.Context, name string, o RestoreOptions) (S
 	if !exists {
 		return meta, l.restoreIntoNew(ctx, meta, o)
 	}
-	if !strings.EqualFold(labels[labelRealm], meta.Realm) {
-		return meta, fmt.Errorf("the lab's domain (%s) differs from the snapshot's domain (%s). Recreate the lab with the same domain name: lab reset, then lab restore (or lab up --realm %s)",
-			labels[labelRealm], meta.Realm, meta.Realm)
+	if !strings.EqualFold(labels[labelRealm], meta.Domain) {
+		return meta, fmt.Errorf("the lab's %s (%s) differs from the snapshot's (%s). Recreate the lab with the same one: lab reset, then lab restore",
+			l.srv().DomainLabel, labels[labelRealm], meta.Domain)
 	}
 	image, err := l.docker(ctx, "container", "inspect", "--format", "{{.Config.Image}}", l.container())
 	if err != nil {
@@ -409,7 +418,7 @@ func (l *Lab) RestoreWith(ctx context.Context, name string, o RestoreOptions) (S
 	// From stopping to starting again the run is not interruptible: a half-written volume is worse than waiting.
 	critical := context.WithoutCancel(ctx)
 	if state != "exited" {
-		l.logf("Stopping Samba")
+		l.logf("Stopping %s", l.srv().Product)
 		if _, err := l.docker(critical, "stop", "-t", stopTimeoutSec, l.container()); err != nil {
 			return meta, err
 		}
@@ -418,15 +427,15 @@ func (l *Lab) RestoreWith(ctx context.Context, name string, o RestoreOptions) (S
 	if err := l.writeSnapshot(critical, image, meta); err != nil {
 		return meta, err
 	}
-	l.logf("Starting Samba")
+	l.logf("Starting %s", l.srv().Product)
 	if _, err := l.docker(critical, "start", l.container()); err != nil {
 		return meta, err
 	}
 	if err := l.waitHealthy(ctx, l.container()); err != nil {
 		return meta, err
 	}
-	if file, err := ReadEnvFile(l.envPath()); err == nil && file.AdminPassword != "" {
-		file.Realm = meta.Realm
+	if file, err := ReadEnvFile(l.envPath()); err == nil && file.AdminPassword != "" && file.profile() == l.srv().Profile {
+		file.Domain = meta.Domain
 		if err := l.smokeTest(ctx, file); err != nil {
 			return meta, err
 		}
@@ -435,10 +444,27 @@ func (l *Lab) RestoreWith(ctx context.Context, name string, o RestoreOptions) (S
 	return meta, nil
 }
 
-// writeSnapshot empties the two volumes and extracts the snapshot's tars into them.
+// adoptServer makes the lab the snapshot's kind. When the kind was given or an existing container decided it, a
+// snapshot of another kind is refused before anything is touched.
+func (l *Lab) adoptServer(meta SnapshotMeta) error {
+	srv, err := ServerFor(meta.Profile)
+	if err != nil {
+		return fmt.Errorf("snapshot %q: %w", meta.Name, err)
+	}
+	if srv == l.srv() {
+		return nil
+	}
+	if l.serverFixed {
+		return fmt.Errorf("snapshot %q is of a %s lab, but this is a %s lab; restore it into another instance (--instance)", meta.Name, srv.Product, l.srv().Product)
+	}
+	l.Server = srv
+	return nil
+}
+
+// writeSnapshot empties the volumes and extracts the snapshot's tars into them.
 func (l *Lab) writeSnapshot(ctx context.Context, image string, meta SnapshotMeta) error {
-	for _, v := range snapshotVolumes {
-		if err := l.loadVolume(ctx, image, v.kind, v.mount, filepath.Join(l.snapshotDir(meta.Name), v.file)); err != nil {
+	for _, v := range l.srv().Volumes {
+		if err := l.loadVolume(ctx, image, v.Kind, v.Mount, filepath.Join(l.snapshotDir(meta.Name), v.File)); err != nil {
 			return fmt.Errorf("restore failed midway. The volumes are in a partial state, so run lab restore again: %w", err)
 		}
 	}
@@ -457,15 +483,19 @@ func (l *Lab) restoreIntoNew(ctx context.Context, meta SnapshotMeta, o RestoreOp
 	if err != nil {
 		return err
 	}
-	s := Settings{Realm: meta.Realm, NetBIOS: meta.NetBIOS, AdminPassword: o.AdminPassword}
+	srv := l.srv()
+	s := Settings{Profile: srv.Profile, Domain: meta.Domain, NetBIOS: meta.NetBIOS, AdminPassword: o.AdminPassword}
+	if file.profile() != srv.Profile {
+		file = Settings{} // .env of a lab of the other kind says nothing about this one
+	}
 	if s.AdminPassword == "" {
-		s.AdminPassword = l.Getenv(envPassword)
+		s.AdminPassword = l.Getenv(srv.Env.Password)
 	}
 	if s.AdminPassword == "" {
 		s.AdminPassword = file.AdminPassword
 	}
 	if s.AdminPassword == "" {
-		return errors.New("the admin password is unknown. Specify it with --admin-password or the SAMBA_ADMIN_PASSWORD environment variable (the one in effect when the snapshot was taken; it is used to confirm startup completed)")
+		return fmt.Errorf("the admin password is unknown. Specify it with --admin-password or the %s environment variable (the one in effect when the snapshot was taken; it is used to confirm startup completed)", srv.Env.Password)
 	}
 	if s.LDAPPort, s.LDAPSPort, err = l.pickPorts(o, file); err != nil {
 		return err
@@ -473,19 +503,21 @@ func (l *Lab) restoreIntoNew(ctx context.Context, meta SnapshotMeta, o RestoreOp
 	if err := l.checkPortsFree(ctx, s); err != nil {
 		return err
 	}
-	nb, err := s.EffectiveNetBIOS()
-	if err != nil {
-		return err
+	nb := ""
+	if srv.DomainIdentity {
+		if nb, err = s.EffectiveNetBIOS(); err != nil {
+			return err
+		}
 	}
 
 	start := l.Now()
-	l.logf("Creating a new lab from snapshot %s: %s (domain %s)", meta.Name, l.container(), meta.Realm)
+	l.logf("Creating a new lab from snapshot %s: %s (%s %s)", meta.Name, l.container(), srv.DomainLabel, meta.Domain)
 	// Not interruptible for the same reason as the in-place restore.
 	critical := context.WithoutCancel(ctx)
 	if err := l.writeSnapshot(critical, image, meta); err != nil {
 		return err
 	}
-	if err := l.createContainer(critical, image, s, nb); err != nil {
+	if err := l.createContainer(critical, image, s, nb, ""); err != nil {
 		return err
 	}
 	if err := l.waitHealthy(ctx, l.container()); err != nil {
@@ -499,11 +531,13 @@ func (l *Lab) restoreIntoNew(ctx context.Context, meta SnapshotMeta, o RestoreOp
 			return fmt.Errorf("cannot write .env: %w", err)
 		}
 	}
-	base := BaseDN(s.Realm)
 	fmt.Fprintf(l.Out, "\nStarted (%s, %s).\n\n", l.container(), l.Now().Sub(start).Round(100*time.Millisecond))
-	fmt.Fprintf(l.Out, "  Domain          : %s  (NetBIOS: %s)\n  Base DN         : %s\n", s.Realm, nb, base)
+	if srv.DomainIdentity {
+		fmt.Fprintf(l.Out, "  Domain          : %s  (NetBIOS: %s)\n", s.Domain, nb)
+	}
+	fmt.Fprintf(l.Out, "  Base DN         : %s\n", srv.BaseDN(s.Domain))
 	fmt.Fprintf(l.Out, "  LDAP / LDAPS    : ldap://localhost:%d / ldaps://localhost:%d\n", s.LDAPPort, s.LDAPSPort)
-	fmt.Fprintf(l.Out, "  Administrator   : CN=Administrator,CN=Users,%s (the password is the one in effect when the snapshot was taken)\n", base)
+	fmt.Fprintf(l.Out, "  Administrator   : %s (the password is the one in effect when the snapshot was taken)\n", srv.AdminDN(s.Domain))
 	if !l.isMain() {
 		fmt.Fprintf(l.Out, "\nThis is a separate instance, so pass --instance %s to the following commands:\n  lab snapshot / restore / down / reset\n", l.Instance)
 	}
@@ -522,10 +556,10 @@ func (l *Lab) pickPorts(o RestoreOptions, file Settings) (int, int, error) {
 			ldaps = file.LDAPSPort
 		}
 		if ldap == 0 {
-			ldap = DefaultLDAPPort
+			ldap = l.srv().Ports[0]
 		}
 		if ldaps == 0 {
-			ldaps = DefaultLDAPSPort
+			ldaps = l.srv().Ports[1]
 		}
 		return ldap, ldaps, nil
 	}
@@ -572,7 +606,7 @@ func (l *Lab) checkPortsFree(ctx context.Context, s Settings) error {
 
 // verifySnapshot verifies file sizes and checksums.
 func (l *Lab) verifySnapshot(m SnapshotMeta) error {
-	if len(m.Files) != len(snapshotVolumes) {
+	if len(m.Files) != len(l.srv().Volumes) {
 		return fmt.Errorf("snapshot %q is missing files", m.Name)
 	}
 	for _, f := range m.Files {

@@ -27,7 +27,7 @@ import (
 
 type noPrompt struct{}
 
-func (noPrompt) Realm(string) (string, error)              { return "", nil }
+func (noPrompt) Domain(string, string) (string, error)     { return "", nil }
 func (noPrompt) NewPassword() (string, error)              { return "", nil }
 func (noPrompt) Choose(string, []string, int) (int, error) { return 0, lab.ErrNotInteractive }
 
@@ -76,7 +76,7 @@ func TestLabSnapshotAndRestoreWithRealDocker(t *testing.T) {
 	}
 
 	started := time.Now()
-	if err := l.Up(context.Background(), lab.UpOptions{Image: image, Flags: lab.Settings{Realm: realm, AdminPassword: password, LDAPPort: freePort(t), LDAPSPort: ldaps}}); err != nil {
+	if err := l.Up(context.Background(), lab.UpOptions{Image: image, Flags: lab.Settings{Domain: realm, AdminPassword: password, LDAPPort: freePort(t), LDAPSPort: ldaps}}); err != nil {
 		t.Fatalf("up: %v\n%s", err, errw.String())
 	}
 	t.Logf("up: %.1fs", time.Since(started).Seconds())
@@ -147,7 +147,7 @@ func TestLabSnapshotAndRestoreWithRealDocker(t *testing.T) {
 	if len(list) != 2 || list[0].Name != "thirty" || list[1].Name != "fifty" {
 		t.Fatalf("snapshots: %+v", list)
 	}
-	if list[0].Realm != realm || list[0].Hostname != "dc1" {
+	if list[0].Domain != realm || list[0].Hostname != "dc1" {
 		t.Fatalf("metadata: %+v", list[0])
 	}
 
@@ -251,7 +251,7 @@ func TestLabSnapshotAndRestoreWithRealDocker(t *testing.T) {
 	}
 
 	// A domain name mismatch is refused without damaging the data.
-	err = l.Up(context.Background(), lab.UpOptions{Image: image, Flags: lab.Settings{Realm: "other.test"}})
+	err = l.Up(context.Background(), lab.UpOptions{Image: image, Flags: lab.Settings{Domain: "other.test"}})
 	if err == nil || !strings.Contains(err.Error(), "reset") {
 		t.Fatalf("a different realm must be refused: %v", err)
 	}
@@ -295,7 +295,7 @@ func TestLabSnapshotCarriesTheMarkersToAnotherInstanceOnAnotherPort(t *testing.T
 	mainLDAPS, srcLDAPS := freePort(t), freePort(t)
 	must(l.Up(context.Background(), lab.UpOptions{
 		Image: image, WithSource: true, SourceLDAP: freePort(t), SourceLDAPS: srcLDAPS,
-		Flags: lab.Settings{Realm: realm, AdminPassword: password, LDAPPort: freePort(t), LDAPSPort: mainLDAPS},
+		Flags: lab.Settings{Domain: realm, AdminPassword: password, LDAPPort: freePort(t), LDAPSPort: mainLDAPS},
 	}))
 	dial := func(port int) *ldapdir.Client {
 		c, err := ldapdir.Dial(ldapdir.ConnConfig{

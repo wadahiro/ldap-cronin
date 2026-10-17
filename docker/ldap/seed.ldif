@@ -1,0 +1,80 @@
+# Sample data for --with-sample-source and E2E. Includes cases that tend to trip up cloning.
+dn: ou=IDM,@SUFFIX@
+objectClass: organizationalUnit
+ou: IDM
+description: root of sample data
+
+dn: ou=People,ou=IDM,@SUFFIX@
+objectClass: organizationalUnit
+ou: People
+
+dn: ou=Tokyo,ou=People,ou=IDM,@SUFFIX@
+objectClass: organizationalUnit
+ou: Tokyo
+l: Tokyo
+
+dn: ou=営業部,ou=People,ou=IDM,@SUFFIX@
+objectClass: organizationalUnit
+ou: 営業部
+
+dn: ou=Groups,ou=IDM,@SUFFIX@
+objectClass: organizationalUnit
+ou: Groups
+
+dn: uid=alice,ou=Tokyo,ou=People,ou=IDM,@SUFFIX@
+objectClass: inetOrgPerson
+objectClass: posixAccount
+uid: alice
+cn: Alice Admin
+sn: Admin
+givenName: Alice
+mail: alice@example.org
+title: Manager
+uidNumber: 10001
+gidNumber: 10000
+homeDirectory: /home/alice
+userPassword: secret-alice
+
+dn: uid=bob,ou=People,ou=IDM,@SUFFIX@
+objectClass: inetOrgPerson
+uid: bob
+cn: Bob
+sn: Builder
+manager: uid=alice,ou=Tokyo,ou=People,ou=IDM,@SUFFIX@
+userPassword: secret-bob
+
+dn: cn=Doe\, Carol,ou=People,ou=IDM,@SUFFIX@
+objectClass: inetOrgPerson
+cn: Doe, Carol
+uid: carol
+sn: Doe
+seeAlso: uid=bob,ou=People,ou=IDM,@SUFFIX@
+
+dn: uid=taro,ou=営業部,ou=People,ou=IDM,@SUFFIX@
+objectClass: inetOrgPerson
+uid: taro
+cn: 山田 太郎
+sn: 山田
+
+dn: cn=Eng,ou=Groups,ou=IDM,@SUFFIX@
+objectClass: groupOfNames
+cn: Eng
+member: uid=alice,ou=Tokyo,ou=People,ou=IDM,@SUFFIX@
+member: uid=bob,ou=People,ou=IDM,@SUFFIX@
+
+dn: cn=All,ou=Groups,ou=IDM,@SUFFIX@
+objectClass: groupOfNames
+cn: All
+member: cn=Eng,ou=Groups,ou=IDM,@SUFFIX@
+member: cn=Doe\, Carol,ou=People,ou=IDM,@SUFFIX@
+
+dn: cn=Reviewers,ou=Groups,ou=IDM,@SUFFIX@
+objectClass: groupOfUniqueNames
+cn: Reviewers
+uniqueMember: uid=bob,ou=People,ou=IDM,@SUFFIX@
+
+dn: cn=staff,ou=Groups,ou=IDM,@SUFFIX@
+objectClass: posixGroup
+cn: staff
+gidNumber: 10000
+memberUid: alice

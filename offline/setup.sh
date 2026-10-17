@@ -5,6 +5,7 @@
 #
 #   ./setup.sh                                  start interactively, asking for the domain name and administrator password (lab up)
 #   ./setup.sh --realm corp.example.local       start with the given domain name
+#   ./setup.sh --profile ldap --suffix dc=example,dc=org   start an OpenLDAP lab instead
 #   ./setup.sh status                           show the status
 #   ./setup.sh snapshot [name]                  take a snapshot of the data
 #   ./setup.sh snapshots                        list snapshots

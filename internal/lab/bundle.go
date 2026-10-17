@@ -13,9 +13,45 @@ import (
 
 const (
 	imageFileName = "IMAGE"
-	imageTarPath  = "images/samba-ad.tar"
+	// imageTarPath holds every lab image in one docker save, so the base layers they share are stored once.
+	imageTarPath = "images/lab.tar"
+	// legacyTarPath is the Samba-only tar of earlier bundles.
+	legacyTarPath = "images/samba-ad.tar"
 	sumsFileName  = "SHA256SUMS"
 )
+
+// bundleImage returns the image of a lab profile from the IMAGE file: one "profile=image" line per server. A single
+// line without "=" (earlier bundles) is the Samba image.
+func bundleImage(dir, profile string) (string, error) {
+	b, err := os.ReadFile(filepath.Join(dir, imageFileName))
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, image, ok := strings.Cut(line, "=")
+		if !ok {
+			key, image = ProfileAD, line
+		}
+		if strings.TrimSpace(key) == profile {
+			return strings.TrimSpace(image), nil
+		}
+	}
+	return "", fmt.Errorf("the bundle has no image for a %s lab (%s)", profile, filepath.Join(dir, imageFileName))
+}
+
+// bundleTar is the image tar of the bundle, or "" when it has none.
+func bundleTar(dir string) string {
+	for _, p := range []string{imageTarPath, legacyTarPath} {
+		if _, err := os.Stat(filepath.Join(dir, p)); err == nil {
+			return filepath.Join(dir, p)
+		}
+	}
+	return ""
+}
 
 // FindBundleDir locates the carry-in bundle (the directory holding the IMAGE file).
 // Precedence: explicit path > current directory > the executable's directory > its parent.

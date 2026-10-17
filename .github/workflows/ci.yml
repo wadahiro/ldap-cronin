@@ -1,7 +1,7 @@
 # CI
 #   verify : formatting, vet, go mod tidy diff and unit tests (-race)
 #   build  : executables for each OS/architecture (dist/)
-#   e2e    : two Samba4 AD instances (docker compose), the lab, and an OpenLDAP pair, all started with docker.
+#   e2e    : two Samba4 AD instances (docker compose), both labs, and an OpenLDAP pair; the images are built from docker/.
 #
 # The same checks run locally with `make check` (and the E2E tests with `make e2e`).
 name: ci

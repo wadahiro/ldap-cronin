@@ -18,13 +18,14 @@ internal/
   directory/         the operations abstraction (Directory)
   ldapdir/           go-ldap implementation (connection pool, paging, member range retrieval, timeouts)
   dryrun/            Directory that prints writes as LDIF
-  lab/               Samba4 test environment on docker, snapshots and restore (needs only the docker command)
+  lab/               test labs on docker (Samba4 AD, OpenLDAP; what differs is lab.Server), snapshots and restore (needs only the docker command)
   ad/                AD-only helpers: binary objectGUID / objectSid, the domain identity
   fakedir/           in-memory Directory for tests (rejects adds without a parent and references to missing objects, like a real server)
   dn/ ldif/ mask/ prompt/ workpool/
 docker/ad/           the Samba4 image (Dockerfile, entrypoint.sh, ad-init.sh, seed.sh, extended schema)
+docker/ldap/         the OpenLDAP image (Dockerfile, entrypoint.sh builds cn=config, ldap-init.sh, seed.ldif, schema.d/)
 offline/             setup.sh for air-gapped environments (thin entry point calling lab) and README-OFFLINE.md
-e2e/ tests/e2e.sh    E2E tests against a real Samba
+e2e/ tests/e2e.sh    E2E tests against real Samba and OpenLDAP servers
 docs/                documents referenced from the README
 ```
 
@@ -41,7 +42,7 @@ Dependencies point one way: `directory <- identity <- profile <- plan <- clone, 
 | `make build` / `make dist` | Build into `bin/` / build for each OS and architecture into `dist/` (with SHA256SUMS) |
 | `make test` / `make cover` | Unit tests / with coverage |
 | `make e2e` | Start two Samba servers and run the E2E tests (needs docker and docker compose; about 2 minutes) |
-| `make image` / `make bundle` | Build the Samba4 image / build the tar.gz for air-gapped environments |
+| `make image` / `make bundle` | Build the lab images (Samba4 AD, OpenLDAP) / build the tar.gz for air-gapped environments |
 
 CI (`.github/workflows/ci.yml`) runs `verify`, `build` and `e2e` (`tests/e2e.sh`).
 
@@ -75,7 +76,8 @@ docker compose --profile e2e up -d --build   # plus the clone source (with sampl
 | `TestLabSnapshotCarriesTheMarkersToAnotherInstanceOnAnotherPort` | clone -> snapshot -> restore into another instance on another port -> a rename there is found through the markers |
 | `TestLabSnapshotAndRestoreWithRealDocker` | `lab up` -> data -> snapshots -> modify -> restore; data survives `down` -> `up`; domain name mismatch is refused; another lab starts from a snapshot on a different port |
 | `TestNativeImportKeepsObjectGUIDAndObjectSid` | Native import of a sample (14 objects), re-run, rename detection, snapshot restore, creating a user over LDAP afterwards |
-| `TestGenericLDAPCloneWithOpenLDAP` | Clone between two throw-away OpenLDAP servers (`E2E_OPENLDAP_IMAGE`, set by `tests/e2e.sh` when the image is available): password, references, diff, `entryUUID` and creation metadata kept with the relax control, rename detection by the preserved identifier |
+| `TestGenericLDAPCloneWithOpenLDAP` | Clone between two throw-away OpenLDAP servers of our image (`E2E_LDAP_IMAGE`, built by `tests/e2e.sh`): password, references, diff, `entryUUID` and creation metadata kept with the relax control by an account with `manage` (not the rootdn), a `write`-only account stopped with the remedy, rename detection by the preserved identifier |
+| `TestOpenLDAPLabWithRealDocker` | The OpenLDAP lab: `up` with `--schema-dir` and the sample source -> clone and diff the sample data -> snapshot -> change -> restore -> another instance on another port -> a different suffix refused |
 
 Environment variables: `E2E_SRC_URL` (default `ldaps://localhost:11636`), `E2E_DST_URL` (default `ldaps://localhost:12636`), `E2E_DOMAIN_DN`, `SAMBA_ADMIN_PASSWORD`.
 The `lab` E2E does not use docker compose and picks its own prefix and ports. It takes the image from `E2E_LAB_IMAGE` (built by `tests/e2e.sh`) and the host from `E2E_LAB_HOST` (default `localhost`; `docker` in CI's docker-in-docker).
@@ -85,9 +87,9 @@ The `lab` E2E does not use docker compose and picks its own prefix and ports. It
 
 `make bundle` builds the tar.gz on a machine with connectivity (`PLATFORM=linux/arm64` selects the image architecture; default linux/amd64):
 
-1. `make image`, then `docker save` writes `images/samba-ad.tar`.
+1. `make image` (both images), then one `docker save` writes `images/lab.tar`, so the Ubuntu layers they share are stored once.
 2. Collect the tool binaries (linux amd64 / arm64, `CGO_ENABLED=0`), `offline/setup.sh`, `offline/README-OFFLINE.md`, `config.example.toml`, `README.md` and `docs/`.
-3. Add `IMAGE` and `SHA256SUMS` (image, binaries, `setup.sh`).
+3. Add `IMAGE` (`ad=` and `ldap=` lines; an old single line is read as the Samba image) and `SHA256SUMS` (images, binaries, `setup.sh`).
 
 `docker-compose.yml` is excluded because the receiving side may not have docker compose.
 
@@ -116,6 +118,10 @@ The `lab` E2E does not use docker compose and picks its own prefix and ports. It
 | DN reference attributes are compared after all objects are matched | AD rewrites references on rename, so references to renamed objects must be translated back to the original DN first, or false differences appear |
 | `member` is always retrieved with an explicit range on AD | AD splits large groups automatically, Samba does not; always being explicit uses one path for both, so CI exercises the multi-fetch path |
 | Samba stores NT ACLs as `user.NTACL` when `security.*` xattrs are not writable | Rootless docker (lima's default) grants `CAP_SYS_ADMIN` only inside its user namespace, so provisioning failed. The tdb backend (`--use-xattrs=no`) was rejected: Samba 4.19 offers it only with the NTVFS file server. A probe keeps rootful setups on Samba's default |
+| One `lab` for both server kinds; the differences are one `lab.Server` value each (volumes, environment, health file, admin DN, ports, settings) | Stop, write volumes, start, checksums, instances, ports and the bundle are the same for any server; a second copy of them was rejected. The kind is recorded in `.env`, as a container label and in `snapshot.json`, so only `up` needs `--profile` |
+| The OpenLDAP lab image is our own (`docker/ldap`, Ubuntu 24.04 `slapd`), not `osixia/openldap` | osixia is OpenLDAP 2.4 and unmaintained, and e2e had to pull it. The same base as the Samba image shares layers in the bundle, and gives OpenLDAP 2.6.10, the version the relax control was verified on |
+| The OpenLDAP directory is created on the first start from `LDAP_SUFFIX` (`cn=config` by `slapadd -n0`), like Samba's provisioning | The same image serves any suffix. `slapd.conf` was rejected: 2.6 deprecates it and production servers use `cn=config` |
+| `--schema-dir` is copied in with `docker create` + `docker cp` before the first start | The image applies it when the directory is created and the result lives in the configuration volume, so no bind mount is needed and snapshots carry it |
 | docker compose is limited to the test environment | The receiving side may lack it; what is carried in is `lab`, which needs only `docker run` |
 | `lab` calls the `docker` command, not the docker SDK | The SDK has large dependencies; a fake command sequence lets the order (stop -> write out -> start) be unit-tested. Passwords go through environment variables (`-e NAME`), not arguments, and are hidden from error messages |
 | Snapshots write volume contents to tar files on the host | See the table below. `docker commit` leaves the password in the image's environment variables and has a layer limit |

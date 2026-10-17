@@ -48,7 +48,7 @@ func TestSnapshotStopsDumpsBothVolumesThenRestartsAndRecordsMetadata(t *testing.
 		t.Fatal("the lab must be running again")
 	}
 
-	if meta.Realm != "corp.example.local" || meta.NetBIOS != "CORP" || meta.Hostname != "dc1" ||
+	if meta.Domain != "corp.example.local" || meta.NetBIOS != "CORP" || meta.Hostname != "dc1" ||
 		meta.Image != "ldap-cronin/samba-ad:test" || meta.Note != "right after clone" || meta.ToolVersion != "test" {
 		t.Fatalf("%+v", meta)
 	}
@@ -548,7 +548,7 @@ func TestInstanceNameValidationAndUpIsMainOnly(t *testing.T) {
 	}
 	fx := newLabFixture(t)
 	fx.withBundle()
-	if err := fx.instanceLab("dev2").Up(context.Background(), UpOptions{Flags: Settings{Realm: "a.test", AdminPassword: "x"}}); err == nil ||
+	if err := fx.instanceLab("dev2").Up(context.Background(), UpOptions{Flags: Settings{Domain: "a.test", AdminPassword: "x"}}); err == nil ||
 		!strings.Contains(err.Error(), "restore --instance dev2") {
 		t.Fatalf("got %v", err)
 	}
@@ -568,7 +568,7 @@ func TestRestoreRecreatesTheMainLabAfterAResetFromASnapshot(t *testing.T) {
 	if !fx.d.containers["t-ad"].running || fx.d.volumeData["t-ad-private"] != "private-data-v1" {
 		t.Fatal("the main lab must be recreated from the snapshot")
 	}
-	if env, _ := ReadEnvFile(fx.l.envPath()); env.Realm != "corp.example.local" || env.LDAPSPort != 12636 {
+	if env, _ := ReadEnvFile(fx.l.envPath()); env.Domain != "corp.example.local" || env.LDAPSPort != 12636 {
 		t.Fatalf(".env must be written for the main lab: %+v", env)
 	}
 }

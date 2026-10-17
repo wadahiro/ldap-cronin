@@ -47,9 +47,9 @@ func TestParseInterleavedRejectsUnknownFlags(t *testing.T) {
 }
 
 func TestMergeLikeLetsExplicitFlagsWin(t *testing.T) {
-	base := lab.Settings{Realm: "src.example.com", NetBIOS: "SRC", DomainSID: "S-1-5-21-1-2-3", DomainGUID: "g"}
+	base := lab.Settings{Domain: "src.example.com", NetBIOS: "SRC", DomainSID: "S-1-5-21-1-2-3", DomainGUID: "g"}
 	got := mergeLike(base, lab.Settings{NetBIOS: "LAB", LDAPPort: 1, LDAPSPort: 2, AdminPassword: "pw"})
-	if got.Realm != "src.example.com" || got.NetBIOS != "LAB" || got.DomainSID != "S-1-5-21-1-2-3" || got.LDAPPort != 1 || got.AdminPassword != "pw" {
+	if got.Domain != "src.example.com" || got.NetBIOS != "LAB" || got.DomainSID != "S-1-5-21-1-2-3" || got.LDAPPort != 1 || got.AdminPassword != "pw" {
 		t.Fatalf("%+v", got)
 	}
 }

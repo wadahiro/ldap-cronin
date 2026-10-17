@@ -13,7 +13,8 @@ ldap-cronin clones and compares any RFC 4510 directory, not only Active Director
 | DN-valued attributes | schema `attributeSyntax=2.5.5.1` | subschema `attributeTypes`, syntax DN / Name and Optional UID, following `SUP` |
 | Object identity (renames) | `objectGUID` | `entryUUID` |
 | Large `member` values | `member;range=0-N` | plain read |
-| `clone -native`, `lab` | yes (Samba lab) | no |
+| `lab` | yes (Samba lab) | yes (OpenLDAP lab, `--profile ldap`) |
+| `clone -native` | yes (Samba lab) | no (the relax control keeps `entryUUID` over LDAP) |
 
 The profile is `auto` by default. Set `[scope] profile = "ldap"` (or `"ad"`) to override the detection. With `auto` the target is checked too, and a source and target of different types are refused.
 `ldap-cronin list-attrs -profile ldap` prints the default attributes.
@@ -50,6 +51,6 @@ The **root** is the top of the naming context that holds `base_dn`. It must exis
 
 - Only users, groups and OUs are cloned, as for AD. Other object classes are reachable through custom per-kind `[scope.filters]` and `[attributes]`, but entries must fit one of the three kinds.
 - Servers with a very different schema (no `inetOrgPerson`, for example) need `[scope.filters]` and `[attributes.include]` for each kind.
-- Tested with OpenLDAP 2.4 (`osixia/openldap`). Other servers follow the same RFCs but have not been tested.
+- Tested with OpenLDAP 2.6 (the lab image, `docker/ldap`), including a non-rootdn account with `manage` access. Other servers follow the same RFCs but have not been tested.
 - Access control: the bind DN must be able to read everything under `base_dn` on the source and write it on the target.
 - Cloning between an AD and a generic server is not supported.

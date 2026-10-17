@@ -1,6 +1,6 @@
 # LDAP cRONIN package for air-gapped environments
 
-A package for using `ldap-cronin` with a local AD-compatible Samba4 in an environment with no internet access. It needs only docker (no docker compose), and supports snapshots of the cloned data.
+A package for using `ldap-cronin` with a local AD-compatible Samba4, or OpenLDAP, in an environment with no internet access. It needs only docker (no docker compose), and supports snapshots of the cloned data.
 
 ## Contents
 
@@ -8,8 +8,8 @@ A package for using `ldap-cronin` with a local AD-compatible Samba4 in an enviro
 |---|---|
 | `setup.sh` | Entry point. Picks the `ldap-cronin` binary for your architecture and passes the arguments to the `lab` subcommand |
 | `bin/ldap-cronin-linux-{amd64,arm64}` | The tool binaries (statically linked; nothing else is needed) |
-| `images/samba-ad.tar` | The Samba4 AD docker image (produced by `docker save`) |
-| `IMAGE` / `SHA256SUMS` | The image name / checksums to verify that nothing was corrupted in transit |
+| `images/lab.tar` | The Samba4 AD and OpenLDAP docker images (one `docker save`, so their shared layers are stored once) |
+| `IMAGE` / `SHA256SUMS` | The image names (`ad=` / `ldap=`) / checksums to verify that nothing was corrupted in transit |
 | `config.example.toml` | An example tool configuration |
 | `README.md` / `docs/` | The full documentation of the tool. `docs/lab.md` has the details of this lab and of snapshots |
 
@@ -25,13 +25,14 @@ tar xzf ldap-cronin-offline-*.tar.gz
 cd ldap-cronin-offline-*
 ./setup.sh                              # asks for the domain name and the administrator password
 ./setup.sh --realm corp.example.local   # to specify the domain name
+./setup.sh --profile ldap --suffix dc=example,dc=org   # an OpenLDAP lab instead (for a generic LDAP source)
 ```
 
 `setup.sh` runs `ldap-cronin lab up`: it does the following, then prints the connection details and an example `[target]` setting.
 
 1. Verifies file integrity with `SHA256SUMS`
-2. Runs `docker load` on `images/samba-ad.tar` (skipped if the image already exists)
-3. Starts the Samba4 AD and checks that it can be searched over LDAPS
+2. Runs `docker load` on `images/lab.tar` (skipped if the image already exists)
+3. Starts the Samba4 AD (or OpenLDAP) and checks that it can be searched over LDAPS
 
 The binary for your architecture is also placed at `./ldap-cronin`.
 

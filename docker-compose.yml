@@ -3,6 +3,7 @@
 #
 # ad     : clone target (empty Samba4 AD)
 # ad-src : clone source for E2E tests (with sample data). Started with `--profile e2e`.
+# ldap   : OpenLDAP clone target, with `--profile ldap` (docker compose --profile ldap up -d ldap).
 name: ldap-cronin
 
 x-ad: &ad
@@ -39,6 +40,26 @@ services:
       - "${AD_SRC_LDAP_PORT:-11389}:389"
       - "${AD_SRC_LDAPS_PORT:-11636}:636"
 
+  ldap:
+    build: ./docker/ldap
+    profiles: ["ldap"]
+    hostname: ldap1
+    environment:
+      LDAP_SUFFIX: ${LDAP_SUFFIX:-dc=example,dc=org}
+      LDAP_ADMIN_PASSWORD: ${LDAP_ADMIN_PASSWORD:-Admin-Passw0rd!}
+    healthcheck:
+      test: ["CMD", "test", "-f", "/tmp/ldap-ready"]
+      interval: 3s
+      retries: 60
+    ports:
+      - "${LDAP_PORT:-13389}:389"
+      - "${LDAPS_PORT:-13636}:636"
+    volumes:
+      - ldap-data:/var/lib/ldap
+      - ldap-config:/etc/ldap/slapd.d
+
 volumes:
   samba-private:
   samba-etc:
+  ldap-data:
+  ldap-config:

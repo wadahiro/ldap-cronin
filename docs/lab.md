@@ -1,6 +1,6 @@
 # The test lab (`lab`) and snapshots
 
-`ldap-cronin lab` starts and stops an AD-compatible Samba4 for testing on docker, and lets you **take snapshots of the data and restore them at any time**.
+`ldap-cronin lab` starts and stops a directory server for testing on docker, an AD-compatible Samba4 or (with `--profile ldap`) [OpenLDAP](#the-openldap-lab---profile-ldap), and lets you **take snapshots of the data and restore them at any time**.
 Keep the data created by `clone` as a snapshot, and bring it back in a few seconds whenever another program modifies the target.
 
 It needs only docker (no docker compose), and can be carried into an environment with no internet access ([offline package](#using-the-offline-package)).
@@ -18,7 +18,7 @@ ldap-cronin lab restore baseline                 # restore the original state (a
 
 | Command | Description |
 |---|---|
-| `lab up` | Loads the image (if missing), starts the Samba4 AD and checks that it works over LDAPS |
+| `lab up [--profile ldap]` | Loads the image (if missing), starts the Samba4 AD (or OpenLDAP) and checks that it works over LDAPS |
 | `lab down` | Stops it. The data is kept, and running `up` again resumes with the same settings |
 | `lab reset [-y] [--snapshots]` | Deletes the domain data and the settings (`.env`). Snapshots are kept by default |
 | `lab status` | Shows the state of the lab and the number of snapshots |
@@ -27,7 +27,7 @@ ldap-cronin lab restore baseline                 # restore the original state (a
 | `lab restore [name]` | Restores the data to a snapshot's state. Without a name, you pick from a list. **If the target lab does not exist, it is created from the snapshot** ([starting another lab](#starting-another-lab-from-a-snapshot-on-a-different-port)) |
 | `lab snapshot-rm name` | Deletes a snapshot |
 
-Common options: `--state-dir` (where `.env` is placed; default `.`), `--snapshot-dir` (default `<state-dir>/snapshots`), `--bundle-dir` (the location of the offline package; found automatically if omitted),
+Common options: `--profile` (`ad` or `ldap`; needed only for `up`, later commands take it from `.env` or the container), `--state-dir` (where `.env` is placed; default `.`), `--snapshot-dir` (default `<state-dir>/snapshots`), `--bundle-dir` (the location of the offline package; found automatically if omitted),
 and `--instance` (the instance to operate on; the default lab if omitted).
 `lab help` shows all options.
 
@@ -48,6 +48,25 @@ ldap-cronin lab up --like-source config.toml        # create it with the same do
 - If a container already exists with a different domain name or ports, the command **refuses without damaging the data**. With the same settings it resumes, even from a stopped state.
 - After starting, it prints the connection details and an example `[target]` setting. The LDAPS certificate is self-signed, so use `insecure_skip_verify = true` (or `ca_file`).
 - The DC host name is fixed to `dc1`.
+
+## The OpenLDAP lab (`--profile ldap`)
+
+The same commands with an OpenLDAP 2.6 image of our own (`docker/ldap`, Ubuntu 24.04), for a generic LDAP source.
+
+```sh
+ldap-cronin lab up --profile ldap --suffix dc=example,dc=org        # start OpenLDAP; the admin is cn=admin,<suffix>
+ldap-cronin lab up --profile ldap --schema-dir ./schema              # with the production schema and cn=config changes
+ldap-cronin lab up --like-source config.toml                         # a generic source gives an OpenLDAP lab with its naming context
+ldap-cronin lab snapshot baseline                                    # later commands need no --profile
+```
+
+- **The suffix is fixed at the first start** (`--suffix` or `LDAP_SUFFIX`; its first RDN must be `dc=`, `o=` or `ou=`), like the domain name of Samba. The password comes from `--admin-password`, `LDAP_ADMIN_PASSWORD`, or is generated.
+- **The administrator `cn=admin,<suffix>` is the rootdn**, so `clone` keeps the source's `entryUUID` and creation metadata with the relax control (`[mapping] mode = "preserve"`, the default for generic LDAP) without any ACL change.
+- **What is in it**: the `core`, `cosine`, `nis` and `inetorgperson` schemas; the `memberof` overlay (for `groupOfNames`, as production OpenLDAP usually has; `groupOfUniqueNames` members get no `memberOf`) and `refint`; equality indexes on `objectClass`, `entryUUID`, `cn`, `uid`, `member`, `uniqueMember`; no password policy (so the fixed password is accepted); LDAPS with a self-signed certificate. It needs no extra privileges, so rootless docker works.
+- **`--schema-dir DIR`**: every `*.ldif` in it is applied in name order when the directory is created: schemas as `olcSchemaConfig` entries (`cn=<name>,cn=schema,cn=config`), and `changetype: modify` against `cn=config` for overlays, ACLs, indexes or `ppolicy`. A failing file stops the container, and `lab up` shows its log. The result lives in the configuration volume, so snapshots and other instances carry it; it is ignored for a lab that already exists.
+- **Ports** default to 13389 / 13636 (the sample source 14389 / 14636), so it can run next to a Samba lab. The two kinds need separate `--state-dir`, since `.env` holds one lab's settings.
+- **Snapshots** hold `/var/lib/ldap` (the database and the certificate) and `/etc/ldap/slapd.d` (the configuration). They record the kind, so restoring one into a Samba lab is refused; a new instance (`lab restore NAME --instance dev2`) takes the snapshot's kind by itself.
+- `clone -native` does not apply: the relax control already keeps `entryUUID` over LDAP.
 
 ## Snapshots
 
@@ -200,18 +219,21 @@ tar xzf ldap-cronin-offline-*.tar.gz && cd ldap-cronin-offline-*
 ./setup.sh restore                        # pick from the list
 ```
 
-`lab up` verifies the package's `SHA256SUMS` and then runs `docker load` on `images/samba-ad.tar` (`--skip-verify` skips this, `--reload` loads it again).
+The package holds both images (Samba4 AD and OpenLDAP) in one `images/lab.tar`, so the base layers they share are stored once; `./setup.sh --profile ldap --suffix dc=example,dc=org` starts the OpenLDAP lab.
+`lab up` verifies the package's `SHA256SUMS` and then runs `docker load` on `images/lab.tar` (`--skip-verify` skips this, `--reload` loads it again).
 For how the package is built see [DEVELOPMENT.md](DEVELOPMENT.md); for the procedure on the receiving side see [README-OFFLINE.md](../offline/README-OFFLINE.md).
 
 ## Troubleshooting
 
 | Symptom | Cause and remedy |
 |---|---|
-| `existing container has different settings` | The domain name or ports differ from the lab that was created. The data is not lost. To recreate it, use `lab reset` (snapshots are kept) |
+| `existing container has different settings` | The domain name (suffix) or ports differ from the lab that was created. The data is not lost. To recreate it, use `lab reset` (snapshots are kept) |
 | `docker run failed (port in use ...)` | Specify free ports with `--ldap-port` / `--ldaps-port` |
 | `cannot connect to the docker daemon` | docker is not running, or you lack permission (docker group, sudo) |
 | The lab logs `security xattrs are not writable here (rootless docker?)` | Not an error. Under rootless docker (for example the default of lima), Samba cannot write NT ACLs as `security.*` extended attributes, so the lab keeps them as `user.NTACL` instead. That is weaker (the file owner could change an ACL), which does not matter for a disposable lab. Rootful docker keeps Samba's default |
 | A restore failed halfway | The volumes are in an incomplete state. Run `lab restore` again |
-| `password unknown` (when restore creates a new lab) | Give the password in effect when the snapshot was taken, with `--admin-password` or the environment variable `SAMBA_ADMIN_PASSWORD` |
+| `password unknown` (when restore creates a new lab) | Give the password in effect when the snapshot was taken, with `--admin-password` or the environment variable `SAMBA_ADMIN_PASSWORD` (OpenLDAP: `LDAP_ADMIN_PASSWORD`) |
+| `holds the settings of a ... lab; use another --state-dir` | `.env` in this directory belongs to the other kind of lab. Give the second kind its own `--state-dir` |
+| The OpenLDAP lab exits at its first start, and the log shows `ldap_add` / `ldap_modify` errors | A file in `--schema-dir` failed. Fix it, then `lab reset` and `lab up` again |
 | `port N is used by instance ...` | The host port overlaps with another instance. Change `--ldap-port` / `--ldaps-port` |
 | A warning that the image architecture differs | Rebuild the package for the receiving machine's `uname -m` (for example `make bundle PLATFORM=linux/arm64`) |

@@ -13,8 +13,10 @@ GO_TEST_FLAGS ?= -race -count=1
 # OS/architecture pairs to cross-compile for distribution.
 PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64
 
-# Samba4 image to carry into an air-gapped environment. Set PLATFORM to the architecture of the destination docker host.
+# Lab images (Samba4 AD, OpenLDAP) to carry into an air-gapped environment. Set PLATFORM to the architecture of the
+# destination docker host.
 IMAGE        ?= ldap-cronin/samba-ad
+LDAP_IMAGE   ?= ldap-cronin/openldap
 IMAGE_TAG    ?= $(VERSION)
 PLATFORM     ?= linux/amd64
 BUNDLE_NAME  := $(BINARY)-offline-$(VERSION)-$(subst /,-,$(PLATFORM))
@@ -92,27 +94,29 @@ up: ## Start the clone-target Samba4 AD (empty)
 
 .PHONY: down
 down: ## Stop the Samba4 AD and delete its volumes
-	docker compose --profile e2e down -v
+	docker compose --profile e2e --profile ldap down -v
 
 .PHONY: image
-image: ## Build the Samba4 AD docker image (set the architecture with e.g. PLATFORM=linux/arm64)
+image: ## Build the lab images, Samba4 AD and OpenLDAP (set the architecture with e.g. PLATFORM=linux/arm64)
 	docker build --platform $(PLATFORM) -t $(IMAGE):$(IMAGE_TAG) docker/ad
+	docker build --platform $(PLATFORM) -t $(LDAP_IMAGE):$(IMAGE_TAG) docker/ldap
 
 .PHONY: bundle
 bundle: image ## Build a tar.gz into dist/ to carry into an air-gapped environment (image, tool binaries, setup.sh; compose is not included)
 	rm -rf $(BUNDLE_DIR)
 	mkdir -p $(BUNDLE_DIR)/images $(BUNDLE_DIR)/bin
-	docker save $(IMAGE):$(IMAGE_TAG) -o $(BUNDLE_DIR)/images/samba-ad.tar
+	# One save for both images, so the Ubuntu layers they share are stored once.
+	docker save $(IMAGE):$(IMAGE_TAG) $(LDAP_IMAGE):$(IMAGE_TAG) -o $(BUNDLE_DIR)/images/lab.tar
 	@for arch in amd64 arm64; do \
 	  echo "build $(BUNDLE_DIR)/bin/$(BINARY)-linux-$$arch"; \
 	  CGO_ENABLED=0 GOOS=linux GOARCH=$$arch go build -trimpath -ldflags '$(LDFLAGS)' \
 	    -o $(BUNDLE_DIR)/bin/$(BINARY)-linux-$$arch $(PKG) || exit 1; \
 	done
-	echo "$(IMAGE):$(IMAGE_TAG)" > $(BUNDLE_DIR)/IMAGE
+	printf 'ad=%s\nldap=%s\n' "$(IMAGE):$(IMAGE_TAG)" "$(LDAP_IMAGE):$(IMAGE_TAG)" > $(BUNDLE_DIR)/IMAGE
 	cp offline/setup.sh offline/README-OFFLINE.md config.example.toml README.md $(BUNDLE_DIR)/
 	cp -r docs $(BUNDLE_DIR)/docs
 	chmod +x $(BUNDLE_DIR)/setup.sh
-	cd $(BUNDLE_DIR) && $(SHA256) images/samba-ad.tar bin/* setup.sh IMAGE > SHA256SUMS
+	cd $(BUNDLE_DIR) && $(SHA256) images/lab.tar bin/* setup.sh IMAGE > SHA256SUMS
 	tar -C $(DIST_DIR) -czf $(DIST_DIR)/$(BUNDLE_NAME).tar.gz $(BUNDLE_NAME)
 	@echo
 	@ls -lh $(DIST_DIR)/$(BUNDLE_NAME).tar.gz

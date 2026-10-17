@@ -68,7 +68,7 @@ func TestNativeImportKeepsObjectGUIDAndObjectSid(t *testing.T) {
 	admin := "CN=Administrator,CN=Users," + base
 
 	srcLDAPS, dstLDAPS := freePort(t), freePort(t)
-	must(srcLab.Up(context.Background(), lab.UpOptions{Image: image, Flags: lab.Settings{Realm: realm, AdminPassword: password, LDAPPort: freePort(t), LDAPSPort: freePort(t)},
+	must(srcLab.Up(context.Background(), lab.UpOptions{Image: image, Flags: lab.Settings{Domain: realm, AdminPassword: password, LDAPPort: freePort(t), LDAPSPort: freePort(t)},
 		WithSource: true, SourceLDAP: freePort(t), SourceLDAPS: srcLDAPS}))
 	src, err := dialAs(srcLDAPS, admin, password)
 	must(err)
@@ -81,7 +81,7 @@ func TestNativeImportKeepsObjectGUIDAndObjectSid(t *testing.T) {
 	must(err)
 	srcGUID, err := ad.GUIDText([]byte(root.Values("objectGUID")[0]))
 	must(err)
-	must(dstLab.Up(context.Background(), lab.UpOptions{Image: image, Flags: lab.Settings{Realm: realm, AdminPassword: password,
+	must(dstLab.Up(context.Background(), lab.UpOptions{Image: image, Flags: lab.Settings{Domain: realm, AdminPassword: password,
 		DomainSID: srcSID, DomainGUID: srcGUID, LDAPPort: freePort(t), LDAPSPort: dstLDAPS}}))
 
 	importNative := func() *clone.Report {
