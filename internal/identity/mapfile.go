@@ -1,20 +1,19 @@
-// Package guidmap keeps a mapping between the object GUIDs of the clone source and the target in a local file.
+// The mapping file keeps the source and target identifiers of each cloned object in a local file.
 //
 // Nothing is written to the target objects (borrowing an attribute would collide with how the target uses its attributes).
-// A DN change on the target does not change objectGUID, so with the mapping diff can detect that
+// A DN change on the target does not change the identifier, so with the mapping diff can detect that
 // "the object at this DN on the source lives at a different DN on the target".
 //
-// The table is a file of fixed-length records sorted by source GUID. Reading does a binary search
+// The table is a file of fixed-length records sorted by source key. Reading does a binary search
 // on the file instead of loading everything, so memory stays constant regardless of the entry count. clone appends new mappings to a separate file and,
 // on exit, merges them with the existing table via an external sort (sort per chunk, then merge) and rewrites it.
 //
-// A stale mapping (e.g. the target was rebuilt) only means GUID lookups miss; it never causes a false detection.
-package guidmap
+// A stale mapping (e.g. the target was rebuilt) only means lookups miss; it never causes a false detection.
+package identity
 
 import (
 	"bufio"
 	"container/heap"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -23,13 +22,10 @@ import (
 	"sort"
 	"strings"
 	"sync"
-
-	"github.com/wadahiro/ldap-cronin/internal/directory"
-	"github.com/wadahiro/ldap-cronin/internal/dn"
 )
 
 const (
-	guidHexLen = 32               // hex notation of a 16-byte GUID
+	guidHexLen = 32               // hex notation of a 16-byte key
 	recordLen  = guidHexLen*2 + 2 // "source\ttarget\n"; fixed length lets us compute a record position
 	deltaSufix = ".delta"
 )
@@ -37,45 +33,34 @@ const (
 // chunkRecords is the number of records held in memory at once by the external sort. Tests make it small.
 var chunkRecords = 200_000
 
+// formatVersion is written into every header. A file of another version is refused rather than misread.
+const formatVersion = 4
+
+// headerPrefix starts every header line, of this version and of older ones, so an old file is recognized as such.
+const headerPrefix = "# ldap-cronin "
+
 // Header says which source/target pair the table belongs to. It is checked so a table for another pair is never read.
 //
-// The identifier is the domain itself (the objectGUID of the domain root; DomainID), not the connection URL.
-// The URL (host name, port) changes when the lab is rebuilt or started from a snapshot on another port,
-// while the domain data stays the same and the mapping remains valid. A different domain has a different identifier and is rejected.
+// The pair is identified by the keys of the naming-context roots (RootKey), not by connection URLs: the URL changes
+// when the lab is rebuilt or started from a snapshot on another port, while the data, and the mapping, stay valid.
+// The scheme is recorded too, so keys recorded as objectGUID are never looked up as entryUUID.
 type Header struct {
-	SourceDomain string
-	TargetDomain string
-	BaseDN       string
+	Scheme     string // Scheme.Attr()
+	SourceRoot Key
+	TargetRoot Key
+	BaseDN     string
 }
 
 func (h Header) line() string {
-	return fmt.Sprintf("# ldap-cronin guid-map v3 source-domain=%s target-domain=%s base_dn=%s", h.SourceDomain, h.TargetDomain, h.BaseDN)
-}
-
-// DomainID returns a string identifying the AD domain of baseDN (the objectGUID of the domain root).
-func DomainID(d directory.Directory, baseDN string) (string, error) {
-	return RootID(d, dn.DomainRoot(baseDN), "objectGUID")
-}
-
-// RootID returns a string identifying the naming context rooted at root: the value of its identifier attribute
-// (objectGUID, entryUUID). Two servers are the same directory exactly when this matches.
-func RootID(d directory.Directory, root, idAttr string) (string, error) {
-	e, err := d.Get(root, []string{idAttr})
-	if err != nil {
-		return "", fmt.Errorf("cannot read root %s: %w", root, err)
-	}
-	if e == nil {
-		return "", fmt.Errorf("root %s not found", root)
-	}
-	vals := e.Values(idAttr)
-	if len(vals) == 0 || vals[0] == "" {
-		return "", fmt.Errorf("root %s has no %s", root, idAttr)
-	}
-	return Hex(vals[0]), nil
+	return fmt.Sprintf("%smapping v%d scheme=%s source-root=%s target-root=%s base_dn=%s",
+		headerPrefix, formatVersion, h.Scheme, h.SourceRoot, h.TargetRoot, h.BaseDN)
 }
 
 // ErrHeaderMismatch means the table belongs to a different source/target pair.
 var ErrHeaderMismatch = errors.New("mapping file belongs to a different source/target/base_dn")
+
+// ErrOldFormat means the file was written by another version of the tool. There is no converter: clone again.
+var ErrOldFormat = errors.New("mapping file was written in another format; run clone again to record a new one")
 
 type record struct{ key, val string }
 
@@ -90,48 +75,6 @@ type Map struct {
 	mu       sync.Mutex // guards appends
 	delta    *os.File
 	deltaOut *bufio.Writer
-}
-
-// Hex converts an object identifier into a hex string (32 characters). Empty input yields an empty string.
-// AD returns objectGUID as 16 raw bytes; other servers return entryUUID as text ("8-4-4-4-12"), which is
-// converted to the same 16 bytes first so that both fit the fixed-size table.
-func Hex(raw string) string {
-	if raw == "" {
-		return ""
-	}
-	if h, ok := uuidHex(raw); ok {
-		return h
-	}
-	return hex.EncodeToString([]byte(raw))
-}
-
-// uuidHex returns the 32 hex digits of a UUID in text notation.
-func uuidHex(s string) (string, bool) {
-	if len(s) != 36 || s[8] != '-' || s[13] != '-' || s[18] != '-' || s[23] != '-' {
-		return "", false
-	}
-	h := strings.ReplaceAll(s, "-", "")
-	if _, err := hex.DecodeString(h); err != nil {
-		return "", false
-	}
-	return strings.ToLower(h), true
-}
-
-// UUIDText is the inverse of Hex for text identifiers: 32 hex digits to "8-4-4-4-12". Used in search filters for entryUUID.
-func UUIDText(h string) string {
-	if len(h) != 32 {
-		return h
-	}
-	return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:]
-}
-
-// FilterValue converts a hex string into the LDAP filter notation for a binary value (\ab\cd...).
-func FilterValue(h string) string {
-	var b strings.Builder
-	for i := 0; i+1 < len(h); i += 2 {
-		b.WriteString(`\` + h[i:i+2])
-	}
-	return b.String()
 }
 
 // Load opens the table read-only. It returns os.ErrNotExist if the file does not exist.
@@ -186,9 +129,14 @@ func (m *Map) openMain() error {
 		f.Close()
 		return fmt.Errorf("read header of %s: %w", m.path, err)
 	}
-	if strings.TrimRight(line, "\n") != m.hdr.line() {
+	got := strings.TrimRight(line, "\n")
+	if !strings.HasPrefix(got, fmt.Sprintf("%smapping v%d ", headerPrefix, formatVersion)) {
 		f.Close()
-		return fmt.Errorf("%w (file: %q)", ErrHeaderMismatch, strings.TrimRight(line, "\n"))
+		return fmt.Errorf("%s: %w (header: %q)", m.path, ErrOldFormat, got)
+	}
+	if got != m.hdr.line() {
+		f.Close()
+		return fmt.Errorf("%w (file: %q)", ErrHeaderMismatch, got)
 	}
 	st, err := f.Stat()
 	if err != nil {
@@ -204,8 +152,20 @@ func (m *Map) openMain() error {
 	return nil
 }
 
-// Target returns the target GUID for a source GUID by binary search on the file. It is safe to call from multiple goroutines.
-func (m *Map) Target(source string) (string, bool) {
+// Target returns the target key for a source key by binary search on the file. It is safe to call from multiple goroutines.
+func (m *Map) Target(source Key) (Key, bool) {
+	t, ok := m.target(source.String())
+	if !ok {
+		return Key{}, false
+	}
+	k, err := ParseHex(t)
+	return k, err == nil
+}
+
+// Preserved is false: a mapping file exists exactly because the target assigned its own identifiers.
+func (m *Map) Preserved() bool { return false }
+
+func (m *Map) target(source string) (string, bool) {
 	if m.main == nil || len(source) != guidHexLen {
 		return "", false
 	}
@@ -231,13 +191,11 @@ func (m *Map) Target(source string) (string, bool) {
 // Len is the number of records in the sorted table (entries appended during clone are not counted until it finishes).
 func (m *Map) Len() int { return int(m.count) }
 
-// Record appends only a new or changed mapping, so re-runs do not make the table grow.
-func (m *Map) Record(source, target string) error {
-	if source == "" || target == "" {
+// Record appends only a new or changed mapping, so re-runs do not make the table grow. A zero key on either side
+// (an object without an identifier) is not recorded.
+func (m *Map) Record(source, target Key) error {
+	if source.IsZero() || target.IsZero() {
 		return nil
-	}
-	if len(source) != guidHexLen || len(target) != guidHexLen {
-		return fmt.Errorf("invalid GUID length: %q -> %q", source, target)
 	}
 	if cur, ok := m.Target(source); ok && cur == target {
 		return nil
@@ -479,16 +437,3 @@ func merge(sources []*recordReader, w io.Writer) error {
 	}
 	return nil
 }
-
-// Lookup maps a source GUID (Hex) to a target GUID.
-type Lookup interface {
-	Target(source string) (string, bool)
-	Len() int
-}
-
-// Identity is the mapping "the target GUID equals the source GUID". It is used when a native import preserved objectGUID.
-// No mapping file is needed.
-type Identity struct{}
-
-func (Identity) Target(source string) (string, bool) { return source, source != "" }
-func (Identity) Len() int                            { return 0 }

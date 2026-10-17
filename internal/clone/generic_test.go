@@ -2,13 +2,16 @@ package clone
 
 import (
 	"bytes"
+	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/wadahiro/ldap-cronin/internal/attrs"
+	"github.com/wadahiro/ldap-cronin/internal/diff"
 	"github.com/wadahiro/ldap-cronin/internal/directory"
+	"github.com/wadahiro/ldap-cronin/internal/dryrun"
 	"github.com/wadahiro/ldap-cronin/internal/fakedir"
-	"github.com/wadahiro/ldap-cronin/internal/mask"
+	"github.com/wadahiro/ldap-cronin/internal/identity"
 	"github.com/wadahiro/ldap-cronin/internal/plan"
 	"github.com/wadahiro/ldap-cronin/internal/profile"
 )
@@ -21,17 +24,9 @@ const (
 	gEng   = "cn=Eng,ou=Groups," + gBase
 )
 
-func genericOptions(t *testing.T) plan.Options {
+func genericOptions(t *testing.T) plan.Job {
 	t.Helper()
-	resolved := map[string][]string{}
-	for _, k := range attrs.Kinds {
-		list, err := attrs.ResolveFor(profile.LDAP, k, attrs.Override{})
-		if err != nil {
-			t.Fatal(err)
-		}
-		resolved[k] = list
-	}
-	return plan.Options{Profile: profile.LDAP, BaseDN: gBase, Kinds: allKinds(), Attrs: resolved, Masker: mask.New("***", nil)}
+	return jobFor(t, profile.LDAP, gBase, profile.LDAP.KindNames(), profile.Override{})
 }
 
 func genericSource() *fakedir.Dir {
@@ -49,7 +44,7 @@ func genericSource() *fakedir.Dir {
 
 func TestGenericCloneSetsUserPasswordInsteadOfUnicodePwd(t *testing.T) {
 	src, dst := genericSource(), fakedir.New(gRoot)
-	if _, err := Run(src, dst, Options{Plan: genericOptions(t), UserPassword: "Fixed1!", Workers: 1}, &bytes.Buffer{}); err != nil {
+	if _, err := Run(context.Background(), src, dst, genericOptions(t), Options{UserPassword: "Fixed1!", Workers: 1}, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
 	got := dst.Lookup(gAlice)
@@ -67,7 +62,7 @@ func TestGenericCloneSetsUserPasswordInsteadOfUnicodePwd(t *testing.T) {
 func TestGenericCloneCreatesGroupsThatRequireAMemberAtCreation(t *testing.T) {
 	src, dst := genericSource(), fakedir.New(gRoot)
 	dst.RequireAttr = map[string]string{"groupofnames": "member"}
-	rep, err := Run(src, dst, Options{Plan: genericOptions(t), UserPassword: "Fixed1!", Workers: 1}, &bytes.Buffer{})
+	rep, err := Run(context.Background(), src, dst, genericOptions(t), Options{UserPassword: "Fixed1!", Workers: 1}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +77,7 @@ func TestGenericCloneCreatesGroupsThatRequireAMemberAtCreation(t *testing.T) {
 
 func TestGenericCloneCreatesUsersBeforeGroups(t *testing.T) {
 	src, dst := genericSource(), fakedir.New(gRoot)
-	if _, err := Run(src, dst, Options{Plan: genericOptions(t), UserPassword: "x", Workers: 1}, &bytes.Buffer{}); err != nil {
+	if _, err := Run(context.Background(), src, dst, genericOptions(t), Options{UserPassword: "x", Workers: 1}, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
 	var user, group int
@@ -102,7 +97,7 @@ func TestGenericCloneCreatesUsersBeforeGroups(t *testing.T) {
 func TestGenericDiffFindsNoDifferenceAfterClone(t *testing.T) {
 	src, dst := genericSource(), fakedir.New(gRoot)
 	opt := genericOptions(t)
-	if _, err := Run(src, dst, Options{Plan: opt, UserPassword: "x", Workers: 1}, &bytes.Buffer{}); err != nil {
+	if _, err := Run(context.Background(), src, dst, opt, Options{UserPassword: "x", Workers: 1}, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
 	var got []string
@@ -116,3 +111,84 @@ func TestGenericDiffFindsNoDifferenceAfterClone(t *testing.T) {
 }
 
 var _ directory.Directory = (*fakedir.Dir)(nil)
+
+// A generic server identifies objects by entryUUID (text). The mapping records it, and a rename made on the target
+// is found again through an entryUUID filter, without a real server.
+func TestGenericRenameOnTargetIsFoundThroughEntryUUID(t *testing.T) {
+	src, dst := genericSource(), fakedir.New(gRoot)
+	header := identity.Header{Scheme: "entryUUID", SourceRoot: identity.Key{1}, TargetRoot: identity.Key{2}, BaseDN: gBase}
+	path := filepath.Join(t.TempDir(), "mapping")
+	m, err := identity.Open(path, header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opt := genericOptions(t)
+	if _, err := Run(context.Background(), src, dst, opt, Options{UserPassword: "Fixed1!", Workers: 2, Mapping: m}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Close(); err != nil {
+		t.Fatal(err)
+	}
+	guids, err := identity.Load(path, header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer guids.Close()
+	if guids.Len() == 0 {
+		t.Fatal("the entryUUID pairs must be recorded")
+	}
+
+	renamed := "uid=alice2,ou=People," + gBase
+	moveEntry(dst, gAlice, renamed)
+	var diffs []diff.Difference
+	if _, err := diff.Run(context.Background(), src, dst, genericOptions(t), diff.Options{Workers: 2, Lookup: guids},
+		func(d diff.Difference) { diffs = append(diffs, d) }); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, d := range diffs {
+		switch {
+		case d.Kind == diff.Renamed && d.DN == gAlice && d.TargetDN == renamed:
+			found = true
+		case d.Kind == diff.OnlySource || d.Kind == diff.OnlyTarget:
+			t.Errorf("a rename must not show up as a missing and an extra entry: %+v", d)
+		}
+	}
+	if !found {
+		t.Fatalf("the rename was not found through entryUUID: %+v", diffs)
+	}
+}
+
+// The fixed password travels in the Add, so an account never exists without it, and a re-run never touches a
+// password the program under test changed. The schema-violation retry for groupOfNames keeps it too.
+func TestGenericPasswordIsSetAtCreationAndNeverReset(t *testing.T) {
+	src, dst := genericSource(), fakedir.New(gRoot)
+	dst.RequireAttr = map[string]string{"groupofnames": "member"}
+	job, opt := genericOptions(t), Options{UserPassword: "Fixed1!", Workers: 2}
+	if _, err := Run(context.Background(), src, dst, job, opt, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, op := range dst.Ops {
+		if strings.Contains(op, "userPassword") {
+			t.Fatalf("the password must be part of the Add, not a separate modify: %v", dst.Ops)
+		}
+	}
+	dst.Lookup(gAlice).Attrs["userPassword"] = []string{"Changed-by-the-program"}
+	if _, err := Run(context.Background(), src, dst, job, opt, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if pw := dst.Lookup(gAlice).Values("userPassword"); len(pw) != 1 || pw[0] != "Changed-by-the-program" {
+		t.Fatalf("a re-run must not reset the password: %v", pw)
+	}
+}
+
+func TestGenericDryRunNeverPrintsPassword(t *testing.T) {
+	var out bytes.Buffer
+	dst := dryrun.New(&out, profile.LDAP.PasswordAttrs)
+	if _, err := Run(context.Background(), genericSource(), dst, genericOptions(t), Options{UserPassword: "TopSecret!"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), "TopSecret") || !strings.Contains(out.String(), "# userPassword: <redacted>") {
+		t.Fatal(out.String())
+	}
+}

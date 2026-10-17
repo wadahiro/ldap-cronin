@@ -32,36 +32,49 @@ func Line(name, value string) string {
 	return name + ":: " + base64.StdEncoding.EncodeToString([]byte(value))
 }
 
-// Redacted lists attributes whose values are emitted as a comment instead of being printed.
-var redacted = map[string]bool{"unicodepwd": true}
+// Writer prints changes as LDIF. Values of the attributes Secret names are printed as a comment instead, so a
+// dry-run never shows a password; which attributes those are depends on the server (unicodePwd, userPassword).
+type Writer struct {
+	W      io.Writer
+	Secret []string
+}
 
-func Attrs(w io.Writer, attrs map[string][]string, prefix string) {
+func (w Writer) secret(name string) bool {
+	for _, s := range w.Secret {
+		if strings.EqualFold(s, name) {
+			return true
+		}
+	}
+	return false
+}
+
+func (w Writer) attrs(attrs map[string][]string) {
 	names := make([]string, 0, len(attrs))
 	for n := range attrs {
 		names = append(names, n)
 	}
 	sort.Strings(names)
 	for _, n := range names {
-		if redacted[strings.ToLower(n)] {
-			fmt.Fprintf(w, "# %s: <redacted>\n", n)
+		if w.secret(n) {
+			fmt.Fprintf(w.W, "# %s: <redacted>\n", n)
 			continue
 		}
 		for _, v := range attrs[n] {
-			fmt.Fprintln(w, prefix+Line(n, v))
+			fmt.Fprintln(w.W, Line(n, v))
 		}
 	}
 }
 
-func Add(w io.Writer, dn string, attrs map[string][]string) {
-	fmt.Fprintln(w, Line("dn", dn))
-	fmt.Fprintln(w, "changetype: add")
-	Attrs(w, attrs, "")
-	fmt.Fprintln(w)
+func (w Writer) Add(dn string, attrs map[string][]string) {
+	fmt.Fprintln(w.W, Line("dn", dn))
+	fmt.Fprintln(w.W, "changetype: add")
+	w.attrs(attrs)
+	fmt.Fprintln(w.W)
 }
 
-func Replace(w io.Writer, dn string, attrs map[string][]string) {
-	fmt.Fprintln(w, Line("dn", dn))
-	fmt.Fprintln(w, "changetype: modify")
+func (w Writer) Replace(dn string, attrs map[string][]string) {
+	fmt.Fprintln(w.W, Line("dn", dn))
+	fmt.Fprintln(w.W, "changetype: modify")
 	names := make([]string, 0, len(attrs))
 	for n := range attrs {
 		names = append(names, n)
@@ -69,18 +82,18 @@ func Replace(w io.Writer, dn string, attrs map[string][]string) {
 	sort.Strings(names)
 	for i, n := range names {
 		if i > 0 {
-			fmt.Fprintln(w, "-")
+			fmt.Fprintln(w.W, "-")
 		}
-		fmt.Fprintf(w, "replace: %s\n", n)
-		Attrs(w, map[string][]string{n: attrs[n]}, "")
+		fmt.Fprintf(w.W, "replace: %s\n", n)
+		w.attrs(map[string][]string{n: attrs[n]})
 	}
-	fmt.Fprintln(w)
+	fmt.Fprintln(w.W)
 }
 
-func AddValues(w io.Writer, dn, attr string, values []string) {
-	fmt.Fprintln(w, Line("dn", dn))
-	fmt.Fprintln(w, "changetype: modify")
-	fmt.Fprintf(w, "add: %s\n", attr)
-	Attrs(w, map[string][]string{attr: values}, "")
-	fmt.Fprintln(w)
+func (w Writer) AddValues(dn, attr string, values []string) {
+	fmt.Fprintln(w.W, Line("dn", dn))
+	fmt.Fprintln(w.W, "changetype: modify")
+	fmt.Fprintf(w.W, "add: %s\n", attr)
+	w.attrs(map[string][]string{attr: values})
+	fmt.Fprintln(w.W)
 }

@@ -30,6 +30,19 @@ if [ ! -f "$PROVISIONED" ]; then
   identity=()
   [ -z "${SAMBA_DOMAIN_SID:-}" ] || identity+=(--domain-sid="$SAMBA_DOMAIN_SID")
   [ -z "${SAMBA_DOMAIN_GUID:-}" ] || identity+=(--domain-guid="$SAMBA_DOMAIN_GUID")
+  # Provisioning writes NT ACLs on sysvol as the security.NTACL xattr, which needs CAP_SYS_ADMIN in the initial
+  # user namespace. Rootless docker grants it only inside its own namespace, so the write is refused and
+  # provisioning fails. There, acl_xattr keeps the ACL under user.NTACL instead, which the file owner may write.
+  # That is weaker (any process running as the owner could change an ACL), which does not matter for a disposable
+  # lab. The tdb backend (--use-xattrs=no) was rejected: this Samba build offers it only with the NTVFS file server.
+  # Probing rather than always switching keeps the usual rootful setup on Samba's default.
+  acl_store=()
+  if ! python3 -c 'import os, sys
+os.setxattr(sys.argv[1], "security.ldapcronin-probe", b"1")
+os.removexattr(sys.argv[1], "security.ldapcronin-probe")' /var/lib/samba 2>/dev/null; then
+    echo "security xattrs are not writable here (rootless docker?); keeping NT ACLs in user.NTACL" >&2
+    acl_store=(--option="acl_xattr:security_acl_name=user.NTACL")
+  fi
   samba-tool domain provision \
     --use-rfc2307 \
     --server-role=dc \
@@ -37,6 +50,7 @@ if [ ! -f "$PROVISIONED" ]; then
     --realm="$SAMBA_REALM" \
     --domain="$SAMBA_DOMAIN" \
     --adminpass="$SAMBA_ADMIN_PASSWORD" \
+    ${acl_store[@]+"${acl_store[@]}"} \
     ${identity[@]+"${identity[@]}"}
   cp /var/lib/samba/private/krb5.conf /etc/krb5.conf
   # Allow plain-text LDAP simple bind (writing passwords requires LDAPS)

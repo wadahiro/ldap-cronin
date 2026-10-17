@@ -49,9 +49,11 @@ make build                           # produces bin/ldap-cronin (requires Go)
 
 Passwords are never kept in the configuration file; they are prompted for at run time. For non-interactive use set the environment variables `LDAP_CRONIN_SOURCE_PASSWORD` / `LDAP_CRONIN_TARGET_PASSWORD` / `LDAP_CRONIN_USER_PASSWORD`.
 
+Ctrl-C stops a run at its next LDAP operation and still finishes its cleanup (the mapping is written, a lab stopped for an import is resumed); a re-run of `clone` continues from there. See [docs/operations.md](docs/operations.md#stopping-a-run-and-hung-servers).
+
 ## Server types (profiles)
 
-`[clone] profile` is `auto` by default: the source's root DSE decides between `ad` (Active Directory, Samba AD) and `ldap` (any other RFC 4510 server).
+`[scope] profile` is `auto` by default: the source's root DSE decides between `ad` (Active Directory, Samba AD) and `ldap` (any other RFC 4510 server).
 The target must be of the same type. The profile selects the default filters and attribute lists, how a user's fixed password is set, how DN-valued attributes are discovered and which attribute identifies an object across renames (`objectGUID` or `entryUUID`).
 The rest of this README describes AD; for a generic server see [docs/generic-ldap.md](docs/generic-ldap.md).
 
@@ -85,10 +87,10 @@ RENAMED     source: CN=Cid,OU=Users,OU=IDM,DC=example,DC=com
 |---|---|
 | `DIFF` | Present on both sides, but an attribute value differs |
 | `ONLY_SOURCE` / `ONLY_TARGET` | Present only in the source / only on the target |
-| `RENAMED` | The same object has a different DN (renamed or moved). Requires `[state] file` |
-| `REPLACED` | A different object was recreated at the same DN. Requires `[state] file` |
+| `RENAMED` | The same object has a different DN (renamed or moved). Requires `[mapping] file` |
+| `REPLACED` | A different object was recreated at the same DN. Requires `[mapping] file` |
 
-Rename, move and recreation detection uses the GUID mapping (`[state] file`) that `clone` records. All output patterns and comparison rules are in [docs/diff.md](docs/diff.md).
+Rename, move and recreation detection uses the mapping (`[mapping] file`) that `clone` records. All output patterns and comparison rules are in [docs/diff.md](docs/diff.md).
 
 ## When the target is a real AD
 
@@ -111,7 +113,7 @@ ldap-cronin lab restore                         # pick from the list and restore
 ```
 
 - You can keep several snapshots. While the current lab keeps running, `lab restore baseline --instance dev2` starts another lab in the snapshot's state on a different port.
-- The GUID mapping used by `diff` can be stored in the snapshot too (`lab snapshot --config config.toml`).
+- The mapping used by `diff` can be stored in the snapshot too (`lab snapshot --config config.toml`).
 - The domain name is chosen at the first start, not when the image is built.
 - `lab up --like-source config.toml` then `clone -native` imports with the same `objectGUID` and `objectSid` as the source (Samba lab only, unsupported internals; see [docs/lab.md](docs/lab.md#importing-with-the-same-objectguid-and-objectsid-clone--native-samba-only)).
 

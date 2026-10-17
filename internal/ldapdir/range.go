@@ -10,17 +10,9 @@ import (
 // DefaultRangeSize matches the AD MaxValRange (1500 by default).
 const DefaultRangeSize = 1500
 
-// defaultRanged are the attributes retrieved in ranges unless SetRangedAttrs says otherwise (the AD behavior).
-var defaultRanged = map[string]bool{"member": true}
-
-// rangedRequest returns the requested attribute list with member rewritten into ranged form.
+// rangedRequestFor returns the requested attribute list with the ranged attributes rewritten into ranged form.
 // AD splits a large value set into ranges on its own, whereas Samba returns everything at once.
 // Always specifying the range explicitly puts both through the same retrieval path.
-func rangedRequest(attrs []string, size int) []string {
-	return rangedRequestFor(defaultRanged, attrs, size)
-}
-
-// rangedRequestFor is rangedRequest for an explicit set of ranged attributes (empty for servers without the range option).
 func rangedRequestFor(ranged map[string]bool, attrs []string, size int) []string {
 	out := make([]string, len(attrs))
 	for i, a := range attrs {

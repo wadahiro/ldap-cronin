@@ -1,6 +1,7 @@
 package lab
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -33,6 +34,8 @@ type fakeDocker struct {
 
 	// startsHealthyAfter is the number of state queries after startup before the container becomes healthy.
 	startsHealthyAfter int
+	// onCall, if set, sees every command line after it is recorded (e.g. to cancel the run at a chosen step).
+	onCall func(line string)
 }
 
 type fakeContainer struct {
@@ -78,10 +81,17 @@ func argAfter(args []string, flag string) string {
 	return ""
 }
 
-func (f *fakeDocker) Do(c Cmd) (string, error) {
+func (f *fakeDocker) Do(ctx context.Context, c Cmd) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.record(c)
+	// Like exec.CommandContext: a command is not started once its context is done.
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	line := f.record(c)
+	if f.onCall != nil {
+		f.onCall(line)
+	}
 	a := c.Args
 	switch a[0] {
 	case "info":
@@ -319,7 +329,7 @@ func must(t *testing.T, err error) {
 func (fx *labFixture) up(realm string) {
 	fx.t.Helper()
 	fx.withBundle()
-	must(fx.t, fx.l.Up(UpOptions{Flags: Settings{Realm: realm, AdminPassword: "Secret-Passw0rd!"}}))
+	must(fx.t, fx.l.Up(context.Background(), UpOptions{Flags: Settings{Realm: realm, AdminPassword: "Secret-Passw0rd!"}}))
 }
 
 // ---- fake of the native helper program ----
@@ -338,7 +348,7 @@ func newFakeHelper() *fakeHelper {
 }
 
 // Start makes fakeDocker a Streamer. It detects the helper's launch from the arguments of run -i.
-func (f *fakeDocker) Start(c Cmd) (*Process, error) {
+func (f *fakeDocker) Start(ctx context.Context, c Cmd) (*Process, error) {
 	f.mu.Lock()
 	f.record(c)
 	if f.helper == nil {

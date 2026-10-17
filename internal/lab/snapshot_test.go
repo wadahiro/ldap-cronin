@@ -1,8 +1,10 @@
 package lab
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -30,7 +32,7 @@ func indexOf(calls []string, sub string, from int) int {
 func TestSnapshotStopsDumpsBothVolumesThenRestartsAndRecordsMetadata(t *testing.T) {
 	fx := seededLab(t)
 	fx.d.calls = nil
-	meta, err := fx.l.Snapshot(SnapshotOptions{Name: "baseline", Note: "right after clone"})
+	meta, err := fx.l.Snapshot(context.Background(), SnapshotOptions{Name: "baseline", Note: "right after clone"})
 	must(t, err)
 
 	// Order: stop -> private tar -> etc tar -> start -> wait for healthy
@@ -69,9 +71,9 @@ func TestSnapshotStopsDumpsBothVolumesThenRestartsAndRecordsMetadata(t *testing.
 
 func TestSnapshotOfAStoppedLabDoesNotStartIt(t *testing.T) {
 	fx := seededLab(t)
-	must(t, fx.l.Down())
+	must(t, fx.l.Down(context.Background()))
 	fx.d.calls = nil
-	_, err := fx.l.Snapshot(SnapshotOptions{Name: "cold"})
+	_, err := fx.l.Snapshot(context.Background(), SnapshotOptions{Name: "cold"})
 	must(t, err)
 	if len(fx.d.callsMatching("stop ")) != 0 || len(fx.d.callsMatching("start ")) != 0 {
 		t.Fatalf("a stopped lab must stay stopped: %v", fx.d.calls)
@@ -81,7 +83,7 @@ func TestSnapshotOfAStoppedLabDoesNotStartIt(t *testing.T) {
 func TestSnapshotFailureRestartsTheLabAndLeavesNoPartialSnapshot(t *testing.T) {
 	fx := seededLab(t)
 	fx.d.failTarCreate = "t-ad-etc"
-	_, err := fx.l.Snapshot(SnapshotOptions{Name: "broken"})
+	_, err := fx.l.Snapshot(context.Background(), SnapshotOptions{Name: "broken"})
 	if err == nil || !strings.Contains(err.Error(), "returned to its previous state") {
 		t.Fatalf("got %v", err)
 	}
@@ -100,17 +102,17 @@ func TestSnapshotFailureRestartsTheLabAndLeavesNoPartialSnapshot(t *testing.T) {
 func TestSnapshotNameValidationAndOverwrite(t *testing.T) {
 	fx := seededLab(t)
 	for _, bad := range []string{"../escape", "has space", "-lead", ".hidden", "a/b", strings.Repeat("x", 65)} {
-		if _, err := fx.l.Snapshot(SnapshotOptions{Name: bad}); err == nil {
+		if _, err := fx.l.Snapshot(context.Background(), SnapshotOptions{Name: bad}); err == nil {
 			t.Errorf("%q must be rejected", bad)
 		}
 	}
-	_, err := fx.l.Snapshot(SnapshotOptions{Name: "a"})
+	_, err := fx.l.Snapshot(context.Background(), SnapshotOptions{Name: "a"})
 	must(t, err)
-	if _, err := fx.l.Snapshot(SnapshotOptions{Name: "a"}); err == nil || !strings.Contains(err.Error(), "--force") {
+	if _, err := fx.l.Snapshot(context.Background(), SnapshotOptions{Name: "a"}); err == nil || !strings.Contains(err.Error(), "--force") {
 		t.Fatalf("overwriting needs --force: %v", err)
 	}
 	fx.d.volumeData["t-ad-private"] = "private-data-v2"
-	_, err = fx.l.Snapshot(SnapshotOptions{Name: "a", Force: true})
+	_, err = fx.l.Snapshot(context.Background(), SnapshotOptions{Name: "a", Force: true})
 	must(t, err)
 	if got, _ := os.ReadFile(filepath.Join(fx.l.Dirs.Snapshots, "a", "private.tar")); string(got) != "private-data-v2" {
 		t.Fatalf("%q", got)
@@ -119,16 +121,16 @@ func TestSnapshotNameValidationAndOverwrite(t *testing.T) {
 
 func TestSnapshotWithoutALabExplainsWhatToDo(t *testing.T) {
 	fx := newLabFixture(t)
-	if _, err := fx.l.Snapshot(SnapshotOptions{}); err == nil || !strings.Contains(err.Error(), "up") {
+	if _, err := fx.l.Snapshot(context.Background(), SnapshotOptions{}); err == nil || !strings.Contains(err.Error(), "up") {
 		t.Fatalf("got %v", err)
 	}
 }
 
 func TestSnapshotWithoutANameGetsATimestampNameAndNeverOverwrites(t *testing.T) {
 	fx := seededLab(t)
-	a, err := fx.l.Snapshot(SnapshotOptions{})
+	a, err := fx.l.Snapshot(context.Background(), SnapshotOptions{})
 	must(t, err)
-	b, err := fx.l.Snapshot(SnapshotOptions{}) // time advances, so the name differs
+	b, err := fx.l.Snapshot(context.Background(), SnapshotOptions{}) // time advances, so the name differs
 	must(t, err)
 	if !strings.HasPrefix(a.Name, "snapshot-2026") || a.Name == b.Name {
 		t.Fatalf("%q %q", a.Name, b.Name)
@@ -138,7 +140,7 @@ func TestSnapshotWithoutANameGetsATimestampNameAndNeverOverwrites(t *testing.T) 
 func TestMultipleSnapshotsAreListedOldestFirstAndBrokenOnesAreSkipped(t *testing.T) {
 	fx := seededLab(t)
 	for _, n := range []string{"first", "second", "third"} {
-		_, err := fx.l.Snapshot(SnapshotOptions{Name: n})
+		_, err := fx.l.Snapshot(context.Background(), SnapshotOptions{Name: n})
 		must(t, err)
 	}
 	must(t, os.MkdirAll(filepath.Join(fx.l.Dirs.Snapshots, "not-a-snapshot"), 0o755))
@@ -170,7 +172,7 @@ func TestMultipleSnapshotsAreListedOldestFirstAndBrokenOnesAreSkipped(t *testing
 
 func TestSnapshotRemove(t *testing.T) {
 	fx := seededLab(t)
-	_, err := fx.l.Snapshot(SnapshotOptions{Name: "x"})
+	_, err := fx.l.Snapshot(context.Background(), SnapshotOptions{Name: "x"})
 	must(t, err)
 	must(t, fx.l.SnapshotRemove("x"))
 	if list, _ := fx.l.Snapshots(); len(list) != 0 {
@@ -188,14 +190,14 @@ func TestSnapshotRemove(t *testing.T) {
 
 func TestRestoreWritesTheSnapshotBackAndStartsTheLab(t *testing.T) {
 	fx := seededLab(t)
-	_, err := fx.l.Snapshot(SnapshotOptions{Name: "baseline"})
+	_, err := fx.l.Snapshot(context.Background(), SnapshotOptions{Name: "baseline"})
 	must(t, err)
 	// After the snapshot, another program changed the data.
 	fx.d.volumeData["t-ad-private"] = "mutated-by-another-program"
 	fx.d.volumeData["t-ad-etc"] = "mutated-etc"
 
 	fx.d.calls = nil
-	meta, err := fx.l.Restore("baseline")
+	meta, err := fx.l.Restore(context.Background(), "baseline")
 	must(t, err)
 	if meta.Name != "baseline" {
 		t.Fatal(meta.Name)
@@ -222,15 +224,59 @@ func TestRestoreWritesTheSnapshotBackAndStartsTheLab(t *testing.T) {
 	}
 }
 
+// Ctrl-C after Samba was stopped must not leave half-written volumes or a stopped lab: the restore runs to the start.
+func TestInterruptedRestoreStillWritesBackAndStartsTheLab(t *testing.T) {
+	fx := seededLab(t)
+	_, err := fx.l.Snapshot(context.Background(), SnapshotOptions{Name: "baseline"})
+	must(t, err)
+	fx.d.volumeData["t-ad-private"] = "mutated-by-another-program"
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fx.d.onCall = func(line string) {
+		if strings.HasPrefix(line, "stop ") {
+			cancel()
+		}
+	}
+	_, err = fx.l.Restore(ctx, "baseline")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("want the cancellation reported after the critical section, got %v", err)
+	}
+	if fx.d.volumeData["t-ad-private"] != "private-data-v1" || !fx.d.containers["t-ad"].running {
+		t.Fatalf("the restore must finish: data=%q running=%v", fx.d.volumeData["t-ad-private"], fx.d.containers["t-ad"].running)
+	}
+}
+
+// Ctrl-C while the volumes are being written out abandons the snapshot but still restarts the lab.
+func TestInterruptedSnapshotRestartsTheLab(t *testing.T) {
+	fx := seededLab(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fx.d.onCall = func(line string) {
+		if strings.HasPrefix(line, "stop ") {
+			cancel()
+		}
+	}
+	if _, err := fx.l.Snapshot(ctx, SnapshotOptions{Name: "baseline"}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("want the cancellation, got %v", err)
+	}
+	if !fx.d.containers["t-ad"].running {
+		t.Fatal("the lab must be running again")
+	}
+	if _, err := os.Stat(fx.l.snapshotDir("baseline")); err == nil {
+		t.Fatal("an interrupted snapshot must not be kept")
+	}
+}
+
 func TestRestoreVerifiesTheSnapshotBeforeTouchingTheLiveData(t *testing.T) {
 	fx := seededLab(t)
-	_, err := fx.l.Snapshot(SnapshotOptions{Name: "baseline"})
+	_, err := fx.l.Snapshot(context.Background(), SnapshotOptions{Name: "baseline"})
 	must(t, err)
 	must(t, os.WriteFile(filepath.Join(fx.l.Dirs.Snapshots, "baseline", "private.tar"), []byte("tampered"), 0o600))
 
 	fx.d.calls = nil
 	fx.d.volumeData["t-ad-private"] = "live-data"
-	if _, err := fx.l.Restore("baseline"); err == nil || !strings.Contains(err.Error(), "corrupted") {
+	if _, err := fx.l.Restore(context.Background(), "baseline"); err == nil || !strings.Contains(err.Error(), "corrupted") {
 		t.Fatalf("got %v", err)
 	}
 	for _, c := range fx.d.calls {
@@ -245,14 +291,14 @@ func TestRestoreVerifiesTheSnapshotBeforeTouchingTheLiveData(t *testing.T) {
 
 func TestRestoreRefusesADifferentRealmAndAMissingSnapshot(t *testing.T) {
 	fx := seededLab(t)
-	_, err := fx.l.Snapshot(SnapshotOptions{Name: "baseline"})
+	_, err := fx.l.Snapshot(context.Background(), SnapshotOptions{Name: "baseline"})
 	must(t, err)
 
 	fx.d.containers["t-ad"].labels["ldap-cronin.realm"] = "other.test"
-	if _, err := fx.l.Restore("baseline"); err == nil || !strings.Contains(err.Error(), "domain") {
+	if _, err := fx.l.Restore(context.Background(), "baseline"); err == nil || !strings.Contains(err.Error(), "domain") {
 		t.Fatalf("got %v", err)
 	}
-	if _, err := fx.l.Restore("missing"); err == nil {
+	if _, err := fx.l.Restore(context.Background(), "missing"); err == nil {
 		t.Fatal("a missing snapshot must fail")
 	}
 }
@@ -261,13 +307,13 @@ func TestRestoreFromAnInteractiveListNewestFirst(t *testing.T) {
 	fx := seededLab(t)
 	for i, n := range []string{"old", "middle", "new"} {
 		fx.d.volumeData["t-ad-private"] = "state-" + n
-		_, err := fx.l.Snapshot(SnapshotOptions{Name: n, Note: "note " + n})
+		_, err := fx.l.Snapshot(context.Background(), SnapshotOptions{Name: n, Note: "note " + n})
 		must(t, err)
 		_ = i
 	}
 	fx.prompt.interactive = true
 	fx.prompt.choose = 1 // second newest = middle
-	meta, err := fx.l.Restore("")
+	meta, err := fx.l.Restore(context.Background(), "")
 	must(t, err)
 	if meta.Name != "middle" || fx.d.volumeData["t-ad-private"] != "state-middle" {
 		t.Fatalf("%q %q", meta.Name, fx.d.volumeData["t-ad-private"])
@@ -287,26 +333,26 @@ func TestRestoreFromAnInteractiveListNewestFirst(t *testing.T) {
 func TestRestoreWithoutANameAndWithoutATerminalListsTheCandidates(t *testing.T) {
 	fx := seededLab(t)
 	for _, n := range []string{"a", "b"} {
-		_, err := fx.l.Snapshot(SnapshotOptions{Name: n})
+		_, err := fx.l.Snapshot(context.Background(), SnapshotOptions{Name: n})
 		must(t, err)
 	}
-	_, err := fx.l.Restore("")
+	_, err := fx.l.Restore(context.Background(), "")
 	if err == nil || !strings.Contains(err.Error(), "Candidates") || !strings.Contains(err.Error(), "a ") || !strings.Contains(err.Error(), "b ") {
 		t.Fatalf("got %v", err)
 	}
 	fx2 := seededLab(t)
-	if _, err := fx2.l.Restore(""); err == nil || !strings.Contains(err.Error(), "no snapshots exist") {
+	if _, err := fx2.l.Restore(context.Background(), ""); err == nil || !strings.Contains(err.Error(), "no snapshots exist") {
 		t.Fatalf("got %v", err)
 	}
 }
 
 func TestRestoredStateIsReusableAndRepeatable(t *testing.T) {
 	fx := seededLab(t)
-	_, err := fx.l.Snapshot(SnapshotOptions{Name: "baseline"})
+	_, err := fx.l.Snapshot(context.Background(), SnapshotOptions{Name: "baseline"})
 	must(t, err)
 	for i := 0; i < 3; i++ { // can repeat: restore -> get modified -> restore again
 		fx.d.volumeData["t-ad-private"] = "mutated"
-		_, err := fx.l.Restore("baseline")
+		_, err := fx.l.Restore(context.Background(), "baseline")
 		must(t, err)
 		if fx.d.volumeData["t-ad-private"] != "private-data-v1" {
 			t.Fatalf("round %d: %q", i, fx.d.volumeData["t-ad-private"])
@@ -324,13 +370,13 @@ func (fx *labFixture) instanceLab(name string) *Lab {
 
 func TestRestoreAsANewInstanceStartsAnotherContainerBesideTheRunningLab(t *testing.T) {
 	fx := seededLab(t)
-	_, err := fx.l.Snapshot(SnapshotOptions{Name: "baseline"})
+	_, err := fx.l.Snapshot(context.Background(), SnapshotOptions{Name: "baseline"})
 	must(t, err)
 	fx.d.volumeData["t-ad-private"] = "main-has-moved-on" // the original lab keeps changing afterwards
 
 	dev := fx.instanceLab("dev2")
 	fx.d.calls = nil
-	meta, err := dev.RestoreWith("baseline", RestoreOptions{LDAPPort: 22389, LDAPSPort: 22636})
+	meta, err := dev.RestoreWith(context.Background(), "baseline", RestoreOptions{LDAPPort: 22389, LDAPSPort: 22636})
 	must(t, err)
 	if meta.Name != "baseline" {
 		t.Fatal(meta.Name)
@@ -377,9 +423,9 @@ func TestRestoreAsANewInstanceStartsAnotherContainerBesideTheRunningLab(t *testi
 
 func TestNewInstancePicksFreePortsWhenNoneAreGiven(t *testing.T) {
 	fx := seededLab(t)
-	_, err := fx.l.Snapshot(SnapshotOptions{Name: "baseline"})
+	_, err := fx.l.Snapshot(context.Background(), SnapshotOptions{Name: "baseline"})
 	must(t, err)
-	_, err = fx.instanceLab("dev2").RestoreWith("baseline", RestoreOptions{})
+	_, err = fx.instanceLab("dev2").RestoreWith(context.Background(), "baseline", RestoreOptions{})
 	must(t, err)
 	l := fx.d.containers["t-ad-dev2"].labels
 	if l["ldap-cronin.ldap-port"] != "40001" || l["ldap-cronin.ldaps-port"] != "40002" {
@@ -389,31 +435,31 @@ func TestNewInstancePicksFreePortsWhenNoneAreGiven(t *testing.T) {
 
 func TestNewInstanceRefusesPortsUsedByAnotherInstance(t *testing.T) {
 	fx := seededLab(t)
-	_, err := fx.l.Snapshot(SnapshotOptions{Name: "baseline"})
+	_, err := fx.l.Snapshot(context.Background(), SnapshotOptions{Name: "baseline"})
 	must(t, err)
-	_, err = fx.instanceLab("dev2").RestoreWith("baseline", RestoreOptions{LDAPPort: 12389, LDAPSPort: 22636}) // 12389 is main's LDAP
+	_, err = fx.instanceLab("dev2").RestoreWith(context.Background(), "baseline", RestoreOptions{LDAPPort: 12389, LDAPSPort: 22636}) // 12389 is main's LDAP
 	if err == nil || !strings.Contains(err.Error(), "12389") {
 		t.Fatalf("got %v", err)
 	}
 	if _, ok := fx.d.containers["t-ad-dev2"]; ok {
 		t.Fatal("nothing may be created")
 	}
-	if _, err := fx.instanceLab("dev2").RestoreWith("baseline", RestoreOptions{LDAPPort: 5000, LDAPSPort: 5000}); err == nil {
+	if _, err := fx.instanceLab("dev2").RestoreWith(context.Background(), "baseline", RestoreOptions{LDAPPort: 5000, LDAPSPort: 5000}); err == nil {
 		t.Fatal("the same port for LDAP and LDAPS must be refused")
 	}
 }
 
 func TestRestoreIntoAnExistingInstanceOverwritesThatInstanceOnly(t *testing.T) {
 	fx := seededLab(t)
-	_, err := fx.l.Snapshot(SnapshotOptions{Name: "baseline"})
+	_, err := fx.l.Snapshot(context.Background(), SnapshotOptions{Name: "baseline"})
 	must(t, err)
 	dev := fx.instanceLab("dev2")
-	_, err = dev.RestoreWith("baseline", RestoreOptions{LDAPPort: 22389, LDAPSPort: 22636})
+	_, err = dev.RestoreWith(context.Background(), "baseline", RestoreOptions{LDAPPort: 22389, LDAPSPort: 22636})
 	must(t, err)
 
 	fx.d.volumeData["t-ad-dev2-private"] = "dev2-mutated"
 	fx.d.volumeData["t-ad-private"] = "main-state"
-	_, err = dev.RestoreWith("baseline", RestoreOptions{})
+	_, err = dev.RestoreWith(context.Background(), "baseline", RestoreOptions{})
 	must(t, err)
 	if fx.d.volumeData["t-ad-dev2-private"] != "private-data-v1" {
 		t.Fatalf("dev2 must be restored: %q", fx.d.volumeData["t-ad-dev2-private"])
@@ -425,13 +471,13 @@ func TestRestoreIntoAnExistingInstanceOverwritesThatInstanceOnly(t *testing.T) {
 
 func TestInstancesAreListedMainFirstAndStatusShowsThem(t *testing.T) {
 	fx := seededLab(t)
-	_, err := fx.l.Snapshot(SnapshotOptions{Name: "baseline"})
+	_, err := fx.l.Snapshot(context.Background(), SnapshotOptions{Name: "baseline"})
 	must(t, err)
 	for _, n := range []string{"zeta", "alpha"} {
-		_, err = fx.instanceLab(n).RestoreWith("baseline", RestoreOptions{})
+		_, err = fx.instanceLab(n).RestoreWith(context.Background(), "baseline", RestoreOptions{})
 		must(t, err)
 	}
-	list, err := fx.l.Instances()
+	list, err := fx.l.Instances(context.Background())
 	must(t, err)
 	var order []string
 	for _, in := range list {
@@ -441,7 +487,7 @@ func TestInstancesAreListedMainFirstAndStatusShowsThem(t *testing.T) {
 		t.Fatal(order)
 	}
 	fx.out.Reset()
-	must(t, fx.l.Status())
+	must(t, fx.l.Status(context.Background()))
 	if !strings.Contains(fx.out.String(), "t-ad-alpha") || !strings.Contains(fx.out.String(), "LDAPS=12636") {
 		t.Fatal(fx.out.String())
 	}
@@ -449,17 +495,17 @@ func TestInstancesAreListedMainFirstAndStatusShowsThem(t *testing.T) {
 
 func TestDownAndResetOfAnInstanceLeaveTheMainLabAlone(t *testing.T) {
 	fx := seededLab(t)
-	_, err := fx.l.Snapshot(SnapshotOptions{Name: "baseline"})
+	_, err := fx.l.Snapshot(context.Background(), SnapshotOptions{Name: "baseline"})
 	must(t, err)
 	dev := fx.instanceLab("dev2")
-	_, err = dev.RestoreWith("baseline", RestoreOptions{})
+	_, err = dev.RestoreWith(context.Background(), "baseline", RestoreOptions{})
 	must(t, err)
 
-	must(t, dev.Down())
+	must(t, dev.Down(context.Background()))
 	if fx.d.containers["t-ad-dev2"].running || !fx.d.containers["t-ad"].running {
 		t.Fatal("only dev2 must be stopped")
 	}
-	must(t, dev.Reset(ResetOptions{Yes: true}))
+	must(t, dev.Reset(context.Background(), ResetOptions{Yes: true}))
 	if _, ok := fx.d.containers["t-ad-dev2"]; ok {
 		t.Fatal("dev2 must be removed")
 	}
@@ -476,13 +522,13 @@ func TestDownAndResetOfAnInstanceLeaveTheMainLabAlone(t *testing.T) {
 
 func TestSnapshotOfAnInstanceUsesItsOwnVolumes(t *testing.T) {
 	fx := seededLab(t)
-	_, err := fx.l.Snapshot(SnapshotOptions{Name: "baseline"})
+	_, err := fx.l.Snapshot(context.Background(), SnapshotOptions{Name: "baseline"})
 	must(t, err)
 	dev := fx.instanceLab("dev2")
-	_, err = dev.RestoreWith("baseline", RestoreOptions{})
+	_, err = dev.RestoreWith(context.Background(), "baseline", RestoreOptions{})
 	must(t, err)
 	fx.d.volumeData["t-ad-dev2-private"] = "dev2-own-state"
-	_, err = dev.Snapshot(SnapshotOptions{Name: "from-dev2"})
+	_, err = dev.Snapshot(context.Background(), SnapshotOptions{Name: "from-dev2"})
 	must(t, err)
 	if got, _ := os.ReadFile(filepath.Join(fx.l.Dirs.Snapshots, "from-dev2", "private.tar")); string(got) != "dev2-own-state" {
 		t.Fatalf("%q", got)
@@ -502,7 +548,7 @@ func TestInstanceNameValidationAndUpIsMainOnly(t *testing.T) {
 	}
 	fx := newLabFixture(t)
 	fx.withBundle()
-	if err := fx.instanceLab("dev2").Up(UpOptions{Flags: Settings{Realm: "a.test", AdminPassword: "x"}}); err == nil ||
+	if err := fx.instanceLab("dev2").Up(context.Background(), UpOptions{Flags: Settings{Realm: "a.test", AdminPassword: "x"}}); err == nil ||
 		!strings.Contains(err.Error(), "restore --instance dev2") {
 		t.Fatalf("got %v", err)
 	}
@@ -510,14 +556,14 @@ func TestInstanceNameValidationAndUpIsMainOnly(t *testing.T) {
 
 func TestRestoreRecreatesTheMainLabAfterAResetFromASnapshot(t *testing.T) {
 	fx := seededLab(t)
-	_, err := fx.l.Snapshot(SnapshotOptions{Name: "baseline"})
+	_, err := fx.l.Snapshot(context.Background(), SnapshotOptions{Name: "baseline"})
 	must(t, err)
-	must(t, fx.l.Reset(ResetOptions{Yes: true})) // deletes container, volumes and .env (snapshots remain)
+	must(t, fx.l.Reset(context.Background(), ResetOptions{Yes: true})) // deletes container, volumes and .env (snapshots remain)
 
-	if _, err := fx.l.Restore("baseline"); err == nil || !strings.Contains(err.Error(), "admin password") {
+	if _, err := fx.l.Restore(context.Background(), "baseline"); err == nil || !strings.Contains(err.Error(), "admin password") {
 		t.Fatalf("without the password it must ask for it: %v", err)
 	}
-	_, err = fx.l.RestoreWith("baseline", RestoreOptions{AdminPassword: "Secret-Passw0rd!"})
+	_, err = fx.l.RestoreWith(context.Background(), "baseline", RestoreOptions{AdminPassword: "Secret-Passw0rd!"})
 	must(t, err)
 	if !fx.d.containers["t-ad"].running || fx.d.volumeData["t-ad-private"] != "private-data-v1" {
 		t.Fatal("the main lab must be recreated from the snapshot")
@@ -527,7 +573,7 @@ func TestRestoreRecreatesTheMainLabAfterAResetFromASnapshot(t *testing.T) {
 	}
 }
 
-// ---- Include the GUID mapping in the snapshot ----
+// ---- Include the mapping in the snapshot ----
 
 func writeMap(t *testing.T, content string) string {
 	t.Helper()
@@ -536,29 +582,29 @@ func writeMap(t *testing.T, content string) string {
 	return path
 }
 
-func TestSnapshotIncludesTheGUIDMapAndRestoreWritesItBackKeepingABackup(t *testing.T) {
+func TestSnapshotIncludesTheMappingAndRestoreWritesItBackKeepingABackup(t *testing.T) {
 	fx := seededLab(t)
 	mapPath := writeMap(t, "map-at-snapshot-time")
 
-	meta, err := fx.l.Snapshot(SnapshotOptions{Name: "baseline", GUIDMap: mapPath})
+	meta, err := fx.l.Snapshot(context.Background(), SnapshotOptions{Name: "baseline", Mapping: mapPath})
 	must(t, err)
-	if meta.GUIDMap == nil || meta.GUIDMap.Size != int64(len("map-at-snapshot-time")) || meta.GUIDMap.File != "guid-map.tsv" {
-		t.Fatalf("%+v", meta.GUIDMap)
+	if meta.Mapping == nil || meta.Mapping.Size != int64(len("map-at-snapshot-time")) || meta.Mapping.File != "mapping" {
+		t.Fatalf("%+v", meta.Mapping)
 	}
-	copied := filepath.Join(fx.l.Dirs.Snapshots, "baseline", "guid-map.tsv")
+	copied := filepath.Join(fx.l.Dirs.Snapshots, "baseline", "mapping")
 	if got, _ := os.ReadFile(copied); string(got) != "map-at-snapshot-time" {
 		t.Fatalf("%q", got)
 	}
 	if st, _ := os.Stat(copied); st.Mode().Perm() != 0o600 {
 		t.Fatalf("mode %v", st.Mode().Perm())
 	}
-	if !strings.Contains(fx.out.String(), "with GUID mapping") {
+	if !strings.Contains(fx.out.String(), "with mapping") {
 		t.Fatal(fx.out.String())
 	}
 
 	// After the snapshot, the mapping was updated by another clone. Restoring brings back the table as of the snapshot.
 	must(t, os.WriteFile(mapPath, []byte("map-after-another-clone"), 0o600))
-	_, err = fx.l.RestoreWith("baseline", RestoreOptions{GUIDMap: mapPath})
+	_, err = fx.l.RestoreWith(context.Background(), "baseline", RestoreOptions{Mapping: mapPath})
 	must(t, err)
 	if got, _ := os.ReadFile(mapPath); string(got) != "map-at-snapshot-time" {
 		t.Fatalf("the map must be written back: %q", got)
@@ -568,29 +614,29 @@ func TestSnapshotIncludesTheGUIDMapAndRestoreWritesItBackKeepingABackup(t *testi
 	}
 }
 
-func TestRestoreWithoutAGUIDMapDestinationLeavesTheMapAloneAndSaysWhere(t *testing.T) {
+func TestRestoreWithoutAMappingDestinationLeavesTheMapAloneAndSaysWhere(t *testing.T) {
 	fx := seededLab(t)
 	mapPath := writeMap(t, "included")
-	_, err := fx.l.Snapshot(SnapshotOptions{Name: "baseline", GUIDMap: mapPath})
+	_, err := fx.l.Snapshot(context.Background(), SnapshotOptions{Name: "baseline", Mapping: mapPath})
 	must(t, err)
 	must(t, os.WriteFile(mapPath, []byte("current"), 0o600))
 
 	fx.out.Reset()
-	_, err = fx.l.Restore("baseline")
+	_, err = fx.l.Restore(context.Background(), "baseline")
 	must(t, err)
 	if got, _ := os.ReadFile(mapPath); string(got) != "current" {
 		t.Fatal("without a destination the current map must be untouched")
 	}
-	if !strings.Contains(fx.out.String(), "includes a GUID mapping") || !strings.Contains(fx.out.String(), "--guid-map") {
+	if !strings.Contains(fx.out.String(), "includes a mapping") || !strings.Contains(fx.out.String(), "--mapping") {
 		t.Fatalf("it must say the snapshot holds a map and how to write it back:\n%s", fx.out.String())
 	}
 }
 
-func TestSnapshotWithAMissingGUIDMapFailsBeforeStoppingTheLab(t *testing.T) {
+func TestSnapshotWithAMissingMappingFailsBeforeStoppingTheLab(t *testing.T) {
 	fx := seededLab(t)
 	fx.d.calls = nil
-	_, err := fx.l.Snapshot(SnapshotOptions{Name: "x", GUIDMap: filepath.Join(t.TempDir(), "none.tsv")})
-	if err == nil || !strings.Contains(err.Error(), "GUID mapping") {
+	_, err := fx.l.Snapshot(context.Background(), SnapshotOptions{Name: "x", Mapping: filepath.Join(t.TempDir(), "none.tsv")})
+	if err == nil || !strings.Contains(err.Error(), "mapping") {
 		t.Fatalf("got %v", err)
 	}
 	if len(fx.d.callsMatching("stop ")) != 0 || !fx.d.containers["t-ad"].running {
@@ -598,13 +644,13 @@ func TestSnapshotWithAMissingGUIDMapFailsBeforeStoppingTheLab(t *testing.T) {
 	}
 }
 
-func TestRestoreVerifiesTheGUIDMapInTheSnapshotToo(t *testing.T) {
+func TestRestoreVerifiesTheMappingInTheSnapshotToo(t *testing.T) {
 	fx := seededLab(t)
-	_, err := fx.l.Snapshot(SnapshotOptions{Name: "baseline", GUIDMap: writeMap(t, "good")})
+	_, err := fx.l.Snapshot(context.Background(), SnapshotOptions{Name: "baseline", Mapping: writeMap(t, "good")})
 	must(t, err)
-	must(t, os.WriteFile(filepath.Join(fx.l.Dirs.Snapshots, "baseline", "guid-map.tsv"), []byte("tampered"), 0o600))
+	must(t, os.WriteFile(filepath.Join(fx.l.Dirs.Snapshots, "baseline", "mapping"), []byte("tampered"), 0o600))
 	fx.d.calls = nil
-	if _, err := fx.l.Restore("baseline"); err == nil || !strings.Contains(err.Error(), "GUID mapping of snapshot") {
+	if _, err := fx.l.Restore(context.Background(), "baseline"); err == nil || !strings.Contains(err.Error(), "mapping of snapshot") {
 		t.Fatalf("got %v", err)
 	}
 	for _, c := range fx.d.calls {
@@ -616,10 +662,10 @@ func TestRestoreVerifiesTheGUIDMapInTheSnapshotToo(t *testing.T) {
 
 func TestRestoreIntoASnapshotWithoutAMapWarnsAndLeavesTheDestination(t *testing.T) {
 	fx := seededLab(t)
-	_, err := fx.l.Snapshot(SnapshotOptions{Name: "nomap"})
+	_, err := fx.l.Snapshot(context.Background(), SnapshotOptions{Name: "nomap"})
 	must(t, err)
 	dest := writeMap(t, "keep-me")
-	_, err = fx.l.RestoreWith("nomap", RestoreOptions{GUIDMap: dest})
+	_, err = fx.l.RestoreWith(context.Background(), "nomap", RestoreOptions{Mapping: dest})
 	must(t, err)
 	if got, _ := os.ReadFile(dest); string(got) != "keep-me" || !strings.Contains(fx.errw.String(), "does not include") {
 		t.Fatalf("%q / %s", got, fx.errw.String())
@@ -629,11 +675,11 @@ func TestRestoreIntoASnapshotWithoutAMapWarnsAndLeavesTheDestination(t *testing.
 func TestANewInstanceGetsItsOwnCopyOfTheMapAndTheMainMapIsUntouched(t *testing.T) {
 	fx := seededLab(t)
 	mainMap := writeMap(t, "main-map-now")
-	_, err := fx.l.Snapshot(SnapshotOptions{Name: "baseline", GUIDMap: writeMap(t, "baseline-map")})
+	_, err := fx.l.Snapshot(context.Background(), SnapshotOptions{Name: "baseline", Mapping: writeMap(t, "baseline-map")})
 	must(t, err)
 
 	dev2Map := filepath.Join(t.TempDir(), "sub", "guid-map-dev2.tsv") // created even if the parent directory does not exist
-	_, err = fx.instanceLab("dev2").RestoreWith("baseline", RestoreOptions{GUIDMap: dev2Map})
+	_, err = fx.instanceLab("dev2").RestoreWith(context.Background(), "baseline", RestoreOptions{Mapping: dev2Map})
 	must(t, err)
 	if got, _ := os.ReadFile(dev2Map); string(got) != "baseline-map" {
 		t.Fatalf("%q", got)
@@ -645,9 +691,9 @@ func TestANewInstanceGetsItsOwnCopyOfTheMapAndTheMainMapIsUntouched(t *testing.T
 
 func TestSnapshotListShowsWhetherAMapIsIncluded(t *testing.T) {
 	fx := seededLab(t)
-	_, err := fx.l.Snapshot(SnapshotOptions{Name: "with", GUIDMap: writeMap(t, "m")})
+	_, err := fx.l.Snapshot(context.Background(), SnapshotOptions{Name: "with", Mapping: writeMap(t, "m")})
 	must(t, err)
-	_, err = fx.l.Snapshot(SnapshotOptions{Name: "without"})
+	_, err = fx.l.Snapshot(context.Background(), SnapshotOptions{Name: "without"})
 	must(t, err)
 	list, _ := fx.l.Snapshots()
 	out := FormatSnapshots(list)

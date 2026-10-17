@@ -2,18 +2,21 @@ package clone
 
 import (
 	"bytes"
+	"context"
 	"strings"
 	"testing"
 
 	"github.com/wadahiro/ldap-cronin/internal/fakedir"
+	"github.com/wadahiro/ldap-cronin/internal/plan"
 )
 
-func identityOptions(t *testing.T) Options {
+func identityJob(t *testing.T) plan.Job {
 	t.Helper()
-	opt := options(t, allKinds()...)
-	opt.KeepIdentity = true
-	return Options{Plan: opt, UserPassword: "Fixed1!", Workers: 1}
+	return options(t, allKinds()...)
 }
+
+// identityOpts is a native import: the source identifiers are carried over.
+var identityOpts = Options{UserPassword: "Fixed1!", Workers: 1, Native: true}
 
 func withSID(d *fakedir.Dir, dnStr, sid string) {
 	e := d.Lookup(dnStr)
@@ -26,10 +29,10 @@ func withSID(d *fakedir.Dir, dnStr, sid string) {
 	d.Put(dnStr, attrs)
 }
 
-func TestKeepIdentityCopiesObjectGUIDAndObjectSid(t *testing.T) {
+func TestNativeCopiesObjectGUIDAndObjectSid(t *testing.T) {
 	src, dst := seedSource(), fakedir.New(domain)
 	withSID(src, alice, "sid-alice")
-	if _, err := Run(src, dst, identityOptions(t), &bytes.Buffer{}); err != nil {
+	if _, err := Run(context.Background(), src, dst, identityJob(t), identityOpts, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
 	for _, dnStr := range []string{alice, bob, eng, tokyo} {
@@ -43,25 +46,25 @@ func TestKeepIdentityCopiesObjectGUIDAndObjectSid(t *testing.T) {
 	}
 }
 
-func TestWithoutKeepIdentityObjectGUIDIsStillLeftToTheTarget(t *testing.T) {
+func TestWithoutNativeObjectGUIDIsStillLeftToTheTarget(t *testing.T) {
 	src, dst := seedSource(), fakedir.New(domain)
-	opt := identityOptions(t)
-	opt.Plan.KeepIdentity = false
-	if _, err := Run(src, dst, opt, &bytes.Buffer{}); err != nil {
+	opt := identityOpts
+	opt.Native = false
+	if _, err := Run(context.Background(), src, dst, identityJob(t), opt, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
 	if string(src.Lookup(alice).Values("objectGUID")[0]) == string(dst.Lookup(alice).Values("objectGUID")[0]) {
-		t.Fatal("without KeepIdentity the target must assign its own objectGUID")
+		t.Fatal("without a native import the target must assign its own objectGUID")
 	}
 }
 
 func TestKeepIdentityRerunUpdatesTheSameObjectInPlace(t *testing.T) {
 	src, dst := seedSource(), fakedir.New(domain)
-	if _, err := Run(src, dst, identityOptions(t), &bytes.Buffer{}); err != nil {
+	if _, err := Run(context.Background(), src, dst, identityJob(t), identityOpts, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
 	src.Put(alice, withAttr(src.Lookup(alice).Attrs, "displayName", "Alice A"))
-	rep, err := Run(src, dst, identityOptions(t), &bytes.Buffer{})
+	rep, err := Run(context.Background(), src, dst, identityJob(t), identityOpts, &bytes.Buffer{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,12 +75,12 @@ func TestKeepIdentityRerunUpdatesTheSameObjectInPlace(t *testing.T) {
 
 func TestKeepIdentityRefusesAnExistingObjectWithAnotherGUID(t *testing.T) {
 	src, dst := seedSource(), fakedir.New(domain)
-	if _, err := Run(src, dst, identityOptions(t), &bytes.Buffer{}); err != nil {
+	if _, err := Run(context.Background(), src, dst, identityJob(t), identityOpts, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
 	// A different object was recreated at the same DN.
 	dst.Put(alice, withAttr(dst.Lookup(alice).Attrs, "objectGUID", "\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff"))
-	_, err := Run(src, dst, identityOptions(t), &bytes.Buffer{})
+	_, err := Run(context.Background(), src, dst, identityJob(t), identityOpts, &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "objectGUID") {
 		t.Fatalf("an object with another GUID must be refused, got %v", err)
 	}

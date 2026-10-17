@@ -1,6 +1,7 @@
 package clone
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"runtime"
@@ -17,7 +18,7 @@ import (
 // This is so that only the memory use of the tool is measured.
 type genSource struct{ n int }
 
-func (g genSource) Walk(base, filter string, attrs []string, fn func(directory.Entry) error) error {
+func (g genSource) Walk(ctx context.Context, base, filter string, attrs []string, fn func(directory.Entry) error) error {
 	switch {
 	case strings.Contains(filter, "organizationalUnit"):
 		return fn(directory.Entry{DN: base, Attrs: map[string][]string{"objectClass": {"top", "organizationalUnit"}, "ou": {"IDM"}}})
@@ -45,21 +46,23 @@ func (g genSource) user(i int, dnOnly bool) directory.Entry {
 	}}
 }
 
-func (g genSource) Get(dn string, _ []string) (*directory.Entry, error) {
+func (g genSource) Get(ctx context.Context, dn string, _ []string) (*directory.Entry, error) {
 	return &directory.Entry{DN: dn, Attrs: map[string][]string{"objectClass": {"top", "organizationalUnit"}, "ou": {"IDM"}}}, nil
 }
-func (genSource) Add(directory.Entry) error                 { return nil }
-func (genSource) Replace(string, map[string][]string) error { return nil }
-func (genSource) AddValues(string, string, []string) error  { return nil }
+func (genSource) Add(context.Context, directory.Entry) error                 { return nil }
+func (genSource) Replace(context.Context, string, map[string][]string) error { return nil }
+func (genSource) AddValues(context.Context, string, string, []string) error  { return nil }
 
 // emptyTarget discards writes and behaves as a target where nothing exists.
 type emptyTarget struct{}
 
-func (emptyTarget) Walk(string, string, []string, func(directory.Entry) error) error { return nil }
-func (emptyTarget) Get(string, []string) (*directory.Entry, error)                   { return nil, nil }
-func (emptyTarget) Add(directory.Entry) error                                        { return nil }
-func (emptyTarget) Replace(string, map[string][]string) error                        { return nil }
-func (emptyTarget) AddValues(string, string, []string) error                         { return nil }
+func (emptyTarget) Walk(context.Context, string, string, []string, func(directory.Entry) error) error {
+	return nil
+}
+func (emptyTarget) Get(context.Context, string, []string) (*directory.Entry, error) { return nil, nil }
+func (emptyTarget) Add(context.Context, directory.Entry) error                      { return nil }
+func (emptyTarget) Replace(context.Context, string, map[string][]string) error      { return nil }
+func (emptyTarget) AddValues(context.Context, string, string, []string) error       { return nil }
 
 // peakHeapGrowthMB returns the maximum increase in heap usage (MB) while f runs.
 func peakHeapGrowthMB(f func()) float64 {
@@ -102,7 +105,7 @@ func TestCloneMemoryDoesNotGrowWithUserCount(t *testing.T) {
 	var report *Report
 	var runErr error
 	mb := peakHeapGrowthMB(func() {
-		report, runErr = Run(genSource{users}, emptyTarget{}, Options{Plan: options(t, allKinds()...), UserPassword: "x", Workers: 8}, io.Discard)
+		report, runErr = Run(context.Background(), genSource{users}, emptyTarget{}, options(t, allKinds()...), Options{UserPassword: "x", Workers: 8}, io.Discard)
 	})
 	if runErr != nil {
 		t.Fatal(runErr)
@@ -120,7 +123,7 @@ func TestDiffMemoryDoesNotGrowEvenWhenEverythingDiffers(t *testing.T) {
 	const users = 200_000
 	var count int
 	mb := peakHeapGrowthMB(func() {
-		sum, err := diff.Run(genSource{users}, emptyTarget{}, options(t, allKinds()...), 8, nil, func(diff.Difference) {})
+		sum, err := diff.Run(context.Background(), genSource{users}, emptyTarget{}, options(t, allKinds()...), diff.Options{Workers: 8}, func(diff.Difference) {})
 		count = sum.Differences[diff.OnlySource]
 		if err != nil {
 			t.Error(err)

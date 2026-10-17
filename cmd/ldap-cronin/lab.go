@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -69,8 +70,8 @@ Flags (reset):
 Flags (snapshot):
   --note <text>             Note (shown in the list)
   --force                   Overwrite if the same name exists
-  --config <file>           The tool's config file. Includes the GUID mapping of its [state] file in the snapshot
-  --guid-map <file>         Specify the GUID mapping directly (takes precedence over --config).
+  --config <file>           The tool's config file. Includes the mapping of its [mapping] file in the snapshot
+  --mapping <file>          Specify the mapping directly (takes precedence over --config).
                             When included, diff's rename and move detection keeps working after a restore
 
 Flags (restore, when no target container exists and a new one is created):
@@ -78,9 +79,9 @@ Flags (restore, when no target container exists and a new one is created):
   --ldaps-port <n>          Published LDAPS port (same as above)
   --admin-password <pw>     Administrator password (the one in effect when the snapshot was taken; defaults to the environment variable, then .env)
 
-Flags (restore, when the snapshot includes a GUID mapping):
-  --config <file>           The tool's config file. Writes the mapping back to its [state] file (an existing one is moved aside to .bak)
-  --guid-map <file>         Specify where to write it back directly (takes precedence over --config). When restoring into another instance,
+Flags (restore, when the snapshot includes a mapping):
+  --config <file>           The tool's config file. Writes the mapping back to its [mapping] file (an existing one is moved aside to .bak)
+  --mapping <file>          Specify where to write it back directly (takes precedence over --config). When restoring into another instance,
                             give a different file so the original lab's mapping is not overwritten
 
 Example: start a second lab in the baseline state on a different port while keeping the current lab running
@@ -105,7 +106,7 @@ func (c *labCommon) register(fs *flag.FlagSet) {
 	fs.StringVar(&c.prefix, "prefix", lab.DefaultPrefix, "")
 }
 
-func runLab(args []string, out, errW io.Writer) error {
+func runLab(ctx context.Context, args []string, out, errW io.Writer) error {
 	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
 		fmt.Fprint(out, labUsage)
 		if len(args) == 0 {
@@ -133,7 +134,7 @@ func runLab(args []string, out, errW io.Writer) error {
 		ldapsPort int
 
 		configPath string
-		guidMap    string
+		mapping    string
 	)
 	switch sub {
 	case "up":
@@ -159,10 +160,10 @@ func runLab(args []string, out, errW io.Writer) error {
 		fs.StringVar(&snap.Note, "note", "", "")
 		fs.BoolVar(&snap.Force, "force", false, "")
 		fs.StringVar(&configPath, "config", "", "")
-		fs.StringVar(&guidMap, "guid-map", "", "")
+		fs.StringVar(&mapping, "mapping", "", "")
 	case "restore":
 		fs.StringVar(&configPath, "config", "", "")
-		fs.StringVar(&guidMap, "guid-map", "", "")
+		fs.StringVar(&mapping, "mapping", "", "")
 		fs.StringVar(&password, "admin-password", "", "")
 		fs.IntVar(&ldapPort, "ldap-port", 0, "")
 		fs.IntVar(&ldapsPort, "ldaps-port", 0, "")
@@ -192,26 +193,26 @@ func runLab(args []string, out, errW io.Writer) error {
 		up.Flags = lab.Settings{Realm: realm, AdminPassword: password, NetBIOS: netbios, LDAPPort: ldapPort, LDAPSPort: ldapsPort,
 			DomainSID: domSID, DomainGUID: domGUID}
 		if likeSrc != "" {
-			base, err := likeSource(likeSrc)
+			base, err := likeSource(ctx, likeSrc)
 			if err != nil {
 				return fmt.Errorf("--like-source: %w", err)
 			}
 			up.Flags = mergeLike(base, up.Flags)
 		}
-		return l.Up(up)
+		return l.Up(ctx, up)
 	case "down":
-		return l.Down()
+		return l.Down(ctx)
 	case "reset":
 		reset.Confirm = confirm
-		return l.Reset(reset)
+		return l.Reset(ctx, reset)
 	case "status":
-		return l.Status()
+		return l.Status(ctx)
 	case "snapshot":
 		snap.Name = name
-		if snap.GUIDMap, err = guidMapPath(configPath, guidMap, errW); err != nil {
+		if snap.Mapping, err = mappingPath(configPath, mapping, errW); err != nil {
 			return err
 		}
-		_, err := l.Snapshot(snap)
+		_, err := l.Snapshot(ctx, snap)
 		return err
 	case "snapshots":
 		list, err := l.Snapshots()
@@ -221,11 +222,11 @@ func runLab(args []string, out, errW io.Writer) error {
 		fmt.Fprint(out, lab.FormatSnapshots(list))
 		return nil
 	case "restore":
-		dest, err := guidMapPath(configPath, guidMap, errW)
+		dest, err := mappingPath(configPath, mapping, errW)
 		if err != nil {
 			return err
 		}
-		_, err = l.RestoreWith(name, lab.RestoreOptions{LDAPPort: ldapPort, LDAPSPort: ldapsPort, AdminPassword: password, GUIDMap: dest})
+		_, err = l.RestoreWith(ctx, name, lab.RestoreOptions{LDAPPort: ldapPort, LDAPSPort: ldapsPort, AdminPassword: password, Mapping: dest})
 		return err
 	case "snapshot-rm":
 		if name == "" {
@@ -258,9 +259,19 @@ func mergeLike(base, flags lab.Settings) lab.Settings {
 	return out
 }
 
-// guidMapPath decides the path of the GUID mapping: --guid-map takes precedence, otherwise the [state] file of --config.
+// likeSource connects to the source of a config file and returns the settings for a lab of the same domain.
+func likeSource(ctx context.Context, cfgPath string) (lab.Settings, error) {
+	s, err := openSession(ctx, cfgPath)
+	if err != nil {
+		return lab.Settings{}, err
+	}
+	defer s.Close()
+	return s.LikeSource(ctx)
+}
+
+// mappingPath decides the path of the mapping file: --mapping takes precedence, otherwise the [mapping] file of --config.
 // If neither is given it is empty (no mapping is handled).
-func guidMapPath(configPath, explicit string, errW io.Writer) (string, error) {
+func mappingPath(configPath, explicit string, errW io.Writer) (string, error) {
 	if explicit != "" {
 		return explicit, nil
 	}
@@ -271,10 +282,10 @@ func guidMapPath(configPath, explicit string, errW io.Writer) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("--config %s: %w", configPath, err)
 	}
-	if cfg.State.File == "" {
-		fmt.Fprintf(errW, "warning: no [state] file in %s, so the GUID mapping is not handled\n", configPath)
+	if cfg.Mapping.File == "" {
+		fmt.Fprintf(errW, "warning: no [mapping] file in %s, so the mapping is not handled\n", configPath)
 	}
-	return cfg.State.File, nil
+	return cfg.Mapping.File, nil
 }
 
 // parseInterleaved lets flags appear both before and after the positional argument (the snapshot name).

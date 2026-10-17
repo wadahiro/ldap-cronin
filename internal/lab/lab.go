@@ -1,6 +1,7 @@
 package lab
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -110,7 +111,9 @@ func (l *Lab) warnf(format string, a ...any) {
 	fmt.Fprintf(l.Err, "warning: "+format+"\n", a...)
 }
 
-func (l *Lab) docker(args ...string) (string, error) { return l.D.Do(Cmd{Args: args}) }
+func (l *Lab) docker(ctx context.Context, args ...string) (string, error) {
+	return l.D.Do(ctx, Cmd{Args: args})
+}
 
 // UpOptions are the options for up.
 type UpOptions struct {
@@ -123,8 +126,8 @@ type UpOptions struct {
 	SkipVerify  bool
 }
 
-func (l *Lab) checkDocker() error {
-	if _, err := l.docker("info", "--format", "{{.ServerVersion}}"); err != nil {
+func (l *Lab) checkDocker(ctx context.Context) error {
+	if _, err := l.docker(ctx, "info", "--format", "{{.ServerVersion}}"); err != nil {
 		return fmt.Errorf("cannot connect to the docker daemon (docker is missing, not running, or you lack permission): %w", err)
 	}
 	return nil
@@ -132,14 +135,14 @@ func (l *Lab) checkDocker() error {
 
 // Up loads the image, starts the Samba4 AD, and verifies that it works.
 // The domain name is decided at this point (it is not baked into the image).
-func (l *Lab) Up(o UpOptions) error {
+func (l *Lab) Up(ctx context.Context, o UpOptions) error {
 	if !l.isMain() {
 		return fmt.Errorf("up starts the default lab. Create other instances from a snapshot: lab restore --instance %s", l.Instance)
 	}
-	if err := l.checkDocker(); err != nil {
+	if err := l.checkDocker(ctx); err != nil {
 		return err
 	}
-	image, err := l.prepareImage(o)
+	image, err := l.prepareImage(ctx, o)
 	if err != nil {
 		return err
 	}
@@ -156,15 +159,15 @@ func (l *Lab) Up(o UpOptions) error {
 	}
 
 	l.logf("Starting Samba4 AD (domain: %s / NetBIOS: %s)", s.Realm, nb)
-	if err := l.startLab(image, s, nb); err != nil {
+	if err := l.startLab(ctx, image, s, nb); err != nil {
 		return err
 	}
 	if o.WithSource {
-		if err := l.startSource(image, s, nb, o); err != nil {
+		if err := l.startSource(ctx, image, s, nb, o); err != nil {
 			return err
 		}
 	}
-	if err := l.smokeTest(s); err != nil {
+	if err := l.smokeTest(ctx, s); err != nil {
 		return err
 	}
 	l.summary(s, nb, generated, o)
@@ -172,7 +175,7 @@ func (l *Lab) Up(o UpOptions) error {
 }
 
 // prepareImage verifies the bundle's integrity and docker-loads the image if it is missing. It returns the image name.
-func (l *Lab) prepareImage(o UpOptions) (string, error) {
+func (l *Lab) prepareImage(ctx context.Context, o UpOptions) (string, error) {
 	name := o.Image
 	hasBundle := l.Dirs.Bundle != ""
 	if hasBundle && !o.SkipVerify {
@@ -196,7 +199,7 @@ func (l *Lab) prepareImage(o UpOptions) (string, error) {
 		return "", errors.New("cannot determine the image: the carry-in bundle (IMAGE file) was not found. Specify the image name with --image, or run from the bundle directory")
 	}
 
-	exists := l.imageExists(name)
+	exists := l.imageExists(ctx, name)
 	if !exists || o.Reload {
 		tar := ""
 		if hasBundle {
@@ -208,7 +211,7 @@ func (l *Lab) prepareImage(o UpOptions) (string, error) {
 		switch {
 		case tar != "":
 			l.logf("Loading image: %s", imageTarPath)
-			if _, err := l.docker("load", "-i", tar); err != nil {
+			if _, err := l.docker(ctx, "load", "-i", tar); err != nil {
 				return "", err
 			}
 		case exists:
@@ -219,14 +222,14 @@ func (l *Lab) prepareImage(o UpOptions) (string, error) {
 	} else {
 		l.logf("Image already present: %s", name)
 	}
-	if arch, err := l.docker("image", "inspect", "--format", "{{.Architecture}}", name); err == nil && l.HostArch != "" && arch != l.HostArch {
+	if arch, err := l.docker(ctx, "image", "inspect", "--format", "{{.Architecture}}", name); err == nil && l.HostArch != "" && arch != l.HostArch {
 		l.warnf("Image architecture (%s) differs from this host (%s); it may not start", arch, l.HostArch)
 	}
 	return name, nil
 }
 
-func (l *Lab) imageExists(name string) bool {
-	_, err := l.docker("image", "inspect", "--format", "{{.Id}}", name)
+func (l *Lab) imageExists(ctx context.Context, name string) bool {
+	_, err := l.docker(ctx, "image", "inspect", "--format", "{{.Id}}", name)
 	return err == nil
 }
 
@@ -295,9 +298,9 @@ func (l *Lab) runArgs(name, hostname, image string, s Settings, nb string, ldap,
 }
 
 // startLab starts the clone target container. If it already exists, it is reused only when the settings match.
-func (l *Lab) startLab(image string, s Settings, nb string) error {
+func (l *Lab) startLab(ctx context.Context, image string, s Settings, nb string) error {
 	name := l.container()
-	labels, exists, err := l.inspectLabels(name)
+	labels, exists, err := l.inspectLabels(ctx, name)
 	if err != nil {
 		return err
 	}
@@ -305,7 +308,7 @@ func (l *Lab) startLab(image string, s Settings, nb string) error {
 		if err := checkLabels(labels, s); err != nil {
 			return err
 		}
-		state, err := l.state(name)
+		state, err := l.state(ctx, name)
 		if err != nil {
 			return err
 		}
@@ -314,21 +317,21 @@ func (l *Lab) startLab(image string, s Settings, nb string) error {
 			return nil
 		}
 		l.logf("Resuming stopped container: %s", name)
-		if _, err := l.docker("start", name); err != nil {
+		if _, err := l.docker(ctx, "start", name); err != nil {
 			return err
 		}
-		return l.waitHealthy(name)
+		return l.waitHealthy(ctx, name)
 	}
 	l.logf("Starting: %s", name)
-	if err := l.createContainer(image, s, nb); err != nil {
+	if err := l.createContainer(ctx, image, s, nb); err != nil {
 		return err
 	}
-	return l.waitHealthy(name)
+	return l.waitHealthy(ctx, name)
 }
 
 // createContainer creates the lab container with docker run (it does not wait for healthy).
 // The domain, ports and instance name are kept in labels, to detect configuration mismatches and to list instances later.
-func (l *Lab) createContainer(image string, s Settings, nb string) error {
+func (l *Lab) createContainer(ctx context.Context, image string, s Settings, nb string) error {
 	extra := []string{
 		"-v", l.volume("private") + ":/var/lib/samba", "-v", l.volume("etc") + ":/etc/samba",
 		"--label", labelRealm + "=" + s.Realm,
@@ -344,19 +347,19 @@ func (l *Lab) createContainer(image string, s Settings, nb string) error {
 	if s.DomainGUID != "" {
 		extra = append(extra, "--label", labelGUID+"="+s.DomainGUID)
 	}
-	if _, err := l.D.Do(l.runArgs(l.container(), dcHostname, image, s, nb, s.LDAPPort, s.LDAPSPort, extra...)); err != nil {
+	if _, err := l.D.Do(ctx, l.runArgs(l.container(), dcHostname, image, s, nb, s.LDAPPort, s.LDAPSPort, extra...)); err != nil {
 		return fmt.Errorf("docker run failed (the port may be in use; change it with --ldap-port / --ldaps-port): %w", err)
 	}
 	return nil
 }
 
 // startSource starts a clone source loaded with sample data, for checking that the tool works. Its data is not persisted.
-func (l *Lab) startSource(image string, s Settings, nb string, o UpOptions) error {
+func (l *Lab) startSource(ctx context.Context, image string, s Settings, nb string, o UpOptions) error {
 	name := l.sourceContainer()
-	if _, exists, err := l.inspectLabels(name); err != nil {
+	if _, exists, err := l.inspectLabels(ctx, name); err != nil {
 		return err
 	} else if exists {
-		if _, err := l.docker("rm", "-f", name); err != nil {
+		if _, err := l.docker(ctx, "rm", "-f", name); err != nil {
 			return err
 		}
 	}
@@ -368,15 +371,15 @@ func (l *Lab) startSource(image string, s Settings, nb string, o UpOptions) erro
 		ldaps = DefaultSrcLDAPS
 	}
 	l.logf("Starting: %s (clone source for testing; loaded with sample data, data is not persisted)", name)
-	if _, err := l.D.Do(l.runArgs(name, srcHostname, image, s, nb, ldap, ldaps, "-e", "SEED_SAMPLE_DATA=true")); err != nil {
+	if _, err := l.D.Do(ctx, l.runArgs(name, srcHostname, image, s, nb, ldap, ldaps, "-e", "SEED_SAMPLE_DATA=true")); err != nil {
 		return fmt.Errorf("docker run failed (the port may be in use): %w", err)
 	}
-	return l.waitHealthy(name)
+	return l.waitHealthy(ctx, name)
 }
 
 // inspectLabels returns the container's labels. If the container does not exist, exists=false.
-func (l *Lab) inspectLabels(name string) (labels map[string]string, exists bool, err error) {
-	out, err := l.docker("container", "inspect", "--format", "{{json .Config.Labels}}", name)
+func (l *Lab) inspectLabels(ctx context.Context, name string) (labels map[string]string, exists bool, err error) {
+	out, err := l.docker(ctx, "container", "inspect", "--format", "{{json .Config.Labels}}", name)
 	if err != nil {
 		if IsNotFound(err) {
 			return nil, false, nil
@@ -411,15 +414,15 @@ func checkLabels(labels map[string]string, s Settings) error {
 }
 
 // state returns the container state (healthy / starting / unhealthy / running / exited).
-func (l *Lab) state(name string) (string, error) {
-	return l.docker("container", "inspect", "--format",
+func (l *Lab) state(ctx context.Context, name string) (string, error) {
+	return l.docker(ctx, "container", "inspect", "--format",
 		"{{if .State.Running}}{{if .State.Health}}{{.State.Health.Status}}{{else}}running{{end}}{{else}}exited{{end}}", name)
 }
 
 // waitHealthy waits until the health check reports healthy. If the container stops, it prints the logs and fails.
-func (l *Lab) waitHealthy(name string) error {
+func (l *Lab) waitHealthy(ctx context.Context, name string) error {
 	for i := 0; i < healthRetries; i++ {
-		st, err := l.state(name)
+		st, err := l.state(ctx, name)
 		if err != nil {
 			return err
 		}
@@ -427,24 +430,27 @@ func (l *Lab) waitHealthy(name string) error {
 		case "healthy":
 			return nil
 		case "exited":
-			l.dumpLogs(name)
+			l.dumpLogs(ctx, name)
 			return errors.New("startup failed. If you specified a different domain name from the existing data, delete it with ./setup.sh reset and start over")
+		}
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 		l.Sleep(healthWait)
 	}
-	l.dumpLogs(name)
+	l.dumpLogs(ctx, name)
 	return fmt.Errorf("%s did not become healthy (waited %v)", name, healthWait*healthRetries)
 }
 
-func (l *Lab) dumpLogs(name string) {
-	_, _ = l.D.Do(Cmd{Args: []string{"logs", "--tail", "40", name}, Stdout: l.Err, Stderr: l.Err})
+func (l *Lab) dumpLogs(ctx context.Context, name string) {
+	_, _ = l.D.Do(ctx, Cmd{Args: []string{"logs", "--tail", "40", name}, Stdout: l.Err, Stderr: l.Err})
 }
 
 // smokeTest verifies that an admin search works over LDAPS. The password is passed via the environment.
-func (l *Lab) smokeTest(s Settings) error {
+func (l *Lab) smokeTest(ctx context.Context, s Settings) error {
 	base := BaseDN(s.Realm)
 	l.logf("Smoke test (searching as admin over LDAPS)")
-	_, err := l.D.Do(Cmd{
+	_, err := l.D.Do(ctx, Cmd{
 		Args: []string{"exec", "-e", "LDAPTLS_REQCERT=never", "-e", "LDAP_PW", l.container(), "sh", "-c",
 			`ldapsearch -x -H ldaps://127.0.0.1 -D "CN=Administrator,CN=Users,` + base + `" -w "$LDAP_PW" -b "` + base + `" -s base dn`},
 		Env: []string{"LDAP_PW=" + s.AdminPassword},
@@ -483,20 +489,20 @@ func (l *Lab) summary(s Settings, nb string, generated bool, o UpOptions) {
 }
 
 // Down stops the container. The data stays in the volume, and running up again resumes with the same settings.
-func (l *Lab) Down() error {
-	if err := l.checkDocker(); err != nil {
+func (l *Lab) Down(ctx context.Context) error {
+	if err := l.checkDocker(ctx); err != nil {
 		return err
 	}
 	if l.isMain() {
-		if _, exists, err := l.inspectLabels(l.sourceContainer()); err != nil {
+		if _, exists, err := l.inspectLabels(ctx, l.sourceContainer()); err != nil {
 			return err
 		} else if exists {
-			if _, err := l.docker("rm", "-f", l.sourceContainer()); err != nil {
+			if _, err := l.docker(ctx, "rm", "-f", l.sourceContainer()); err != nil {
 				return err
 			}
 		}
 	}
-	_, exists, err := l.inspectLabels(l.container())
+	_, exists, err := l.inspectLabels(ctx, l.container())
 	if err != nil {
 		return err
 	}
@@ -504,7 +510,7 @@ func (l *Lab) Down() error {
 		l.logf("Not running: %s", l.container())
 		return nil
 	}
-	if _, err := l.docker("stop", "-t", stopTimeoutSec, l.container()); err != nil {
+	if _, err := l.docker(ctx, "stop", "-t", stopTimeoutSec, l.container()); err != nil {
 		return err
 	}
 	if l.isMain() {
@@ -523,8 +529,8 @@ type ResetOptions struct {
 }
 
 // Reset deletes the container, the volume (domain data) and .env. Snapshots are kept by default.
-func (l *Lab) Reset(o ResetOptions) error {
-	if err := l.checkDocker(); err != nil {
+func (l *Lab) Reset(ctx context.Context, o ResetOptions) error {
+	if err := l.checkDocker(ctx); err != nil {
 		return err
 	}
 	if !o.Yes {
@@ -537,16 +543,16 @@ func (l *Lab) Reset(o ResetOptions) error {
 		containers = []string{l.sourceContainer(), l.container()}
 	}
 	for _, c := range containers {
-		if _, exists, err := l.inspectLabels(c); err != nil {
+		if _, exists, err := l.inspectLabels(ctx, c); err != nil {
 			return err
 		} else if exists {
-			if _, err := l.docker("rm", "-f", c); err != nil {
+			if _, err := l.docker(ctx, "rm", "-f", c); err != nil {
 				return err
 			}
 		}
 	}
 	for _, kind := range []string{"private", "etc"} {
-		if _, err := l.docker("volume", "rm", "-f", l.volume(kind)); err != nil {
+		if _, err := l.docker(ctx, "volume", "rm", "-f", l.volume(kind)); err != nil {
 			return err
 		}
 	}
@@ -584,10 +590,10 @@ type InstanceInfo struct {
 }
 
 // Instances lists the lab instances with the same prefix (the default lab and those created from snapshots).
-func (l *Lab) Instances() ([]InstanceInfo, error) {
+func (l *Lab) Instances(ctx context.Context) ([]InstanceInfo, error) {
 	format := "{{.Names}}\t{{.State}}\t{{.Label \"" + labelInstance + "\"}}\t{{.Label \"" + labelRealm + "\"}}\t{{.Label \"" +
 		labelLDAP + "\"}}\t{{.Label \"" + labelLDAPS + "\"}}"
-	out, err := l.docker("container", "ls", "-a", "--filter", "label="+labelLab+"="+l.Prefix, "--format", format)
+	out, err := l.docker(ctx, "container", "ls", "-a", "--filter", "label="+labelLab+"="+l.Prefix, "--format", format)
 	if err != nil {
 		return nil, err
 	}
@@ -611,11 +617,11 @@ func (l *Lab) Instances() ([]InstanceInfo, error) {
 }
 
 // Status shows the lab state (the default lab and instances created from snapshots) and the snapshot count.
-func (l *Lab) Status() error {
-	if err := l.checkDocker(); err != nil {
+func (l *Lab) Status(ctx context.Context) error {
+	if err := l.checkDocker(ctx); err != nil {
 		return err
 	}
-	list, err := l.Instances()
+	list, err := l.Instances(ctx)
 	if err != nil {
 		return err
 	}

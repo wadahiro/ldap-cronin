@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"fmt"
 	"os"
@@ -14,12 +15,12 @@ import (
 
 	"github.com/go-ldap/ldap/v3"
 
-	"github.com/wadahiro/ldap-cronin/internal/adguid"
+	"github.com/wadahiro/ldap-cronin/internal/ad"
 	"github.com/wadahiro/ldap-cronin/internal/clone"
 	"github.com/wadahiro/ldap-cronin/internal/diff"
 	"github.com/wadahiro/ldap-cronin/internal/directory"
 	"github.com/wadahiro/ldap-cronin/internal/dn"
-	"github.com/wadahiro/ldap-cronin/internal/guidmap"
+	"github.com/wadahiro/ldap-cronin/internal/identity"
 	"github.com/wadahiro/ldap-cronin/internal/lab"
 	"github.com/wadahiro/ldap-cronin/internal/ldapdir"
 )
@@ -51,7 +52,7 @@ func TestNativeImportKeepsObjectGUIDAndObjectSid(t *testing.T) {
 	srcLab, dstLab := newLab(fmt.Sprintf("natsrc%d", nano)), newLab(fmt.Sprintf("natdst%d", nano))
 	for _, l := range []*lab.Lab{srcLab, dstLab} {
 		l := l
-		t.Cleanup(func() { _ = l.Reset(lab.ResetOptions{Yes: true, Snapshots: true}) })
+		t.Cleanup(func() { _ = l.Reset(context.Background(), lab.ResetOptions{Yes: true, Snapshots: true}) })
 	}
 	must := func(err error) {
 		t.Helper()
@@ -67,35 +68,34 @@ func TestNativeImportKeepsObjectGUIDAndObjectSid(t *testing.T) {
 	admin := "CN=Administrator,CN=Users," + base
 
 	srcLDAPS, dstLDAPS := freePort(t), freePort(t)
-	must(srcLab.Up(lab.UpOptions{Image: image, Flags: lab.Settings{Realm: realm, AdminPassword: password, LDAPPort: freePort(t), LDAPSPort: freePort(t)},
+	must(srcLab.Up(context.Background(), lab.UpOptions{Image: image, Flags: lab.Settings{Realm: realm, AdminPassword: password, LDAPPort: freePort(t), LDAPSPort: freePort(t)},
 		WithSource: true, SourceLDAP: freePort(t), SourceLDAPS: srcLDAPS}))
 	src, err := dialAs(srcLDAPS, admin, password)
 	must(err)
 	defer src.Close()
 
 	// Equivalent to --like-source: read the source domain's SID and GUID and create the lab with the same values.
-	root, err := src.Get(base, []string{"objectSid", "objectGUID"})
+	root, err := src.Get(context.Background(), base, []string{"objectSid", "objectGUID"})
 	must(err)
-	srcSID, err := adguid.SIDText([]byte(root.Values("objectSid")[0]))
+	srcSID, err := ad.SIDText([]byte(root.Values("objectSid")[0]))
 	must(err)
-	srcGUID, err := adguid.GUIDText([]byte(root.Values("objectGUID")[0]))
+	srcGUID, err := ad.GUIDText([]byte(root.Values("objectGUID")[0]))
 	must(err)
-	must(dstLab.Up(lab.UpOptions{Image: image, Flags: lab.Settings{Realm: realm, AdminPassword: password,
+	must(dstLab.Up(context.Background(), lab.UpOptions{Image: image, Flags: lab.Settings{Realm: realm, AdminPassword: password,
 		DomainSID: srcSID, DomainGUID: srcGUID, LDAPPort: freePort(t), LDAPSPort: dstLDAPS}}))
 
 	importNative := func() *clone.Report {
 		t.Helper()
-		n, err := dstLab.OpenNative()
+		n, err := dstLab.OpenNative(context.Background())
 		must(err)
-		defer func() { must(n.Close()) }()
+		defer func() { must(n.Close(context.Background())) }()
 		if n.Info.DomainSID != srcSID || !strings.EqualFold(n.Info.DomainGUID, srcGUID) {
 			t.Fatalf("the lab must share the source's domain identity: %+v vs %s %s", n.Info, srcSID, srcGUID)
 		}
 		opt := planOptionsFor(t, cloneBase)
-		opt.KeepIdentity = true
-		rep, err := clone.Run(src, n, clone.Options{Plan: opt, UserPassword: fixed, Workers: 1}, &bytes.Buffer{})
+		rep, err := clone.Run(context.Background(), src, n, opt, clone.Options{UserPassword: fixed, Workers: 1, Native: true}, &bytes.Buffer{})
 		must(err)
-		res, err := n.Finish()
+		res, err := n.Finish(context.Background())
 		must(err)
 		t.Logf("native: %s", res.Summary())
 		return rep
@@ -112,8 +112,8 @@ func TestNativeImportKeepsObjectGUIDAndObjectSid(t *testing.T) {
 	// objectGUID and objectSid match for all objects.
 	names := []string{"objectGUID", "objectSid"}
 	checked := 0
-	err = src.Walk(cloneBase, "(|(objectClass=user)(objectClass=group)(objectClass=organizationalUnit))", names, func(e directory.Entry) error {
-		got, err := dst.Get(e.DN, names)
+	err = src.Walk(context.Background(), cloneBase, "(|(objectClass=user)(objectClass=group)(objectClass=organizationalUnit))", names, func(e directory.Entry) error {
+		got, err := dst.Get(context.Background(), e.DN, names)
 		if err != nil || got == nil {
 			return fmt.Errorf("%s does not exist on the target: %v", e.DN, err)
 		}
@@ -133,7 +133,7 @@ func TestNativeImportKeepsObjectGUIDAndObjectSid(t *testing.T) {
 	// diff without a mapping reports no differences, including references (member/manager).
 	opt := planOptionsFor(t, cloneBase)
 	var diffs []diff.Difference
-	sum, err := diff.RunWith(src, dst, opt, 4, guidmap.Identity{}, func(d diff.Difference) { diffs = append(diffs, d) })
+	sum, err := diff.Run(context.Background(), src, dst, opt, diff.Options{Workers: 4, Lookup: identity.Identity{}}, func(d diff.Difference) { diffs = append(diffs, d) })
 	must(err)
 	if len(diffs) != 0 || !sum.Identity {
 		var b bytes.Buffer
@@ -157,20 +157,20 @@ func TestNativeImportKeepsObjectGUIDAndObjectSid(t *testing.T) {
 	defer conn.Close()
 	must(conn.Bind(admin, password))
 	fresh := "CN=Fresh,OU=Users," + cloneBase
-	must(dst.Add(directory.Entry{DN: fresh, Attrs: map[string][]string{"objectClass": {"user"}, "cn": {"Fresh"}, "sAMAccountName": {"fresh"}}}))
-	freshEntry, err := dst.Get(fresh, []string{"objectSid"})
+	must(dst.Add(context.Background(), directory.Entry{DN: fresh, Attrs: map[string][]string{"objectClass": {"user"}, "cn": {"Fresh"}, "sAMAccountName": {"fresh"}}}))
+	freshEntry, err := dst.Get(context.Background(), fresh, []string{"objectSid"})
 	must(err)
-	freshSID, err := adguid.SIDText([]byte(freshEntry.Values("objectSid")[0]))
+	freshSID, err := ad.SIDText([]byte(freshEntry.Values("objectSid")[0]))
 	must(err)
-	_, freshRID, err := adguid.SplitRID(freshSID)
+	_, freshRID, err := ad.SplitRID(freshSID)
 	must(err)
 	maxImported := 0
-	err = src.Walk(cloneBase, "(objectSid=*)", []string{"objectSid"}, func(e directory.Entry) error {
-		s, err := adguid.SIDText([]byte(e.Values("objectSid")[0]))
+	err = src.Walk(context.Background(), cloneBase, "(objectSid=*)", []string{"objectSid"}, func(e directory.Entry) error {
+		s, err := ad.SIDText([]byte(e.Values("objectSid")[0]))
 		if err != nil {
 			return err
 		}
-		if _, rid, err := adguid.SplitRID(s); err == nil && rid > maxImported {
+		if _, rid, err := ad.SplitRID(s); err == nil && rid > maxImported {
 			maxImported = rid
 		}
 		return nil
@@ -202,7 +202,7 @@ func TestNativeImportKeepsObjectGUIDAndObjectSid(t *testing.T) {
 	// Even when renamed on the target, it is detected as RENAMED without a mapping.
 	must(conn.ModifyDN(ldap.NewModifyDNRequest(alice, "CN=Alice Smith", true, "")))
 	diffs = nil
-	_, err = diff.RunWith(src, dst, opt, 4, guidmap.Identity{}, func(d diff.Difference) { diffs = append(diffs, d) })
+	_, err = diff.Run(context.Background(), src, dst, opt, diff.Options{Workers: 4, Lookup: identity.Identity{}}, func(d diff.Difference) { diffs = append(diffs, d) })
 	must(err)
 	renamed := false
 	for _, d := range diffs {
@@ -215,14 +215,14 @@ func TestNativeImportKeepsObjectGUIDAndObjectSid(t *testing.T) {
 	}
 
 	// Restoring from a snapshot does not change objectGUID or objectSid.
-	_, err = dstLab.Snapshot(lab.SnapshotOptions{Name: "native"})
+	_, err = dstLab.Snapshot(context.Background(), lab.SnapshotOptions{Name: "native"})
 	must(err)
-	_, err = dstLab.RestoreWith("native", lab.RestoreOptions{})
+	_, err = dstLab.RestoreWith(context.Background(), "native", lab.RestoreOptions{})
 	must(err)
 	reconnect()
-	g1, err := dst.Get(strings.Replace(alice, "CN=Alice Admin", "CN=Alice Smith", 1), names)
+	g1, err := dst.Get(context.Background(), strings.Replace(alice, "CN=Alice Admin", "CN=Alice Smith", 1), names)
 	must(err)
-	g2, err := src.Get(alice, names)
+	g2, err := src.Get(context.Background(), alice, names)
 	must(err)
 	if g1 == nil || strings.Join(g1.Values("objectGUID"), "") != strings.Join(g2.Values("objectGUID"), "") {
 		t.Fatalf("restore must keep the objectGUID: %+v / %+v", g1, g2)

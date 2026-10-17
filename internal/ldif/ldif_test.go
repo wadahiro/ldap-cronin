@@ -24,8 +24,10 @@ func TestLineEncodesUnsafeValues(t *testing.T) {
 
 func TestPasswordIsNeverPrinted(t *testing.T) {
 	var b bytes.Buffer
-	Replace(&b, "cn=a", map[string][]string{"unicodePwd": {"secret"}})
-	if strings.Contains(b.String(), "secret") || !strings.Contains(b.String(), "<redacted>") {
-		t.Fatal(b.String())
+	w := Writer{W: &b, Secret: []string{"unicodePwd", "userPassword"}}
+	w.Replace("cn=a", map[string][]string{"unicodePwd": {"secret"}})
+	w.Add("cn=b", map[string][]string{"cn": {"b"}, "USERPASSWORD": {"plain"}})
+	if out := b.String(); strings.Contains(out, "secret") || strings.Contains(out, "plain") || !strings.Contains(out, "<redacted>") {
+		t.Fatal(out)
 	}
 }

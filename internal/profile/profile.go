@@ -1,16 +1,23 @@
-// Package profile collects everything that differs between Active Directory (and Samba AD) and a plain LDAP server:
-// default filters and attribute lists, the identifier attribute, password handling and schema discovery.
+// Package profile collects everything that differs between Active Directory (and Samba AD) and a plain LDAP server.
 //
-// A profile is data, not a code path per server product. A product-specific profile (OpenLDAP, 389-ds, ...) was rejected:
-// the RFC-level behavior is the same, and what differs per deployment (object classes, attributes) is covered by the
-// per-kind filters and attribute lists in the config file.
+// Lists are data: the kinds with their default filters and attribute lists, the never-clone and never-mask lists.
+// They are what a deployment tweaks through the config file and what list-attrs prints. Behavior is a strategy:
+// how DN-valued attributes are found, where the naming context starts, how an account gets its password, how values
+// compare, how objects are identified. Shared code calls these instead of branching on a server name, so a third
+// server type is a third value of Profile and nothing else.
+//
+// A profile per product (OpenLDAP, 389-ds, ...) was rejected: the RFC-level behavior is the same, and what differs
+// per deployment (object classes, attributes) is covered by the per-kind filters and attribute lists in the config file.
 package profile
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
+	"github.com/wadahiro/ldap-cronin/internal/compare"
 	"github.com/wadahiro/ldap-cronin/internal/directory"
+	"github.com/wadahiro/ldap-cronin/internal/identity"
 )
 
 // Names of the profiles. Auto is only valid in the config file; it is resolved against the source's root DSE.
@@ -20,184 +27,183 @@ const (
 	NameAuto = "auto"
 )
 
-// Object kinds.
+// Names of the default kinds, the labels the config file uses ([scope] objects, [scope.filters], [attributes.include]).
 const (
 	KindOU    = "ou"
 	KindGroup = "group"
 	KindUser  = "user"
 )
 
-// PasswordMode says how a user's fixed password is set on the target.
-type PasswordMode int
+// Role is what the tool does with entries of a kind. Only the role matters to the shared code, never the kind name.
+type Role int
 
 const (
-	// PasswordUnicodePwd sets unicodePwd (quoted UTF-16LE) with a modify over LDAPS, then userAccountControl.
-	PasswordUnicodePwd PasswordMode = iota
-	// PasswordUserPassword replaces userPassword with the plain password (the server hashes it).
-	PasswordUserPassword
+	// RoleContainer entries are created shallowest first, because children need them, and are held in memory.
+	RoleContainer Role = iota
+	// RoleLeaf entries are streamed: they do not depend on each other (references are applied afterwards).
+	RoleLeaf
 )
 
-// SchemaMode says how attributes that hold DNs are discovered.
-type SchemaMode int
+// KindSpec is one kind of object the tool selects.
+type KindSpec struct {
+	Name   string
+	Role   Role
+	Filter string
+	// Default is the default attribute allow list (without the profile's Required attributes).
+	Default []string
+	// Order is the creation order among leaves.
+	Order int
+	// Account marks kinds whose entries are accounts: they are created through the profile's Account strategy.
+	Account bool
+}
 
-const (
-	// SchemaAD reads attributeSchema entries (attributeSyntax 2.5.5.1) from the schema naming context.
-	SchemaAD SchemaMode = iota
-	// SchemaSubschema reads attributeTypes from the subschema subentry (RFC 4512) and follows SUP.
-	SchemaSubschema
-)
+// RefInfo describes an attribute whose values are DNs.
+type RefInfo struct{ Single bool }
+
+// Schema is what the source schema says about DN-valued attributes.
+type Schema struct {
+	Refs map[string]RefInfo // lowercase name
+	// BackLinks are computed by the server (memberOf, directReports, ...) and cannot be written.
+	BackLinks map[string]bool
+	// Unsupported hold a DN inside a larger value (DN-Binary, DN-String) that this tool cannot rewrite.
+	Unsupported map[string]bool
+}
+
+// RefDiscoverer finds the DN-valued attributes in the source schema. A fixed list would break attributes added
+// through extra_include (seeAlso, Exchange publicDelegates, ...): they would fail depending on the creation order of
+// their targets, or show false differences in diff.
+type RefDiscoverer interface {
+	// Discover returns ok=false when the schema cannot be read (test directories without a root DSE); the
+	// profile's BuiltinRefs are then used alone.
+	Discover(ctx context.Context, src directory.Directory) (s Schema, ok bool, err error)
+}
+
+// RootResolver finds the top of the naming context that holds base_dn. [scope] root_dn, when set, bypasses it.
+type RootResolver interface {
+	Root(ctx context.Context, src directory.Directory, baseDN string) (string, error)
+}
+
+// NativeSupport reads what a lab needs to be provisioned as the same domain as the source (clone -native).
+type NativeSupport interface {
+	Domain(ctx context.Context, src directory.Directory, root string) (Domain, error)
+}
+
+// Domain identifies a source domain for a native import.
+type Domain struct{ Root, Realm, NetBIOS, SID, GUID string }
 
 type Profile struct {
-	Name string
-	// Filters are the default search filters per kind.
-	Filters map[string]string
-	// Defaults are the default attribute allow lists per kind (without the required attributes).
-	Defaults map[string][]string
+	Name  string
+	Kinds []KindSpec
 	// Required attributes are always read and written and cannot be removed by configuration.
 	Required []string
+	// AncestorAttrs are read and written for a create-only ancestor (a parent above or between the selected
+	// entries). Borrowing the OU allow list was rejected: an ancestor that is not an OU may need an attribute that
+	// list does not have.
+	AncestorAttrs []string
 	// NeverClone attributes are server-managed or credentials; adding them to the allow list is an error.
 	NeverClone []string
 	// NoMask attributes would break the tool or violate a constraint if replaced by a fixed string.
 	NoMask []string
+	// PasswordAttrs are never copied, never compared and never printed.
+	PasswordAttrs []string
 	// SystemFilter excludes built-in objects (AD: isCriticalSystemObject). Empty means no exclusion.
 	SystemFilter string
-	// IDAttr is the attribute that identifies an object across renames and moves.
-	IDAttr string
-	// IDIsText is true when the identifier is returned (and searched) as text, as entryUUID is, not as raw bytes.
-	IDIsText bool
-	// BuiltinRefs are DN-valued attributes known without reading the schema (name, lowercase -> single-valued).
-	BuiltinRefs map[string]bool
-	Schema      SchemaMode
-	// RangedAttrs are retrieved with the AD range option (member;range=0-N).
-	RangedAttrs []string
-	// PasswordAttrs are never copied and never compared.
-	PasswordAttrs []string
-	Password      PasswordMode
-	// LeafOrder is the order in which groups and users are created.
-	LeafOrder []string
-	// SupportsNative is true when objectGUID/objectSid import into a lab Samba is possible.
-	SupportsNative bool
+	// BuiltinRefs are DN-valued attributes known without reading the schema (lowercase name).
+	BuiltinRefs map[string]RefInfo
+	// Ranged attributes are always fetched with the AD range option (member;range=0-N).
+	Ranged []string
+	// Values holds per-attribute value normalizers (lowercase name) beyond the generic rules.
+	Values map[string]compare.Normalizer
+
+	Identity identity.Scheme
+	Refs     RefDiscoverer
+	Root     RootResolver
+	Account  Account
+	// Native is nil when clone -native is not possible for this server type.
+	Native NativeSupport
 }
 
-// AD is Active Directory and Samba AD.
-var AD = Profile{
-	Name: NameAD,
-	Filters: map[string]string{
-		KindOU:    "(objectClass=organizationalUnit)",
-		KindGroup: "(objectClass=group)",
-		KindUser:  "(&(objectCategory=person)(objectClass=user))",
-	},
-	Defaults: map[string][]string{
-		KindOU: {
-			"description", "displayName", "street", "l", "st", "postalCode", "co", "c", "managedBy",
-		},
-		KindGroup: {
-			"sAMAccountName", "groupType", "description", "displayName", "info", "mail",
-			"managedBy", "member", "adminDescription", "gidNumber",
-		},
-		KindUser: {
-			"sAMAccountName", "userPrincipalName", "userAccountControl", "accountExpires",
-			"givenName", "sn", "initials", "middleName", "displayName", "description",
-			"mail", "telephoneNumber", "mobile", "homePhone", "pager", "ipPhone",
-			"facsimileTelephoneNumber", "title", "department", "company", "division",
-			"physicalDeliveryOfficeName", "manager", "employeeID", "employeeNumber", "employeeType",
-			"streetAddress", "postOfficeBox", "l", "st", "postalCode", "co", "c",
-			"wWWHomePage", "url", "info", "homeDirectory", "homeDrive", "scriptPath", "profilePath",
-			"uidNumber", "gidNumber", "loginShell", "unixHomeDirectory",
-		},
-	},
-	Required: []string{"objectClass", "cn", "ou"},
-	NeverClone: []string{
-		"objectGUID", "objectSid", "sIDHistory", "whenCreated", "whenChanged", "uSNCreated", "uSNChanged",
-		"distinguishedName", "name", "pwdLastSet", "badPwdCount", "badPasswordTime", "lastLogon",
-		"lastLogoff", "lastLogonTimestamp", "logonCount", "lockoutTime", "memberOf", "unicodePwd",
-		"dBCSPwd", "ntPwdHistory", "lmPwdHistory", "supplementalCredentials", "sAMAccountType",
-		"objectCategory", "instanceType", "nTSecurityDescriptor", "isCriticalSystemObject",
-		"systemFlags", "dSCorePropagationData", "primaryGroupID", "msDS-KeyVersionNumber",
-	},
-	NoMask: []string{
-		"objectClass", "cn", "ou", "sAMAccountName", "userPrincipalName", "servicePrincipalName",
-		"member", "manager", "managedBy", "userAccountControl", "groupType", "accountExpires",
-		"countryCode", "c", "uidNumber", "gidNumber",
-	},
-	SystemFilter:   "(!(isCriticalSystemObject=TRUE))",
-	IDAttr:         "objectGUID",
-	BuiltinRefs:    map[string]bool{"member": false, "manager": true, "managedby": true},
-	Schema:         SchemaAD,
-	RangedAttrs:    []string{"member"},
-	PasswordAttrs:  []string{"unicodePwd", "dBCSPwd", "ntPwdHistory", "lmPwdHistory", "supplementalCredentials"},
-	Password:       PasswordUnicodePwd,
-	LeafOrder:      []string{KindGroup, KindUser},
-	SupportsNative: true,
+// Kind returns the spec of a kind by name.
+func (p Profile) Kind(name string) (KindSpec, bool) {
+	for _, k := range p.Kinds {
+		if k.Name == name {
+			return k, true
+		}
+	}
+	return KindSpec{}, false
 }
 
-// LDAP is a generic RFC 4510 server (OpenLDAP, 389 Directory Server, ...): inetOrgPerson users, groupOfNames groups.
-var LDAP = Profile{
-	Name: NameLDAP,
-	Filters: map[string]string{
-		KindOU:    "(objectClass=organizationalUnit)",
-		KindGroup: "(|(objectClass=groupOfNames)(objectClass=groupOfUniqueNames)(objectClass=posixGroup))",
-		KindUser:  "(objectClass=inetOrgPerson)",
-	},
-	Defaults: map[string][]string{
-		KindOU: {
-			"description", "businessCategory", "street", "l", "st", "postalCode", "postalAddress",
-			"telephoneNumber", "facsimileTelephoneNumber", "seeAlso",
-		},
-		KindGroup: {
-			"description", "member", "uniqueMember", "owner", "seeAlso", "businessCategory",
-			"gidNumber", "memberUid",
-		},
-		KindUser: {
-			"uid", "givenName", "sn", "displayName", "description", "initials", "mail",
-			"telephoneNumber", "mobile", "homePhone", "pager", "facsimileTelephoneNumber",
-			"title", "departmentNumber", "employeeNumber", "employeeType", "o", "ou",
-			"street", "l", "st", "postalCode", "postalAddress", "postOfficeBox",
-			"physicalDeliveryOfficeName", "manager", "secretary", "preferredLanguage", "labeledURI",
-			"uidNumber", "gidNumber", "homeDirectory", "loginShell", "gecos",
-		},
-	},
-	// dc and o are needed to create the naming-context-level ancestors that are not OUs.
-	Required: []string{"objectClass", "cn", "ou", "dc", "o"},
-	NeverClone: []string{
-		"entryUUID", "entryCSN", "entryDN", "createTimestamp", "modifyTimestamp", "creatorsName", "modifiersName",
-		"structuralObjectClass", "hasSubordinates", "subschemaSubentry", "memberOf", "pwdChangedTime",
-		"pwdFailureTime", "pwdAccountLockedTime", "pwdHistory", "pwdReset", "userPassword", "authPassword",
-		"sambaNTPassword", "sambaLMPassword", "nsUniqueId", "modifyTimestamp",
-	},
-	NoMask: []string{
-		"objectClass", "cn", "ou", "uid", "dc", "o", "member", "uniqueMember", "owner", "manager", "secretary",
-		"seeAlso", "roleOccupant", "memberUid", "uidNumber", "gidNumber", "c",
-	},
-	IDAttr:   "entryUUID",
-	IDIsText: true,
-	BuiltinRefs: map[string]bool{
-		"member": false, "uniquemember": false, "owner": false, "seealso": false, "manager": false,
-		"secretary": false, "roleoccupant": false,
-	},
-	Schema:        SchemaSubschema,
-	PasswordAttrs: []string{"userPassword", "authPassword", "sambaNTPassword", "sambaLMPassword", "pwdHistory"},
-	Password:      PasswordUserPassword,
-	LeafOrder:     []string{KindUser, KindGroup},
+// KindNames lists the kinds in the order they are listed and reported.
+func (p Profile) KindNames() []string {
+	out := make([]string, 0, len(p.Kinds))
+	for _, k := range p.Kinds {
+		out = append(out, k.Name)
+	}
+	return out
 }
+
+// Override is an allow-list adjustment that comes from the config file.
+type Override struct {
+	Include map[string][]string // replaces the defaults per kind
+	Extra   []string            // added to the defaults of all kinds
+	Exclude []string            // removed from all kinds
+}
+
+// Attrs returns the final attribute allow list of a kind: the required attributes, the defaults (or their
+// replacement) and the extra ones, without the excluded ones.
+//
+// The tool is allow-list based rather than exclude-list based, because with an exclude list unexpected attributes
+// such as extensionAttribute* would silently land in the target.
+func (p Profile) Attrs(kind string, o Override) ([]string, error) {
+	spec, ok := p.Kind(kind)
+	if !ok {
+		return nil, fmt.Errorf("unknown object kind %q", kind)
+	}
+	base := spec.Default
+	if inc, ok := o.Include[kind]; ok {
+		base = inc
+	}
+	never, excluded, required := Set(p.NeverClone), Set(o.Exclude), Set(p.Required)
+	seen := map[string]bool{}
+	var out []string
+	for _, list := range [][]string{p.Required, base, o.Extra} {
+		for _, name := range list {
+			key := strings.ToLower(name)
+			if never[key] {
+				return nil, fmt.Errorf("attribute %q cannot be cloned", name)
+			}
+			if seen[key] || (excluded[key] && !required[key]) {
+				continue
+			}
+			seen[key] = true
+			out = append(out, name)
+		}
+	}
+	return out, nil
+}
+
+// Maskable reports whether name can be replaced by a fixed string.
+func (p Profile) Maskable(name string) bool { return !Set(p.NoMask)[strings.ToLower(name)] }
 
 // ByName returns the profile for an explicit name (ad or ldap).
 func ByName(name string) (Profile, error) {
-	switch strings.ToLower(name) {
-	case NameAD:
-		return AD, nil
-	case NameLDAP:
-		return LDAP, nil
+	for _, p := range All() {
+		if strings.EqualFold(p.Name, name) {
+			return p, nil
+		}
 	}
 	return Profile{}, fmt.Errorf("unknown profile %q (available: %s, %s, %s)", name, NameAuto, NameAD, NameLDAP)
 }
+
+// All lists every profile, for validating the config before the server type is known.
+func All() []Profile { return []Profile{AD, LDAP} }
 
 // adCapability is LDAP_CAP_ACTIVE_DIRECTORY_OID in supportedCapabilities. Samba AD advertises it too.
 const adCapability = "1.2.840.113556.1.4.800"
 
 // Detect decides between AD and plain LDAP from the root DSE.
-func Detect(d directory.Directory) (Profile, error) {
-	root, err := d.Get("", []string{"supportedCapabilities"})
+func Detect(ctx context.Context, d directory.Directory) (Profile, error) {
+	root, err := d.Get(ctx, "", []string{"supportedCapabilities"})
 	if err != nil {
 		return Profile{}, fmt.Errorf("read root DSE to detect the server type: %w", err)
 	}
@@ -212,9 +218,9 @@ func Detect(d directory.Directory) (Profile, error) {
 }
 
 // Resolve returns the named profile; for auto it asks the server.
-func Resolve(name string, d directory.Directory) (Profile, error) {
+func Resolve(ctx context.Context, name string, d directory.Directory) (Profile, error) {
 	if name == "" || strings.EqualFold(name, NameAuto) {
-		return Detect(d)
+		return Detect(ctx, d)
 	}
 	return ByName(name)
 }
@@ -228,5 +234,9 @@ func Set(names []string) map[string]bool {
 	return out
 }
 
-// Kinds is the order in which kinds are listed and processed structurally.
-var Kinds = []string{KindOU, KindGroup, KindUser}
+func first(values []string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	return values[0]
+}

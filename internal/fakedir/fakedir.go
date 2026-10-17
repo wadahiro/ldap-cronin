@@ -2,6 +2,7 @@
 package fakedir
 
 import (
+	"context"
 	"encoding/hex"
 	"fmt"
 	"strings"
@@ -24,7 +25,9 @@ type Dir struct {
 	nextGUID    uint64
 }
 
-// assignGUID gives an entry without an objectGUID a unique GUID (16 raw bytes), as a real server does.
+// assignGUID gives an entry the identifiers a real server assigns: objectGUID (16 raw bytes, as AD) and entryUUID
+// (the same 16 bytes as text, as RFC 4530 servers). One fake serves both profiles; each reads only its own attribute.
+// An entry that brings its own objectGUID (a native import) keeps it.
 func (d *Dir) assignGUID(attrs map[string][]string) {
 	for n := range attrs {
 		if strings.EqualFold(n, "objectGUID") {
@@ -36,7 +39,9 @@ func (d *Dir) assignGUID(attrs map[string][]string) {
 	for i := 0; i < 8; i++ {
 		b[15-i] = byte(d.nextGUID >> (8 * i))
 	}
+	h := hex.EncodeToString(b)
 	attrs["objectGUID"] = []string{string(b)}
+	attrs["entryUUID"] = []string{h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:]}
 }
 
 // New returns an empty directory holding roots (DNs that already exist as parents, such as the domain root).
@@ -63,7 +68,7 @@ func (d *Dir) Lookup(dnStr string) *directory.Entry {
 }
 
 // Walk collects the matching DNs first and hands them to fn one at a time, so a large data set is never copied wholesale.
-func (d *Dir) Walk(base, filter string, attrs []string, fn func(directory.Entry) error) error {
+func (d *Dir) Walk(ctx context.Context, base, filter string, attrs []string, fn func(directory.Entry) error) error {
 	d.mu.Lock()
 	var keys []string
 	for k, e := range d.Entries {
@@ -73,6 +78,9 @@ func (d *Dir) Walk(base, filter string, attrs []string, fn func(directory.Entry)
 	}
 	d.mu.Unlock()
 	for _, k := range keys {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		d.mu.Lock()
 		e, ok := d.Entries[k]
 		var p directory.Entry
@@ -90,7 +98,10 @@ func (d *Dir) Walk(base, filter string, attrs []string, fn func(directory.Entry)
 	return nil
 }
 
-func (d *Dir) Get(dnStr string, attrs []string) (*directory.Entry, error) {
+func (d *Dir) Get(ctx context.Context, dnStr string, attrs []string) (*directory.Entry, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	e, ok := d.Entries[dn.Normalize(dnStr)]
@@ -101,7 +112,10 @@ func (d *Dir) Get(dnStr string, attrs []string) (*directory.Entry, error) {
 	return &p, nil
 }
 
-func (d *Dir) Add(e directory.Entry) error {
+func (d *Dir) Add(ctx context.Context, e directory.Entry) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	key := dn.Normalize(e.DN)
@@ -125,7 +139,10 @@ func (d *Dir) Add(e directory.Entry) error {
 	return nil
 }
 
-func (d *Dir) Replace(dnStr string, attrs map[string][]string) error {
+func (d *Dir) Replace(ctx context.Context, dnStr string, attrs map[string][]string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	e, ok := d.Entries[dn.Normalize(dnStr)]
@@ -142,7 +159,10 @@ func (d *Dir) Replace(dnStr string, attrs map[string][]string) error {
 	return nil
 }
 
-func (d *Dir) AddValues(dnStr, attr string, values []string) error {
+func (d *Dir) AddValues(ctx context.Context, dnStr, attr string, values []string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	e, ok := d.Entries[dn.Normalize(dnStr)]
@@ -207,8 +227,8 @@ func project(e directory.Entry, attrs []string) directory.Entry {
 func matches(e directory.Entry, filter string) bool {
 	classes := strings.ToLower(strings.Join(e.Values("objectClass"), ","))
 	switch {
-	case strings.HasPrefix(filter, "(objectGUID="):
-		return guidFilterMatches(e, filter)
+	case strings.HasPrefix(filter, "(objectGUID=") || strings.HasPrefix(filter, "(entryUUID="):
+		return equalityMatches(e, filter)
 	case strings.Contains(filter, "attributeSchema"):
 		return strings.Contains(classes, "attributeschema")
 	case strings.Contains(filter, "groupOfNames"):
@@ -235,13 +255,32 @@ func clone(m map[string][]string) map[string][]string {
 
 var _ directory.Directory = (*Dir)(nil)
 
-// guidFilterMatches interprets a filter of the form "(objectGUID=\\ab\\cd...)".
-func guidFilterMatches(e directory.Entry, filter string) bool {
-	hexed := strings.ReplaceAll(strings.TrimSuffix(strings.TrimPrefix(filter, "(objectGUID="), ")"), `\`, "")
-	raw, err := hex.DecodeString(hexed)
-	if err != nil {
+// equalityMatches interprets a single equality filter "(attr=value)" with RFC 4515 escapes (\ab), the form the
+// identifier schemes build: escaped raw bytes for objectGUID, plain text for entryUUID. Escaped values are compared
+// byte for byte (folding case would make two different GUIDs equal); plain text ignores case, as entryUUID matching does.
+func equalityMatches(e directory.Entry, filter string) bool {
+	name, value, ok := strings.Cut(strings.TrimSuffix(strings.TrimPrefix(filter, "("), ")"), "=")
+	if !ok {
 		return false
 	}
-	v := e.Values("objectGUID")
-	return len(v) == 1 && v[0] == string(raw)
+	var raw []byte
+	escaped := false
+	for i := 0; i < len(value); i++ {
+		if value[i] == '\\' && i+2 < len(value) {
+			b, err := hex.DecodeString(value[i+1 : i+3])
+			if err != nil {
+				return false
+			}
+			raw, escaped = append(raw, b...), true
+			i += 2
+			continue
+		}
+		raw = append(raw, value[i])
+	}
+	for _, v := range e.Values(name) {
+		if v == string(raw) || (!escaped && strings.EqualFold(v, string(raw))) {
+			return true
+		}
+	}
+	return false
 }

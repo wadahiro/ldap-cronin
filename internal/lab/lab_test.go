@@ -1,6 +1,7 @@
 package lab
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -164,12 +165,12 @@ func TestUpSkipsLoadWhenTheImageIsAlreadyThere(t *testing.T) {
 	fx := newLabFixture(t)
 	fx.withBundle()
 	fx.d.images["ldap-cronin/samba-ad:test"] = true
-	must(t, fx.l.Up(UpOptions{Flags: Settings{Realm: "lab.test", AdminPassword: "x-Passw0rd!"}}))
+	must(t, fx.l.Up(context.Background(), UpOptions{Flags: Settings{Realm: "lab.test", AdminPassword: "x-Passw0rd!"}}))
 	if len(fx.d.callsMatching("load -i")) != 0 {
 		t.Fatal("must not reload")
 	}
 	fx.d.containers = map[string]*fakeContainer{}
-	must(t, fx.l.Up(UpOptions{Flags: Settings{Realm: "lab.test"}, Reload: true}))
+	must(t, fx.l.Up(context.Background(), UpOptions{Flags: Settings{Realm: "lab.test"}, Reload: true}))
 	if len(fx.d.callsMatching("load -i")) != 1 {
 		t.Fatal("--reload must load again")
 	}
@@ -178,10 +179,10 @@ func TestUpSkipsLoadWhenTheImageIsAlreadyThere(t *testing.T) {
 func TestUpRejectsInvalidInputBeforeTouchingDocker(t *testing.T) {
 	fx := newLabFixture(t)
 	fx.withBundle()
-	if err := fx.l.Up(UpOptions{Flags: Settings{Realm: "bad name!", AdminPassword: "x"}}); err == nil {
+	if err := fx.l.Up(context.Background(), UpOptions{Flags: Settings{Realm: "bad name!", AdminPassword: "x"}}); err == nil {
 		t.Fatal("invalid realm")
 	}
-	if err := fx.l.Up(UpOptions{Flags: Settings{Realm: "averyveryverylonglabelname.test", AdminPassword: "x"}}); err == nil {
+	if err := fx.l.Up(context.Background(), UpOptions{Flags: Settings{Realm: "averyveryverylonglabelname.test", AdminPassword: "x"}}); err == nil {
 		t.Fatal("netbios too long")
 	}
 	if len(fx.d.callsMatching("run -d")) != 0 {
@@ -192,7 +193,7 @@ func TestUpRejectsInvalidInputBeforeTouchingDocker(t *testing.T) {
 func TestUpGeneratesAPasswordWhenNoneIsGiven(t *testing.T) {
 	fx := newLabFixture(t)
 	fx.withBundle()
-	must(t, fx.l.Up(UpOptions{Flags: Settings{Realm: "gen.test"}}))
+	must(t, fx.l.Up(context.Background(), UpOptions{Flags: Settings{Realm: "gen.test"}}))
 	env, _ := ReadEnvFile(fx.l.envPath())
 	if len(env.AdminPassword) < 20 || !strings.Contains(fx.out.String(), "auto-generated") {
 		t.Fatalf("%+v\n%s", env, fx.out.String())
@@ -204,7 +205,7 @@ func TestUpAsksForTheRealmWhenOmitted(t *testing.T) {
 	fx.withBundle()
 	fx.prompt.realm = "asked.test"
 	fx.prompt.password = "Asked-Passw0rd!"
-	must(t, fx.l.Up(UpOptions{}))
+	must(t, fx.l.Up(context.Background(), UpOptions{}))
 	if env, _ := ReadEnvFile(fx.l.envPath()); env.Realm != "asked.test" {
 		t.Fatalf("%+v", env)
 	}
@@ -213,7 +214,7 @@ func TestUpAsksForTheRealmWhenOmitted(t *testing.T) {
 func TestUpFallsBackToTheDefaultRealmWithoutATerminal(t *testing.T) {
 	fx := newLabFixture(t)
 	fx.withBundle()
-	must(t, fx.l.Up(UpOptions{Flags: Settings{AdminPassword: "x-Passw0rd!"}}))
+	must(t, fx.l.Up(context.Background(), UpOptions{Flags: Settings{AdminPassword: "x-Passw0rd!"}}))
 	if env, _ := ReadEnvFile(fx.l.envPath()); env.Realm != DefaultRealm {
 		t.Fatalf("%+v", env)
 	}
@@ -223,7 +224,7 @@ func TestUpReusesAnExistingContainerWithTheSameSettings(t *testing.T) {
 	fx := newLabFixture(t)
 	fx.up("corp.example.local")
 	before := len(fx.d.callsMatching("run -d"))
-	must(t, fx.l.Up(UpOptions{Flags: Settings{Realm: "corp.example.local"}})) // the password comes from .env
+	must(t, fx.l.Up(context.Background(), UpOptions{Flags: Settings{Realm: "corp.example.local"}})) // the password comes from .env
 	if len(fx.d.callsMatching("run -d")) != before {
 		t.Fatal("an existing container must be reused")
 	}
@@ -232,8 +233,8 @@ func TestUpReusesAnExistingContainerWithTheSameSettings(t *testing.T) {
 func TestUpRestartsAStoppedContainer(t *testing.T) {
 	fx := newLabFixture(t)
 	fx.up("corp.example.local")
-	must(t, fx.l.Down())
-	must(t, fx.l.Up(UpOptions{}))
+	must(t, fx.l.Down(context.Background()))
+	must(t, fx.l.Up(context.Background(), UpOptions{}))
 	if len(fx.d.callsMatching("start t-ad")) != 1 || !fx.d.containers["t-ad"].running {
 		t.Fatalf("%v", fx.d.calls)
 	}
@@ -243,7 +244,7 @@ func TestUpRefusesAnExistingContainerWithDifferentSettingsWithoutDestroyingIt(t 
 	fx := newLabFixture(t)
 	fx.up("corp.example.local")
 	n := len(fx.d.calls)
-	err := fx.l.Up(UpOptions{Flags: Settings{Realm: "other.test"}})
+	err := fx.l.Up(context.Background(), UpOptions{Flags: Settings{Realm: "other.test"}})
 	if err == nil || !strings.Contains(err.Error(), "reset") {
 		t.Fatalf("got %v", err)
 	}
@@ -252,7 +253,7 @@ func TestUpRefusesAnExistingContainerWithDifferentSettingsWithoutDestroyingIt(t 
 			t.Fatalf("a mismatch must not destroy or recreate anything: %s", c)
 		}
 	}
-	if err := fx.l.Up(UpOptions{Flags: Settings{LDAPSPort: 9999}}); err == nil {
+	if err := fx.l.Up(context.Background(), UpOptions{Flags: Settings{LDAPSPort: 9999}}); err == nil {
 		t.Fatal("a different port must be refused too")
 	}
 }
@@ -260,7 +261,7 @@ func TestUpRefusesAnExistingContainerWithDifferentSettingsWithoutDestroyingIt(t 
 func TestUpWithSampleSourceStartsAnEphemeralContainerWithoutVolumes(t *testing.T) {
 	fx := newLabFixture(t)
 	fx.withBundle()
-	must(t, fx.l.Up(UpOptions{Flags: Settings{Realm: "corp.example.local", AdminPassword: "x-Passw0rd!"}, WithSource: true}))
+	must(t, fx.l.Up(context.Background(), UpOptions{Flags: Settings{Realm: "corp.example.local", AdminPassword: "x-Passw0rd!"}, WithSource: true}))
 	run := fx.d.callsMatching("run -d --name t-ad-src")
 	if len(run) != 1 || !strings.Contains(run[0], "SEED_SAMPLE_DATA=true") || strings.Contains(run[0], " -v ") ||
 		!strings.Contains(run[0], "-p 11636:636") || !strings.Contains(run[0], "--hostname dc2") {
@@ -270,12 +271,12 @@ func TestUpWithSampleSourceStartsAnEphemeralContainerWithoutVolumes(t *testing.T
 
 func TestUpFailsWithoutAnImageAndExplainsHow(t *testing.T) {
 	fx := newLabFixture(t) // no bundle and no image
-	err := fx.l.Up(UpOptions{Flags: Settings{Realm: "a.test", AdminPassword: "x"}})
+	err := fx.l.Up(context.Background(), UpOptions{Flags: Settings{Realm: "a.test", AdminPassword: "x"}})
 	if err == nil || !strings.Contains(err.Error(), "--image") {
 		t.Fatalf("got %v", err)
 	}
 	fx.d.images["my/image:1"] = true
-	must(t, fx.l.Up(UpOptions{Flags: Settings{Realm: "a.test", AdminPassword: "x-Passw0rd!"}, Image: "my/image:1"}))
+	must(t, fx.l.Up(context.Background(), UpOptions{Flags: Settings{Realm: "a.test", AdminPassword: "x-Passw0rd!"}, Image: "my/image:1"}))
 	if len(fx.d.callsMatching("my/image:1")) == 0 {
 		t.Fatal("the explicit image must be used")
 	}
@@ -285,21 +286,21 @@ func TestUpRefusesACorruptedBundle(t *testing.T) {
 	fx := newLabFixture(t)
 	dir := fx.withBundle()
 	must(t, os.WriteFile(filepath.Join(dir, "images", "samba-ad.tar"), []byte("bad"), 0o644))
-	if err := fx.l.Up(UpOptions{Flags: Settings{Realm: "a.test", AdminPassword: "x"}}); err == nil {
+	if err := fx.l.Up(context.Background(), UpOptions{Flags: Settings{Realm: "a.test", AdminPassword: "x"}}); err == nil {
 		t.Fatal("must fail")
 	}
 	if len(fx.d.callsMatching("load -i")) != 0 {
 		t.Fatal("a corrupted image must not be loaded")
 	}
 	fx.d.calls = nil
-	must(t, fx.l.Up(UpOptions{Flags: Settings{Realm: "a.test", AdminPassword: "x-Passw0rd!"}, SkipVerify: true}))
+	must(t, fx.l.Up(context.Background(), UpOptions{Flags: Settings{Realm: "a.test", AdminPassword: "x-Passw0rd!"}, SkipVerify: true}))
 }
 
 func TestUpWarnsWhenTheImageArchitectureDiffersFromTheHost(t *testing.T) {
 	fx := newLabFixture(t)
 	fx.withBundle()
 	fx.d.arch = "arm64"
-	must(t, fx.l.Up(UpOptions{Flags: Settings{Realm: "a.test", AdminPassword: "x-Passw0rd!"}}))
+	must(t, fx.l.Up(context.Background(), UpOptions{Flags: Settings{Realm: "a.test", AdminPassword: "x-Passw0rd!"}}))
 	if !strings.Contains(fx.errw.String(), "architecture") {
 		t.Fatal(fx.errw.String())
 	}
@@ -310,7 +311,7 @@ func TestUpWarnsWhenTheImageArchitectureDiffersFromTheHost(t *testing.T) {
 func TestDownStopsButKeepsTheContainerAndData(t *testing.T) {
 	fx := newLabFixture(t)
 	fx.up("corp.example.local")
-	must(t, fx.l.Down())
+	must(t, fx.l.Down(context.Background()))
 	if _, ok := fx.d.containers["t-ad"]; !ok || fx.d.containers["t-ad"].running {
 		t.Fatal("the container must be stopped, not removed")
 	}
@@ -323,13 +324,13 @@ func TestResetRemovesDataAndEnvButKeepsSnapshotsByDefault(t *testing.T) {
 	fx := newLabFixture(t)
 	fx.up("corp.example.local")
 	fx.d.volumeData["t-ad-private"] = "data"
-	_, err := fx.l.Snapshot(SnapshotOptions{Name: "keep"})
+	_, err := fx.l.Snapshot(context.Background(), SnapshotOptions{Name: "keep"})
 	must(t, err)
 
-	if err := fx.l.Reset(ResetOptions{}); err == nil {
+	if err := fx.l.Reset(context.Background(), ResetOptions{}); err == nil {
 		t.Fatal("reset must ask for confirmation")
 	}
-	must(t, fx.l.Reset(ResetOptions{Yes: true}))
+	must(t, fx.l.Reset(context.Background(), ResetOptions{Yes: true}))
 	if _, ok := fx.d.containers["t-ad"]; ok {
 		t.Fatal("container must be removed")
 	}
@@ -342,7 +343,7 @@ func TestResetRemovesDataAndEnvButKeepsSnapshotsByDefault(t *testing.T) {
 	if list, _ := fx.l.Snapshots(); len(list) != 1 {
 		t.Fatal("snapshots must survive a reset by default")
 	}
-	must(t, fx.l.Reset(ResetOptions{Yes: true, Snapshots: true}))
+	must(t, fx.l.Reset(context.Background(), ResetOptions{Yes: true, Snapshots: true}))
 	if list, _ := fx.l.Snapshots(); len(list) != 0 {
 		t.Fatal("--snapshots must remove them")
 	}
@@ -351,5 +352,5 @@ func TestResetRemovesDataAndEnvButKeepsSnapshotsByDefault(t *testing.T) {
 func TestResetAcceptsAConfirmation(t *testing.T) {
 	fx := newLabFixture(t)
 	fx.up("corp.example.local")
-	must(t, fx.l.Reset(ResetOptions{Confirm: func(string) bool { return true }}))
+	must(t, fx.l.Reset(context.Background(), ResetOptions{Confirm: func(string) bool { return true }}))
 }

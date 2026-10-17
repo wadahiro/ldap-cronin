@@ -5,19 +5,21 @@ For people who develop and maintain ldap-cronin. For usage see [README.md](../RE
 ## Layout
 
 ```
-cmd/ldap-cronin/    CLI (clone / diff / list-attrs / lab / version)
+cmd/ldap-cronin/    CLI: flags, passwords (prompt or environment), the signal context, exit codes. Nothing else
 internal/
-  config/            TOML loading and validation
-  attrs/             attribute allow list, attributes that cannot be masked or copied
-  plan/              deciding the targets (OUs, parent containers, target DN set Scope, DN reference attribute detection)
-  clone/             applying (parent OUs -> groups and users -> DN reference attributes)
-  diff/              comparison and output (RENAMED / REPLACED detection, summary)
-  compare/           value equivalence (normalizing DNs, objectClass, userAccountControl)
-  directory/         the operations abstraction (Directory) and the LDIF output used by dry-run
-  ldapdir/           go-ldap implementation (connection pool, paging, member range retrieval)
-  guidmap/           GUID mapping between source and target (fixed-length file, binary search, external sort)
+  app/               assembling a run: connections, profile resolution, the job, the mapping file; clone, diff and native entry points
+  config/            TOML loading and validation; JobFor builds the job once the profile is known
+  profile/           server types (ad, ldap): kinds and attribute lists as data, strategies for identity, schema, root, accounts, values
+  identity/          identifier schemes (objectGUID, entryUUID), Lookup, and the mapping file (fixed-length, binary search, external sort)
+  plan/              Job (what to process) and Plan (containers, target DN set Scope, DN references); traversal and attribute differences
+  clone/             applying (containers -> leaves -> DN reference attributes)
+  diff/              matching (RENAMED / REPLACED), comparison, formatting, summary; ChooseLookup
+  compare/           value equivalence under a normalizer (knows no attribute names)
+  directory/         the operations abstraction (Directory)
+  ldapdir/           go-ldap implementation (connection pool, paging, member range retrieval, timeouts)
+  dryrun/            Directory that prints writes as LDIF
   lab/               Samba4 test environment on docker, snapshots and restore (needs only the docker command)
-  profile/           server-type profiles (ad, ldap): filters, default attributes, identity attribute, password mode, schema discovery
+  ad/                AD-only helpers: binary objectGUID / objectSid, the domain identity
   fakedir/           in-memory Directory for tests (rejects adds without a parent and references to missing objects, like a real server)
   dn/ ldif/ mask/ prompt/ workpool/
 docker/ad/           the Samba4 image (Dockerfile, entrypoint.sh, ad-init.sh, seed.sh, extended schema)
@@ -26,7 +28,8 @@ e2e/ tests/e2e.sh    E2E tests against a real Samba
 docs/                documents referenced from the README
 ```
 
-`clone` and `diff` go through `Directory`, so unit tests run on `fakedir` without a real server.
+Dependencies point one way: `directory <- identity <- profile <- plan <- clone, diff <- app <- cmd`.
+`clone`, `diff` and `app` go through `Directory`, so unit tests run on `fakedir` without a real server, `app` included (with a fake `Dialer`).
 
 ## Build and test
 
@@ -67,7 +70,7 @@ docker compose --profile e2e up -d --build   # plus the clone source (with sampl
 | `TestReferenceAttributesAreDetectedFromSambaSchema` | DN reference attributes are detected from the schema |
 | `TestCloneThenDiffThenIdempotentThenDetectTamper` | clone -> 0 diffs -> re-run gives 0 changes -> diff detects a manual change; login over LDAPS with the fixed password works |
 | `TestBulkUsersPagingAndLargeGroupRanges` | 1600 users (paging) and a group of 1600 members (several range retrievals, range size 500) |
-| `TestRenameAndMoveOnTargetAreDetectedWithTheGUIDMapping` | Renames, moves, OU moves and child deletions on the target are detected via the GUID mapping |
+| `TestRenameAndMoveOnTargetAreDetectedWithTheMapping` | Renames, moves, OU moves and child deletions on the target are detected via the mapping |
 | `TestRecreatedObjectsOnTargetAreNotMistakenForTheOriginals` | Objects deleted and recreated at the same DN, and an OU moved and recreated under the same name, are different objects |
 | `TestLabSnapshotAndRestoreWithRealDocker` | `lab up` -> data -> snapshots -> modify -> restore; data survives `down` -> `up`; domain name mismatch is refused; another lab starts from a snapshot on a different port |
 | `TestNativeImportKeepsObjectGUIDAndObjectSid` | Native import of a sample (14 objects), re-run, rename detection, snapshot restore, creating a user over LDAP afterwards |
@@ -101,13 +104,15 @@ The `lab` E2E does not use docker compose and picks its own prefix and ports. It
 | The source is searched sequentially on one connection; only target work is parallel | Keeps load on the source low; the paging cookie is also tied to the connection |
 | Writes to the target are parallel, but Samba does not get faster | Samba serializes writes (`ldapmodify` with 1 and 8 connections: same). Reads (diff) do speed up |
 | `diff` output order is not stabilized with server-side sorting | The sort key cannot be the DN, collation differs between AD and Samba, parallelism breaks the order, and AD limits temporary tables for sorting (not verified on a real AD). Client-side sorting is an option if needed |
-| The source GUID is kept in a local mapping, not in a target attribute | Borrowing a target attribute would clash with real use. The mapping is fixed-length and ordered by GUID so `diff` can binary-search it (constant memory) |
-| The GUID mapping header is the domain's identifier (`objectGUID` of the domain root), not a URL | The URL changes when the lab is recreated or started from a snapshot on another port; the domain data does not. A different domain can still be rejected |
-| The GUID mapping can be included in a snapshot | It is a companion of the data, so one restore brings back both. For another instance it goes to a different file |
+| The source identifier is kept in a local mapping, not in a target attribute | Borrowing a target attribute would clash with real use. The mapping is fixed-length and ordered by source key so `diff` can binary-search it (constant memory) |
+| The mapping header identifies the directories by the identifiers of their naming-context roots, not by URL, and records the format version and the identifier attribute | The URL changes when the lab is recreated or started from a snapshot on another port; the data does not. A different directory, another scheme or an older format is refused rather than misread |
+| The mapping can be included in a snapshot | It is a companion of the data, so one restore brings back both. For another instance it goes to a different file |
+| One switch decides whether identifiers are read: `clone.Options.Mapping` (or `Native`) | An earlier version had a separate flag; passing a mapping without it produced an empty file without an error |
 | `clone` does not follow source-side renames and does not delete | Continuous cloning would need deletion handling; the purpose is verifying changes made on the target |
 | Case-only differences count as differences, marked `(case only)` | A real change must never be overlooked. Per-attribute case-insensitive comparison is not implemented |
 | DN reference attributes are compared after all objects are matched | AD rewrites references on rename, so references to renamed objects must be translated back to the original DN first, or false differences appear |
-| `member` is always retrieved with an explicit range | AD splits large groups automatically, Samba does not; always being explicit uses one path for both |
+| `member` is always retrieved with an explicit range on AD | AD splits large groups automatically, Samba does not; always being explicit uses one path for both, so CI exercises the multi-fetch path |
+| Samba stores NT ACLs as `user.NTACL` when `security.*` xattrs are not writable | Rootless docker (lima's default) grants `CAP_SYS_ADMIN` only inside its user namespace, so provisioning failed. The tdb backend (`--use-xattrs=no`) was rejected: Samba 4.19 offers it only with the NTVFS file server. A probe keeps rootful setups on Samba's default |
 | docker compose is limited to the test environment | The receiving side may lack it; what is carried in is `lab`, which needs only `docker run` |
 | `lab` calls the `docker` command, not the docker SDK | The SDK has large dependencies; a fake command sequence lets the order (stop -> write out -> start) be unit-tested. Passwords go through environment variables (`-e NAME`), not arguments, and are hidden from error messages |
 | Snapshots write volume contents to tar files on the host | See the table below. `docker commit` leaves the password in the image's environment variables and has a layer limit |
@@ -165,10 +170,11 @@ A Samba-only, optional `lab` feature built on the research above: it imports int
 
 - `internal/lab/native_helper.py` (`go:embed`): manipulates the lab volume's `sam.ldb` through Samba's Python API. One JSON request per line in, one response per line out; values are base64; library output goes to standard error so the protocol on standard output is not broken.
 - `internal/lab/native.go` (`Lab.OpenNative` -> `Native`): stops the lab container, starts a helper container with the same volumes (`docker run -i --rm --entrypoint python3`) and exposes it as a `directory.Directory`. `Close` ends the helper and resumes the lab, even after a failure. `Finish` advances the RID allocation and runs `dbcheck`.
-- `plan.Options.KeepIdentity`: also reads `objectGUID` / `objectSid` from the source and passes them to Add. If an existing object's `objectGUID` differs, it fails instead of falling back to an update.
-- `diff.RunWith` + `guidmap.Identity`: matches without the mapping. The switch is `identityPreserved` in `cmd/ldap-cronin/native.go`.
+- `clone.Options.Native`: also reads the profile's carried-over attributes (`identity.Scheme.CarryOver`: `objectGUID`, `objectSid`) from the source and passes them to Add. If an existing object's `objectGUID` differs, it fails instead of falling back to an update.
+- `identity.Identity` as the `diff` lookup: matches without the mapping. `diff.ChooseLookup` decides.
+- `app.Session.Native` runs it: it reads the source domain through `profile.NativeSupport` (implemented with `internal/ad`), checks the lab is the same domain, and resumes the lab in every case.
 - `lab up --like-source` / `--domain-sid` / `--domain-guid`: `entrypoint.sh` passes them to `samba-tool domain provision`.
-- The `[state] file` is not created, since the mapping is unnecessary.
+- The `[mapping] file` is not created, since the mapping is unnecessary.
 
 Decisions:
 
@@ -177,18 +183,30 @@ Decisions:
 - **Advance the RID** (`rIDNextRID`): imported RIDs do not advance Samba's allocation, so a user created over LDAP afterwards fails with `unique index violation on objectSid`. `Finish` moves it past the largest imported RID.
 - **Always run `dbcheck`**: the `relax` control loosens integrity checks, so this is the last line of defense; any error fails the whole import.
 - **A RID collision fails with the colliding object's name** instead of being skipped. The lab's standard objects with RID 1000 or more are only 1000, 1101 and 1102.
-- **The `diff` switch is not decided by the domain GUID.** A lab created with `--like-source` and cloned over LDAP has the same domain GUID but different object GUIDs, so everything would be `REPLACED`. The decision is whether the `objectGUID` of the `base_dn` object (for a container, its first child) matches.
+- **The `diff` switch is not decided by the domain GUID.** A lab created with `--like-source` and cloned over LDAP has the same domain GUID but different object GUIDs, so everything would be `REPLACED`. The decision is whether the `objectGUID` of the first object `diff` itself compares matches, found with the job's filters (so a built-in or filtered-out object never decides); `base_dn` itself only when nothing is below it, since a container the lab already had (`CN=Users`) has the lab's own GUID.
+- **The helper is not killed on Ctrl-C.** Killing it could interrupt a write to `sam.ldb`; the import checks the context between requests instead, and `Close` ends the helper by closing its standard input and resumes the lab.
 
 Measured on Samba 4.19.5. Not verified: large numbers of objects, ACLs (`nTSecurityDescriptor`), other Samba versions.
 
 ## Server profiles (AD and generic LDAP)
 
-Everything that differs between AD and a plain LDAP server is data in `internal/profile`: default filters and attribute lists, never-clone and never-mask lists, identifier attribute (`objectGUID` / `entryUUID`), password mode, DN-attribute discovery, and group/user creation order. Shared code asks the profile (`plan.Options.P()`) instead of branching on a server name.
+Everything that differs between AD and a plain LDAP server is in `internal/profile`, and shared code never branches on a server name. **Lists are data**: the kinds (name, role, default filter, default attributes, creation order, whether they are accounts), the required, never-clone, never-mask and password attributes, the ancestor attributes, the built-in DN references, the ranged attributes. They are what a deployment adjusts and what `list-attrs` prints. **Behavior is a strategy**: `identity.Scheme` (how objects are identified), `RefDiscoverer` (DN-valued attributes from the schema), `RootResolver` (where the naming context starts), `Account` (how a user gets the fixed password), per-attribute value normalizers, and `NativeSupport` (nil when `clone -native` is impossible). A third server type is a third `Profile` value.
 
-- **A profile per protocol family, not per product.** OpenLDAP / 389-ds profiles were rejected: RFC-level behavior is the same, and per-deployment differences (object classes, attributes) are handled by `[clone.filters]` and `[attributes]`.
+- **Lists as data, behavior as strategies.** An earlier version kept the behavior as flags too (password mode, schema mode, identifier-is-text, leaf order, supports-native), and every package interpreted them with its own `switch`; adding one variation meant editing every interpreter. Lists stayed data because a deployment changes them, not the code.
+- **A profile per protocol family, not per product.** OpenLDAP / 389-ds profiles were rejected: RFC-level behavior is the same, and per-deployment differences (object classes, attributes) are handled by `[scope.filters]` and `[attributes]`.
+- **Kinds have roles; the shared code knows only the roles.** A container is created shallowest first and held in memory; a leaf is streamed. The kind names (`ou`, `group`, `user`) are labels for the config file. A create-only ancestor is read with `AncestorAttrs`, not with the OU allow list, which a non-OU parent may not fit.
 - **`auto` detects through the source's root DSE** (`supportedCapabilities` contains the AD capability OID; Samba AD advertises it). The target is checked too, because cloning an AD source into a generic server would silently mis-map attributes.
-- **`entryUUID` is text, `objectGUID` is 16 raw bytes.** `guidmap.Hex` converts both to the same 16-byte key so one fixed-size mapping file serves both; `entryUUID` search filters use the text form (`guidmap.UUIDText`).
+- **`entryUUID` is text, `objectGUID` is 16 raw bytes.** Each `identity.Scheme` parses only its own form into a 16-byte `identity.Key`, so one fixed-size mapping file serves both and nothing guesses a value's form. The scheme also builds the search filter.
 - **Groups that must have a member at creation** (`groupOfNames`) use a retry, not a per-server rule: Add without DN references first; on `directory.ErrSchemaViolation`, retry with the references into the cloned scope. The common AD path stays one Add.
-- **`member;range=` is AD-only.** OpenLDAP does not implement it and returns an empty attribute, so `ldapdir.Client.SetRangedAttrs` is set from the profile.
-- **The fixed password is a plain `userPassword` modify.** The password modify extended operation (RFC 3062) was rejected because not every server enables it.
-- **The naming-context root** is `root_dn` or derived (`namingContexts`, then trailing `dc=`); AD keeps using the trailing `DC=` run.
+- **`member;range=` is AD-only.** OpenLDAP does not implement it and returns an empty attribute. `ldapdir.Client.With(ranged)` returns a view of the same connections that asks for ranges; the plain client never does. Reconfiguring a shared client in place was rejected (it had to happen before any goroutine used it, and forgetting it emptied `member` on OpenLDAP). A second dial with the profile known was rejected because it costs one more bind on the source.
+- **Accounts are an `Account` strategy.** AD creates a user disabled, sets `unicodePwd` with a modify, then `userAccountControl` (KB 269190 forbids `unicodePwd` in an add). A generic server gets the plain `userPassword` in the add itself: a user can then never exist without the password, so there is no interrupted state to detect and an existing user's password is never reset. "Set it when `userPassword` is absent" was rejected because an ACL that hides `userPassword` would reset every password on every run; "always set it" fails under a ppolicy `pwdInHistory` and undoes changes made by the program under test. The password modify extended operation (RFC 3062) was rejected because not every server enables it.
+- **The naming-context root** is `root_dn` or the profile's `RootResolver`: AD uses the trailing `DC=` run; a generic server the longest `namingContexts` value, then the trailing `dc=` run.
+
+## Cancellation and timeouts
+
+- **Every `Directory` operation takes a `context.Context`**, and `cmd` cancels it on the first Ctrl-C or SIGTERM (a second one ends the process). The point is that deferred cleanup runs: the mapping is written, a lab stopped for a native import is resumed. Without it the process ended on Ctrl-C with neither.
+- **Cancellation is checked between operations, not inside them.** go-ldap v3.4.15 takes a context only in `SearchAsync`; `Add`, `Modify` and `Search` take none, so an operation already sent runs to completion. `ldapdir.Walk` checks between pages; moving it to `SearchAsync` was rejected, as it would mean rewriting the paging and range loop for sub-page cancellation nobody needs.
+- **`workpool` cancels the running workers on the first error** (like `errgroup.WithContext`, without the dependency), so they stop at their next operation instead of finishing their item.
+- **A hung server is a timeout, not a cancellation.** `[source]` / `[target] timeout` (default 2 minutes) is applied with `Conn.SetTimeout`, since a context cannot bound an `Add` or a `Modify`.
+- **`lab` critical sections run under `context.WithoutCancel`**: stop, write volumes and start in `restore`; the restart in `snapshot`; `Native.Close`. A half-written volume or a stopped lab is worse than a few seconds' wait. Other docker commands use `exec.CommandContext`.
+- **An interrupted `diff` prints no summary**: a partial result would read as "no differences" in the part it did not reach.

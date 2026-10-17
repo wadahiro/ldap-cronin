@@ -1,21 +1,20 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
+	"syscall"
 
-	"github.com/wadahiro/ldap-cronin/internal/attrs"
+	"github.com/wadahiro/ldap-cronin/internal/app"
 	"github.com/wadahiro/ldap-cronin/internal/clone"
 	"github.com/wadahiro/ldap-cronin/internal/config"
 	"github.com/wadahiro/ldap-cronin/internal/diff"
-	"github.com/wadahiro/ldap-cronin/internal/directory"
-	"github.com/wadahiro/ldap-cronin/internal/guidmap"
 	"github.com/wadahiro/ldap-cronin/internal/lab"
-	"github.com/wadahiro/ldap-cronin/internal/ldapdir"
-	"github.com/wadahiro/ldap-cronin/internal/plan"
 	"github.com/wadahiro/ldap-cronin/internal/profile"
 	"github.com/wadahiro/ldap-cronin/internal/prompt"
 )
@@ -24,13 +23,7 @@ const (
 	envSourcePassword = "LDAP_CRONIN_SOURCE_PASSWORD"
 	envTargetPassword = "LDAP_CRONIN_TARGET_PASSWORD"
 	envUserPassword   = "LDAP_CRONIN_USER_PASSWORD"
-	exitDiff          = 1
 	exitError         = 2
-
-	// The source gets only a single read-only paged search and is not read in parallel (parallelism applies only to processing on the target).
-	// Keeping idle connections open would only add login load on the source, so a single connection is used.
-	// Searching the source in parallel was rejected because it would increase the load on the source.
-	sourceConnections = 1
 )
 
 const usage = `Usage: ldap-cronin <command> [flags]
@@ -53,9 +46,29 @@ Flags (clone/diff):
 // version is embedded at build time with -ldflags "-X main.version=...".
 var version = "dev"
 
-func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
+func main() {
+	ctx, cancel := context.WithCancel(context.Background())
+	stopOnSignal(cancel, os.Stderr)
+	code := run(ctx, os.Args[1:], os.Stdout, os.Stderr)
+	cancel()
+	os.Exit(code)
+}
 
-func run(args []string, stdout, stderr io.Writer) int {
+// stopOnSignal turns the first Ctrl-C (or SIGTERM) into a cancellation, so the run stops at its next operation and
+// its deferred cleanup still runs: the mapping is written and a lab stopped for a native import is resumed.
+// The handler is then removed, so a second Ctrl-C ends the process at once for someone who does not want to wait.
+func stopOnSignal(cancel context.CancelFunc, warn io.Writer) {
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sig
+		signal.Stop(sig)
+		fmt.Fprintln(warn, "\ninterrupted: finishing the operations in progress (press Ctrl-C again to abort at once)")
+		cancel()
+	}()
+}
+
+func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprint(stderr, usage)
 		return exitError
@@ -64,19 +77,23 @@ func run(args []string, stdout, stderr io.Writer) int {
 	code := 0
 	switch args[0] {
 	case "clone":
-		err = runClone(args[1:], stdout)
+		err = runClone(ctx, args[1:], stdout)
 	case "diff":
-		code, err = runDiff(args[1:], stdout)
+		code, err = runDiff(ctx, args[1:], stdout)
 	case "list-attrs":
 		err = listAttrs(args[1:], stdout)
 	case "lab":
-		err = runLab(args[1:], stdout, stderr)
+		err = runLab(ctx, args[1:], stdout, stderr)
 	case "version", "-version", "--version":
 		fmt.Fprintln(stdout, "ldap-cronin", version)
 	case "-h", "--help", "help":
 		fmt.Fprint(stdout, usage)
 	default:
 		fmt.Fprintf(stderr, "unknown command %q\n\n%s", args[0], usage)
+		return exitError
+	}
+	if errors.Is(err, context.Canceled) {
+		fmt.Fprintln(stderr, "interrupted")
 		return exitError
 	}
 	if err != nil {
@@ -86,7 +103,28 @@ func run(args []string, stdout, stderr io.Writer) int {
 	return code
 }
 
-func runClone(args []string, out io.Writer) error {
+// secrets prompts for passwords without echo, or takes them from the environment for non-interactive use.
+// They never come from the config file or the command line.
+var secrets = app.Secrets{
+	SourceBind: func() (string, error) { return prompt.Password("source bind password", envSourcePassword, false) },
+	TargetBind: func() (string, error) { return prompt.Password("target bind password", envTargetPassword, false) },
+	UserPassword: func() (string, error) {
+		return prompt.Password("fixed password for cloned users", envUserPassword, true)
+	},
+}
+
+// dial is replaced in tests by in-memory directories.
+var dial app.Dialer = app.LDAP
+
+func openSession(ctx context.Context, cfgPath string) (*app.Session, error) {
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		return nil, err
+	}
+	return app.Open(ctx, cfg, secrets, dial, os.Stderr)
+}
+
+func runClone(ctx context.Context, args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("clone", flag.ContinueOnError)
 	cfgPath := fs.String("config", "config.toml", "config file")
 	dryRun := fs.Bool("dry-run", false, "print LDIF instead of writing")
@@ -100,202 +138,48 @@ func runClone(args []string, out io.Writer) error {
 	if *native && *dryRun {
 		return errors.New("-native and -dry-run cannot be used together")
 	}
-	cfg, err := config.Load(*cfgPath)
+	s, err := openSession(ctx, *cfgPath)
 	if err != nil {
 		return err
 	}
-	srcPw, err := prompt.Password("source bind password", envSourcePassword, false)
-	if err != nil {
-		return err
-	}
-	src, err := dial(cfg.Source, srcPw, sourceConnections)
-	if err != nil {
-		return err
-	}
-	defer src.Close()
-	opt, err := resolveOptions(cfg, src)
-	if err != nil {
-		return err
-	}
+	defer s.Close()
 
-	if *native {
-		if !opt.P().SupportsNative {
-			return fmt.Errorf("-native needs an AD (Samba) source; this source was detected as %q", opt.P().Name)
-		}
-		report, err := cloneNative(cfg, opt, src, labFlags, out, os.Stderr)
-		if report != nil {
-			fmt.Fprintf(out, "\nadded=%d updated=%d unchanged=%d warnings=%d\n",
-				report.Added, report.Updated, report.Unchanged, report.WarningCount)
-		}
-		return err
-	}
-
+	var report *clone.Report
 	// The dry-run stdout carries only LDIF that can be passed straight to ldapmodify; progress logs go to stderr.
-	logOut := out
-	var dst directory.Directory = directory.DryRun{Out: out}
-	if *dryRun {
-		logOut = os.Stderr
-	}
-	userPw := "<fixed-password>"
-	if !*dryRun {
-		tgtPw, err := prompt.Password("target bind password", envTargetPassword, false)
-		if err != nil {
-			return err
+	log := out
+	switch {
+	case *native:
+		l, lerr := newLab(labFlags, out, os.Stderr)
+		if lerr != nil {
+			return lerr
 		}
-		if userPw, err = prompt.Password("fixed password for cloned users", envUserPassword, true); err != nil {
-			return err
+		report, err = s.Native(ctx, l, out)
+	default:
+		if *dryRun {
+			log = os.Stderr
 		}
-		client, err := dial(cfg.Target, tgtPw, cfg.Clone.Workers)
-		if err != nil {
-			return err
-		}
-		defer client.Close()
-		if err := prepareTarget(cfg, opt, client); err != nil {
-			return err
-		}
-		dst = client
-	}
-
-	var guids *guidmap.Map
-	if cfg.State.File != "" && !*dryRun {
-		header, err := mappingHeader(cfg, opt, src, dst)
-		if err != nil {
-			return err
-		}
-		if guids, err = guidmap.Open(cfg.State.File, header); err != nil {
-			return err
-		}
-		opt.TrackGUID = true
-	}
-	report, err := clone.Run(src, dst, clone.Options{Plan: opt, UserPassword: userPw, Workers: cfg.Clone.Workers, GUIDMap: guids}, logOut)
-	if guids != nil {
-		if cerr := guids.Close(); cerr != nil && err == nil {
-			err = fmt.Errorf("write mapping file: %w", cerr)
-		}
+		report, err = s.Clone(ctx, *dryRun, out, log)
 	}
 	if report != nil {
-		fmt.Fprintf(logOut, "\nadded=%d updated=%d unchanged=%d warnings=%d\n",
+		fmt.Fprintf(log, "\nadded=%d updated=%d unchanged=%d warnings=%d\n",
 			report.Added, report.Updated, report.Unchanged, report.WarningCount)
 	}
 	return err
 }
 
-func runDiff(args []string, out io.Writer) (int, error) {
+func runDiff(ctx context.Context, args []string, out io.Writer) (int, error) {
 	fs := flag.NewFlagSet("diff", flag.ContinueOnError)
 	cfgPath := fs.String("config", "config.toml", "config file")
 	maxValues := fs.Int("max-values", diff.DefaultMaxValues, "max values shown per direction for multi-valued attributes (0 = all)")
 	if err := fs.Parse(args); err != nil {
 		return 0, err
 	}
-	cfg, err := config.Load(*cfgPath)
+	s, err := openSession(ctx, *cfgPath)
 	if err != nil {
 		return 0, err
 	}
-	srcPw, err := prompt.Password("source bind password", envSourcePassword, false)
-	if err != nil {
-		return 0, err
-	}
-	tgtPw, err := prompt.Password("target bind password", envTargetPassword, false)
-	if err != nil {
-		return 0, err
-	}
-	src, err := dial(cfg.Source, srcPw, sourceConnections)
-	if err != nil {
-		return 0, err
-	}
-	defer src.Close()
-	opt, err := resolveOptions(cfg, src)
-	if err != nil {
-		return 0, err
-	}
-	dst, err := dial(cfg.Target, tgtPw, cfg.Clone.Workers)
-	if err != nil {
-		return 0, err
-	}
-	defer dst.Close()
-	if err := prepareTarget(cfg, opt, dst); err != nil {
-		return 0, err
-	}
-
-	var tracker guidmap.Lookup
-	// Identical object identifiers are only possible after a native import (AD/Samba lab).
-	same, why := false, ""
-	if opt.P().SupportsNative {
-		if same, why, err = identityPreserved(src, dst, cfg.Clone.BaseDN); err != nil {
-			return 0, err
-		}
-	}
-	if same {
-		// Native import keeps objectGUID identical, so no mapping is needed.
-		tracker = guidmap.Identity{}
-	} else {
-		if why != "" && cfg.State.File == "" {
-			fmt.Fprintf(os.Stderr, "note: cannot say the objectGUIDs are identical (%s)\n", why)
-		}
-		guids, err := loadMapping(cfg, opt, src, dst)
-		if err != nil {
-			return 0, err
-		}
-		if guids != nil {
-			defer guids.Close()
-			tracker = guids
-		}
-	}
-	sum, err := diff.RunWith(src, dst, opt, cfg.Clone.Workers, tracker, func(d diff.Difference) { diff.Format(out, d, *maxValues) })
-	if err != nil {
-		return 0, err
-	}
-	total := sum.Differences[diff.OnlySource] + sum.Differences[diff.OnlyTarget] + sum.Differences[diff.Differ]
-	if total == 0 {
-		fmt.Fprintln(out, "no differences")
-	}
-	diff.WriteSummary(out, opt, sum, cfg.Attributes.Exclude)
-	if total == 0 {
-		return 0, nil
-	}
-	return exitDiff, nil
-}
-
-// mappingHeader builds the mapping header (identifiers of the source and target domains).
-func mappingHeader(cfg *config.Config, opt plan.Options, src, dst directory.Directory) (guidmap.Header, error) {
-	root, idAttr, err := rootAndID(opt, src)
-	if err != nil {
-		return guidmap.Header{}, err
-	}
-	srcID, err := guidmap.RootID(src, root, idAttr)
-	if err != nil {
-		return guidmap.Header{}, fmt.Errorf("source: %w", err)
-	}
-	dstID, err := guidmap.RootID(dst, root, idAttr)
-	if err != nil {
-		return guidmap.Header{}, fmt.Errorf("target: %w", err)
-	}
-	return guidmap.Header{SourceDomain: srcID, TargetDomain: dstID, BaseDN: cfg.Clone.BaseDN}, nil
-}
-
-// loadMapping opens the mapping for diff. If it is not specified, the file is missing, or it is another domain's, it
-// continues without rename and move detection (the same behavior as before). The reason goes to standard error.
-func loadMapping(cfg *config.Config, opt plan.Options, src, dst directory.Directory) (*guidmap.Map, error) {
-	if cfg.State.File == "" {
-		return nil, nil
-	}
-	header, err := mappingHeader(cfg, opt, src, dst)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "note: cannot identify the domain, so rename and move detection is not used: %v\n", err)
-		return nil, nil
-	}
-	m, err := guidmap.Load(cfg.State.File, header)
-	switch {
-	case err == nil:
-		return m, nil
-	case errors.Is(err, os.ErrNotExist):
-		fmt.Fprintf(os.Stderr, "note: %s not found; rename/move detection is off (run clone with [state] file to record it)\n", cfg.State.File)
-		return nil, nil
-	case errors.Is(err, guidmap.ErrHeaderMismatch):
-		fmt.Fprintf(os.Stderr, "note: %s belongs to a different source/target domain or base_dn; rename/move detection is off\n", cfg.State.File)
-		return nil, nil
-	}
-	return nil, err
+	defer s.Close()
+	return s.Diff(ctx, *maxValues, out)
 }
 
 func listAttrs(args []string, out io.Writer) error {
@@ -308,19 +192,11 @@ func listAttrs(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	defaults := attrs.DefaultsFor(p)
-	for _, kind := range attrs.Kinds {
-		fmt.Fprintf(out, "[%s]\n", kind)
-		for _, name := range defaults[kind] {
+	for _, k := range p.Kinds {
+		fmt.Fprintf(out, "[%s]\n", k.Name)
+		for _, name := range k.Default {
 			fmt.Fprintf(out, "  %s\n", name)
 		}
 	}
 	return nil
-}
-
-func dial(ep config.Endpoint, password string, workers int) (*ldapdir.Client, error) {
-	return ldapdir.Dial(ldapdir.ConnConfig{
-		URL: ep.URL, BindDN: ep.BindDN, Password: password,
-		CAFile: ep.CAFile, InsecureSkipVerify: ep.InsecureSkipVerify, StartTLS: ep.StartTLS,
-	}, workers)
 }

@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"fmt"
 	"net"
@@ -18,7 +19,8 @@ import (
 	"github.com/wadahiro/ldap-cronin/internal/clone"
 	"github.com/wadahiro/ldap-cronin/internal/diff"
 	"github.com/wadahiro/ldap-cronin/internal/directory"
-	"github.com/wadahiro/ldap-cronin/internal/guidmap"
+	"github.com/wadahiro/ldap-cronin/internal/dn"
+	"github.com/wadahiro/ldap-cronin/internal/identity"
 	"github.com/wadahiro/ldap-cronin/internal/lab"
 	"github.com/wadahiro/ldap-cronin/internal/ldapdir"
 	"github.com/wadahiro/ldap-cronin/internal/workpool"
@@ -66,7 +68,7 @@ func TestLabSnapshotAndRestoreWithRealDocker(t *testing.T) {
 		Getenv: func(string) string { return "" },
 	}
 	t.Cleanup(func() {
-		if err := l.Reset(lab.ResetOptions{Yes: true, Snapshots: true}); err != nil {
+		if err := l.Reset(context.Background(), lab.ResetOptions{Yes: true, Snapshots: true}); err != nil {
 			t.Logf("cleanup failed: %v", err)
 		}
 	})
@@ -75,7 +77,7 @@ func TestLabSnapshotAndRestoreWithRealDocker(t *testing.T) {
 	}
 
 	started := time.Now()
-	if err := l.Up(lab.UpOptions{Image: image, Flags: lab.Settings{Realm: realm, AdminPassword: password, LDAPPort: freePort(t), LDAPSPort: ldaps}}); err != nil {
+	if err := l.Up(context.Background(), lab.UpOptions{Image: image, Flags: lab.Settings{Realm: realm, AdminPassword: password, LDAPPort: freePort(t), LDAPSPort: ldaps}}); err != nil {
 		t.Fatalf("up: %v\n%s", err, errw.String())
 	}
 	t.Logf("up: %.1fs", time.Since(started).Seconds())
@@ -104,20 +106,20 @@ func TestLabSnapshotAndRestoreWithRealDocker(t *testing.T) {
 	root := "OU=Snap," + base
 	userDN := func(i int) string { return fmt.Sprintf("CN=su%03d,%s", i, root) }
 	count := func() int {
-		entries, err := directory.Collect(ad, root, "(objectClass=user)", []string{directory.NoAttrs})
+		entries, err := directory.Collect(context.Background(), ad, root, "(objectClass=user)", []string{directory.NoAttrs})
 		if err != nil {
 			t.Fatal(err)
 		}
 		return len(entries)
 	}
-	must(ad.Add(directory.Entry{DN: root, Attrs: map[string][]string{"objectClass": {"organizationalUnit"}, "ou": {"Snap"}}}))
+	must(ad.Add(context.Background(), directory.Entry{DN: root, Attrs: map[string][]string{"objectClass": {"organizationalUnit"}, "ou": {"Snap"}}}))
 	addUsers := func(from, to int) {
 		idx := make([]int, 0, to-from)
 		for i := from; i < to; i++ {
 			idx = append(idx, i)
 		}
-		must(workpool.Each(4, idx, func(i int) error {
-			return ad.Add(directory.Entry{DN: userDN(i), Attrs: map[string][]string{
+		must(workpool.Each(context.Background(), 4, idx, func(ctx context.Context, i int) error {
+			return ad.Add(context.Background(), directory.Entry{DN: userDN(i), Attrs: map[string][]string{
 				"objectClass": {"user"}, "cn": {fmt.Sprintf("su%03d", i)}, "sAMAccountName": {fmt.Sprintf("su%03d", i)},
 			}})
 		}))
@@ -127,7 +129,7 @@ func TestLabSnapshotAndRestoreWithRealDocker(t *testing.T) {
 	if got := count(); got != 30 {
 		t.Fatalf("seed: %d", got)
 	}
-	if _, err := l.Snapshot(lab.SnapshotOptions{Name: "thirty", Note: "30 users"}); err != nil {
+	if _, err := l.Snapshot(context.Background(), lab.SnapshotOptions{Name: "thirty", Note: "30 users"}); err != nil {
 		t.Fatalf("snapshot: %v\n%s", err, errw.String())
 	}
 	reconnect()
@@ -137,7 +139,7 @@ func TestLabSnapshotAndRestoreWithRealDocker(t *testing.T) {
 	if got := count(); got != 50 {
 		t.Fatalf("after mutation: %d", got)
 	}
-	if _, err := l.Snapshot(lab.SnapshotOptions{Name: "fifty", Note: "50 users"}); err != nil {
+	if _, err := l.Snapshot(context.Background(), lab.SnapshotOptions{Name: "fifty", Note: "50 users"}); err != nil {
 		t.Fatalf("second snapshot: %v", err)
 	}
 	reconnect()
@@ -152,7 +154,7 @@ func TestLabSnapshotAndRestoreWithRealDocker(t *testing.T) {
 
 	// Restore to the 30-user snapshot.
 	t0 := time.Now()
-	if _, err := l.Restore("thirty"); err != nil {
+	if _, err := l.Restore(context.Background(), "thirty"); err != nil {
 		t.Fatalf("restore thirty: %v\n%s", err, errw.String())
 	}
 	t.Logf("restore (stop -> write back -> start -> smoke test): %.1fs", time.Since(t0).Seconds())
@@ -162,7 +164,7 @@ func TestLabSnapshotAndRestoreWithRealDocker(t *testing.T) {
 	}
 
 	// You can also return to the other (50 users) at any time. Multiple snapshots do not affect each other.
-	if _, err := l.Restore("fifty"); err != nil {
+	if _, err := l.Restore(context.Background(), "fifty"); err != nil {
 		t.Fatalf("restore fifty: %v", err)
 	}
 	reconnect()
@@ -171,7 +173,7 @@ func TestLabSnapshotAndRestoreWithRealDocker(t *testing.T) {
 	}
 
 	// Each restore discards changes. Back to 30 once more.
-	if _, err := l.Restore("thirty"); err != nil {
+	if _, err := l.Restore(context.Background(), "thirty"); err != nil {
 		t.Fatal(err)
 	}
 	reconnect()
@@ -180,8 +182,8 @@ func TestLabSnapshotAndRestoreWithRealDocker(t *testing.T) {
 	}
 
 	// The data survives down -> up as well.
-	must(l.Down())
-	if err := l.Up(lab.UpOptions{Image: image}); err != nil {
+	must(l.Down(context.Background()))
+	if err := l.Up(context.Background(), lab.UpOptions{Image: image}); err != nil {
 		t.Fatalf("up after down: %v", err)
 	}
 	reconnect()
@@ -198,12 +200,12 @@ func TestLabSnapshotAndRestoreWithRealDocker(t *testing.T) {
 	l2.Instance = "dev2"
 	l2.FreePort = func() (int, error) { return freePort(t), nil }
 	t1 := time.Now()
-	if _, err := l2.RestoreWith("fifty", lab.RestoreOptions{}); err != nil { // a free port is chosen automatically
+	if _, err := l2.RestoreWith(context.Background(), "fifty", lab.RestoreOptions{}); err != nil { // a free port is chosen automatically
 		t.Fatalf("restore as a new instance: %v\n%s", err, errw.String())
 	}
 	t.Logf("started a separate instance from the snapshot: %.1fs", time.Since(t1).Seconds())
-	t.Cleanup(func() { _ = l2.Reset(lab.ResetOptions{Yes: true}) })
-	instances, err := l.Instances()
+	t.Cleanup(func() { _ = l2.Reset(context.Background(), lab.ResetOptions{Yes: true}) })
+	instances, err := l.Instances(context.Background())
 	must(err)
 	var dev2Port int
 	for _, in := range instances {
@@ -220,7 +222,7 @@ func TestLabSnapshotAndRestoreWithRealDocker(t *testing.T) {
 	must(err)
 	defer ad2.Close()
 	count2 := func() int {
-		entries, err := directory.Collect(ad2, root, "(objectClass=user)", []string{directory.NoAttrs})
+		entries, err := directory.Collect(context.Background(), ad2, root, "(objectClass=user)", []string{directory.NoAttrs})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -244,13 +246,13 @@ func TestLabSnapshotAndRestoreWithRealDocker(t *testing.T) {
 	if got := count(); got != 35 {
 		t.Fatalf("main after changing dev2: %d", got)
 	}
-	must(l2.Reset(lab.ResetOptions{Yes: true}))
+	must(l2.Reset(context.Background(), lab.ResetOptions{Yes: true}))
 	if got := count(); got != 35 {
 		t.Fatalf("main after resetting dev2: %d", got)
 	}
 
 	// A domain name mismatch is refused without damaging the data.
-	err = l.Up(lab.UpOptions{Image: image, Flags: lab.Settings{Realm: "other.test"}})
+	err = l.Up(context.Background(), lab.UpOptions{Image: image, Flags: lab.Settings{Realm: "other.test"}})
 	if err == nil || !strings.Contains(err.Error(), "reset") {
 		t.Fatalf("a different realm must be refused: %v", err)
 	}
@@ -263,7 +265,7 @@ func TestLabSnapshotAndRestoreWithRealDocker(t *testing.T) {
 // The intended usage: clone into a lab -> snapshot with the mapping -> restore into an instance on a different port ->
 // another program renames there -> diff detects the rename using the mapping.
 // The mapping header is the domain's identifier, not the URL (port), so it works for an instance on a different port.
-func TestLabSnapshotCarriesTheGUIDMapToAnotherInstanceOnAnotherPort(t *testing.T) {
+func TestLabSnapshotCarriesTheMappingToAnotherInstanceOnAnotherPort(t *testing.T) {
 	image := os.Getenv("E2E_LAB_IMAGE")
 	if image == "" {
 		t.Skip("E2E_LAB_IMAGE is not set (tests/e2e.sh sets it)")
@@ -284,7 +286,7 @@ func TestLabSnapshotCarriesTheGUIDMapToAnotherInstanceOnAnotherPort(t *testing.T
 		Getenv:   func(string) string { return "" },
 		FreePort: func() (int, error) { return freePort(t), nil },
 	}
-	t.Cleanup(func() { _ = l.Reset(lab.ResetOptions{Yes: true, Snapshots: true}) })
+	t.Cleanup(func() { _ = l.Reset(context.Background(), lab.ResetOptions{Yes: true, Snapshots: true}) })
 	must := func(err error) {
 		t.Helper()
 		if err != nil {
@@ -293,7 +295,7 @@ func TestLabSnapshotCarriesTheGUIDMapToAnotherInstanceOnAnotherPort(t *testing.T
 	}
 
 	mainLDAPS, srcLDAPS := freePort(t), freePort(t)
-	must(l.Up(lab.UpOptions{
+	must(l.Up(context.Background(), lab.UpOptions{
 		Image: image, WithSource: true, SourceLDAP: freePort(t), SourceLDAPS: srcLDAPS,
 		Flags: lab.Settings{Realm: realm, AdminPassword: password, LDAPPort: freePort(t), LDAPSPort: mainLDAPS},
 	}))
@@ -308,40 +310,39 @@ func TestLabSnapshotCarriesTheGUIDMapToAnotherInstanceOnAnotherPort(t *testing.T
 	defer src.Close()
 
 	// clone (records the mapping)
-	srcDomain, err := guidmap.DomainID(src, cloneBase)
+	srcDomain, err := identity.RootKey(context.Background(), src, dn.DomainRoot(cloneBase), identity.ObjectGUID)
 	must(err)
-	targetDomain, err := guidmap.DomainID(target, cloneBase)
+	targetDomain, err := identity.RootKey(context.Background(), target, dn.DomainRoot(cloneBase), identity.ObjectGUID)
 	must(err)
 	if srcDomain == targetDomain {
 		t.Fatal("two separately provisioned domains must have different identities")
 	}
 	mapPath := dir + "/guid-map.tsv"
-	gm, err := guidmap.Open(mapPath, guidmap.Header{SourceDomain: srcDomain, TargetDomain: targetDomain, BaseDN: cloneBase})
+	gm, err := identity.Open(mapPath, identity.Header{Scheme: "objectGUID", SourceRoot: srcDomain, TargetRoot: targetDomain, BaseDN: cloneBase})
 	must(err)
 	opt := planOptionsFor(t, cloneBase)
-	opt.TrackGUID = true
-	if _, err := clone.Run(src, target, clone.Options{Plan: opt, UserPassword: "Fixed-Passw0rd!", Workers: 4, GUIDMap: gm}, &bytes.Buffer{}); err != nil {
+	if _, err := clone.Run(context.Background(), src, target, opt, clone.Options{UserPassword: "Fixed-Passw0rd!", Workers: 4, Mapping: gm}, &bytes.Buffer{}); err != nil {
 		t.Fatalf("clone: %v", err)
 	}
 	must(gm.Close())
 	target.Close()
 
 	// Take a snapshot with the mapping, and restore it, mapping included, into an instance on a different port.
-	meta, err := l.Snapshot(lab.SnapshotOptions{Name: "cloned", GUIDMap: mapPath})
+	meta, err := l.Snapshot(context.Background(), lab.SnapshotOptions{Name: "cloned", Mapping: mapPath})
 	must(err)
-	if meta.GUIDMap == nil {
+	if meta.Mapping == nil {
 		t.Fatal("the snapshot must include the GUID map")
 	}
 	dev2Map := dir + "/guid-map-dev2.tsv"
 	dev2 := *l
 	dev2.Instance = "dev2"
-	t.Cleanup(func() { _ = dev2.Reset(lab.ResetOptions{Yes: true}) })
+	t.Cleanup(func() { _ = dev2.Reset(context.Background(), lab.ResetOptions{Yes: true}) })
 	must2 := func(_ lab.SnapshotMeta, err error) {
 		t.Helper()
 		must(err)
 	}
-	must2(dev2.RestoreWith("cloned", lab.RestoreOptions{GUIDMap: dev2Map}))
-	instances, err := l.Instances()
+	must2(dev2.RestoreWith(context.Background(), "cloned", lab.RestoreOptions{Mapping: dev2Map}))
+	instances, err := l.Instances(context.Background())
 	must(err)
 	dev2Port := 0
 	for _, in := range instances {
@@ -364,19 +365,19 @@ func TestLabSnapshotCarriesTheGUIDMapToAnotherInstanceOnAnotherPort(t *testing.T
 	// dev2 is on a different port from the original lab, but the domain identifier is the same, so the restored mapping can be used as is.
 	d2 := dial(dev2Port)
 	defer d2.Close()
-	d2Domain, err := guidmap.DomainID(d2, cloneBase)
+	d2Domain, err := identity.RootKey(context.Background(), d2, dn.DomainRoot(cloneBase), identity.ObjectGUID)
 	must(err)
 	if d2Domain != targetDomain {
 		t.Fatalf("a restored instance must have the same domain identity as the original: %s vs %s", d2Domain, targetDomain)
 	}
-	guids, err := guidmap.Load(dev2Map, guidmap.Header{SourceDomain: srcDomain, TargetDomain: d2Domain, BaseDN: cloneBase})
+	guids, err := identity.Load(dev2Map, identity.Header{Scheme: "objectGUID", SourceRoot: srcDomain, TargetRoot: d2Domain, BaseDN: cloneBase})
 	if err != nil {
 		t.Fatalf("the map written back to dev2 must be usable even though the port differs: %v", err)
 	}
 	defer guids.Close()
 
 	var diffs []diff.Difference
-	sum, err := diff.Run(src, d2, opt, 4, guids, func(d diff.Difference) { diffs = append(diffs, d) })
+	sum, err := diff.Run(context.Background(), src, d2, opt, diff.Options{Workers: 4, Lookup: guids}, func(d diff.Difference) { diffs = append(diffs, d) })
 	must(err)
 	if sum.Differences[diff.Renamed] != 1 || len(diffs) != 1 || diffs[0].Kind != diff.Renamed ||
 		!strings.EqualFold(diffs[0].TargetDN, "CN=Alice Smith,OU=Tokyo,OU=Users,"+cloneBase) {

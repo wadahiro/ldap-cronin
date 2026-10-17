@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -16,7 +17,7 @@ import (
 	"github.com/wadahiro/ldap-cronin/internal/clone"
 	"github.com/wadahiro/ldap-cronin/internal/config"
 	"github.com/wadahiro/ldap-cronin/internal/diff"
-	"github.com/wadahiro/ldap-cronin/internal/guidmap"
+	"github.com/wadahiro/ldap-cronin/internal/identity"
 	"github.com/wadahiro/ldap-cronin/internal/ldapdir"
 	"github.com/wadahiro/ldap-cronin/internal/profile"
 )
@@ -113,12 +114,10 @@ func TestGenericLDAPCloneWithOpenLDAP(t *testing.T) {
 	}
 	src, dst := dial(srcPort), dial(dstPort)
 
-	prof, err := profile.Detect(src)
+	prof, err := profile.Detect(context.Background(), src)
 	if err != nil || prof.Name != profile.NameLDAP {
 		t.Fatalf("OpenLDAP must be detected as a generic server: %v %v", prof.Name, err)
 	}
-	src.SetRangedAttrs(prof.RangedAttrs)
-	dst.SetRangedAttrs(prof.RangedAttrs)
 	cfg, err := config.Parse([]byte(fmt.Sprintf(`
 [source]
 url = "ldap://%s:%d"
@@ -126,19 +125,19 @@ bind_dn = %q
 [target]
 url = "ldap://%s:%d"
 bind_dn = %q
-[clone]
+[scope]
 base_dn = %q
 `, host, srcPort, olAdmin, host, dstPort, olAdmin, olClone)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	opt, err := cfg.PlanOptionsFor(prof)
+	opt, err := cfg.JobFor(prof)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	var out bytes.Buffer
-	rep, err := clone.Run(src, dst, clone.Options{Plan: opt, UserPassword: "Fixed-Passw0rd", Workers: 4}, &out)
+	rep, err := clone.Run(context.Background(), src, dst, opt, clone.Options{UserPassword: "Fixed-Passw0rd", Workers: 4}, &out)
 	if err != nil {
 		t.Fatalf("clone: %v\n%s", err, out.String())
 	}
@@ -169,24 +168,22 @@ base_dn = %q
 
 	// Rename and move on the target, then find the entry again by entryUUID through a mapping.
 	mapPath := t.TempDir() + "/map.tsv"
-	srcID, err := guidmap.RootID(src, olBase, opt.IDAttr())
+	srcID, err := identity.RootKey(context.Background(), src, olBase, opt.Profile.Identity)
 	if err != nil {
 		t.Fatal(err)
 	}
-	dstID, err := guidmap.RootID(dst, olBase, opt.IDAttr())
+	dstID, err := identity.RootKey(context.Background(), dst, olBase, opt.Profile.Identity)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if srcID == dstID {
 		t.Fatal("two servers must have different root identifiers")
 	}
-	gm, err := guidmap.Open(mapPath, guidmap.Header{SourceDomain: srcID, TargetDomain: dstID, BaseDN: olClone})
+	gm, err := identity.Open(mapPath, identity.Header{Scheme: "entryUUID", SourceRoot: srcID, TargetRoot: dstID, BaseDN: olClone})
 	if err != nil {
 		t.Fatal(err)
 	}
-	trackOpt := opt
-	trackOpt.TrackGUID = true
-	if _, err := clone.Run(src, dst, clone.Options{Plan: trackOpt, UserPassword: "Fixed-Passw0rd", Workers: 4, GUIDMap: gm}, &bytes.Buffer{}); err != nil {
+	if _, err := clone.Run(context.Background(), src, dst, opt, clone.Options{UserPassword: "Fixed-Passw0rd", Workers: 4, Mapping: gm}, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := gm.Close(); err != nil {
@@ -203,7 +200,7 @@ base_dn = %q
 	if err := conn.ModifyDN(ldap.NewModifyDNRequest("uid=bob,ou=People,"+olClone, "uid=robert", true, "ou=Groups,"+olClone)); err != nil {
 		t.Fatal(err)
 	}
-	loaded, err := guidmap.Load(mapPath, guidmap.Header{SourceDomain: srcID, TargetDomain: dstID, BaseDN: olClone})
+	loaded, err := identity.Load(mapPath, identity.Header{Scheme: "entryUUID", SourceRoot: srcID, TargetRoot: dstID, BaseDN: olClone})
 	if err != nil {
 		t.Fatal(err)
 	}

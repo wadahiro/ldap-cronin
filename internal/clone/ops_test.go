@@ -2,6 +2,7 @@ package clone
 
 import (
 	"bytes"
+	"context"
 	"reflect"
 	"sync"
 	"testing"
@@ -26,14 +27,17 @@ func (r *recorder) note(op, entryDN string) {
 		r.mu.Unlock()
 	}
 }
-func (r *recorder) Add(e directory.Entry) error { r.note("Add", e.DN); return r.Directory.Add(e) }
-func (r *recorder) Get(d string, a []string) (*directory.Entry, error) {
-	r.note("Get", d)
-	return r.Directory.Get(d, a)
+func (r *recorder) Add(ctx context.Context, e directory.Entry) error {
+	r.note("Add", e.DN)
+	return r.Directory.Add(context.Background(), e)
 }
-func (r *recorder) Replace(d string, a map[string][]string) error {
+func (r *recorder) Get(ctx context.Context, d string, a []string) (*directory.Entry, error) {
+	r.note("Get", d)
+	return r.Directory.Get(context.Background(), d, a)
+}
+func (r *recorder) Replace(ctx context.Context, d string, a map[string][]string) error {
 	r.note("Replace", d)
-	return r.Directory.Replace(d, a)
+	return r.Directory.Replace(context.Background(), d, a)
 }
 func (r *recorder) take() []string {
 	r.mu.Lock()
@@ -49,16 +53,16 @@ func (r *recorder) take() []string {
 func TestOperationsPerUserOnTarget(t *testing.T) {
 	src := seedSource()
 	rec := &recorder{Directory: fakedir.New(domain), target: bob} // bob has no manager, so no reference apply gets in the way
-	opt := Options{Plan: options(t, allKinds()...), UserPassword: "Fixed1!", Workers: 1}
+	job, opt := options(t, allKinds()...), Options{UserPassword: "Fixed1!", Workers: 1}
 
-	if _, err := Run(src, rec, opt, &bytes.Buffer{}); err != nil {
+	if _, err := Run(context.Background(), src, rec, job, opt, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
 	if got, want := rec.take(), []string{"Add", "Replace", "Replace"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("new user: got %v, want %v", got, want)
 	}
 
-	if _, err := Run(src, rec, opt, &bytes.Buffer{}); err != nil {
+	if _, err := Run(context.Background(), src, rec, job, opt, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
 	if got, want := rec.take(), []string{"Add", "Get"}; !reflect.DeepEqual(got, want) {

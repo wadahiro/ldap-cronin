@@ -3,6 +3,7 @@
 package directory
 
 import (
+	"context"
 	"errors"
 	"strings"
 )
@@ -32,25 +33,28 @@ func (e Entry) Values(name string) []string {
 // NoAttrs requests no attributes, so that only the DN is returned (LDAP "1.1").
 const NoAttrs = "1.1"
 
+// Every method takes a context. Implementations check it before sending an operation; an operation already sent
+// runs to completion, because go-ldap cannot abandon an Add or a Modify. A stop therefore costs at most one
+// operation per connection, which is fine for a tool whose operations are small.
 type Directory interface {
 	// Walk searches under base (inclusive) with filter and passes entries to fn one at a time.
 	// To avoid accumulating all entries in memory, only one page is held at a time. fn is called sequentially from a single goroutine and
 	// must not re-enter the same Directory (the connection would stay borrowed).
 	// A missing base is treated as zero entries rather than an error (so a target can be diffed before clone).
-	Walk(base, filter string, attrs []string, fn func(Entry) error) error
+	Walk(ctx context.Context, base, filter string, attrs []string, fn func(Entry) error) error
 	// Get fetches one entry by dn. If it does not exist, it returns nil, nil.
-	Get(dn string, attrs []string) (*Entry, error)
+	Get(ctx context.Context, dn string, attrs []string) (*Entry, error)
 	// Add may return ErrExists.
-	Add(e Entry) error
-	Replace(dn string, attrs map[string][]string) error
-	AddValues(dn, attr string, values []string) error
+	Add(ctx context.Context, e Entry) error
+	Replace(ctx context.Context, dn string, attrs map[string][]string) error
+	AddValues(ctx context.Context, dn, attr string, values []string) error
 }
 
 // Collect returns all results of Walk as a slice. It is meant only for small counts (tests, small lookups)
 // and is not used on paths with large data sets.
-func Collect(d Directory, base, filter string, attrs []string) ([]Entry, error) {
+func Collect(ctx context.Context, d Directory, base, filter string, attrs []string) ([]Entry, error) {
 	var out []Entry
-	err := d.Walk(base, filter, attrs, func(e Entry) error {
+	err := d.Walk(ctx, base, filter, attrs, func(e Entry) error {
 		out = append(out, e)
 		return nil
 	})

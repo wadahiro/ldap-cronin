@@ -27,7 +27,7 @@ func TestParseRange(t *testing.T) {
 }
 
 func TestRangedRequestRewritesOnlyMember(t *testing.T) {
-	got := rangedRequest([]string{"cn", "Member", "mail"}, 1500)
+	got := rangedRequestFor(map[string]bool{"member": true}, []string{"cn", "Member", "mail"}, 1500)
 	want := []string{"cn", "Member;range=0-1499", "mail"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("%v", got)

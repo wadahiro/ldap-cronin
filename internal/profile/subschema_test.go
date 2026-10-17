@@ -1,10 +1,10 @@
-package plan
+package profile
 
 import (
+	"context"
 	"testing"
 
 	"github.com/wadahiro/ldap-cronin/internal/directory"
-	"github.com/wadahiro/ldap-cronin/internal/profile"
 )
 
 // Definitions as an OpenLDAP server returns them in attributeTypes.
@@ -54,40 +54,42 @@ func TestParseAttributeTypeWithSeveralNames(t *testing.T) {
 
 type namingContexts []string
 
-func (n namingContexts) Walk(string, string, []string, func(directory.Entry) error) error { return nil }
-func (n namingContexts) Get(dnStr string, _ []string) (*directory.Entry, error) {
+func (n namingContexts) Walk(context.Context, string, string, []string, func(directory.Entry) error) error {
+	return nil
+}
+func (n namingContexts) Get(ctx context.Context, dnStr string, _ []string) (*directory.Entry, error) {
 	if dnStr != "" {
 		return nil, nil
 	}
 	return &directory.Entry{Attrs: map[string][]string{"namingContexts": n}}, nil
 }
-func (n namingContexts) Add(directory.Entry) error                 { return nil }
-func (n namingContexts) Replace(string, map[string][]string) error { return nil }
-func (n namingContexts) AddValues(string, string, []string) error  { return nil }
+func (n namingContexts) Add(context.Context, directory.Entry) error                 { return nil }
+func (n namingContexts) Replace(context.Context, string, map[string][]string) error { return nil }
+func (n namingContexts) AddValues(context.Context, string, string, []string) error  { return nil }
 
-func TestDetectRoot(t *testing.T) {
-	ldapOpt := func(base, root string) Options {
-		return Options{Profile: profile.LDAP, BaseDN: base, RootDN: root}
-	}
+func TestRootResolvers(t *testing.T) {
 	cases := []struct {
 		name string
+		r    RootResolver
 		src  directory.Directory
-		opt  Options
+		base string
 		want string
 	}{
-		{"configured root wins", namingContexts{"o=acme"}, ldapOpt("ou=x,o=acme", "o=other"), "o=other"},
-		{"AD uses the trailing DC run", namingContexts{}, Options{BaseDN: "OU=IDM,DC=ad,DC=example,DC=com"}, "DC=ad,DC=example,DC=com"},
-		{"longest naming context", namingContexts{"dc=org", "dc=example,dc=org"}, ldapOpt("ou=IDM,dc=example,dc=org", ""), "dc=example,dc=org"},
-		{"o= suffix from namingContexts", namingContexts{"o=acme"}, ldapOpt("ou=people,o=acme", ""), "o=acme"},
-		{"falls back to the DC run", namingContexts{}, ldapOpt("ou=IDM,dc=example,dc=org", ""), "dc=example,dc=org"},
+		{"AD uses the trailing DC run", adRoot{}, namingContexts{}, "OU=IDM,DC=ad,DC=example,DC=com", "DC=ad,DC=example,DC=com"},
+		{"longest naming context", namingContextRoot{}, namingContexts{"dc=org", "dc=example,dc=org"}, "ou=IDM,dc=example,dc=org", "dc=example,dc=org"},
+		{"o= suffix from namingContexts", namingContextRoot{}, namingContexts{"o=acme"}, "ou=people,o=acme", "o=acme"},
+		{"falls back to the DC run", namingContextRoot{}, namingContexts{}, "ou=IDM,dc=example,dc=org", "dc=example,dc=org"},
 	}
 	for _, c := range cases {
-		got, err := DetectRoot(c.src, c.opt)
+		got, err := c.r.Root(context.Background(), c.src, c.base)
 		if err != nil || got != c.want {
 			t.Errorf("%s: got %q (%v), want %q", c.name, got, err, c.want)
 		}
 	}
-	if _, err := DetectRoot(namingContexts{}, ldapOpt("ou=people,o=acme", "")); err == nil {
+	if _, err := (namingContextRoot{}).Root(context.Background(), namingContexts{}, "ou=people,o=acme"); err == nil {
 		t.Fatal("no way to find the root must ask for root_dn")
+	}
+	if _, err := (adRoot{}).Root(context.Background(), namingContexts{}, "OU=People,O=acme"); err == nil {
+		t.Fatal("an AD base_dn without DC= components must be refused")
 	}
 }

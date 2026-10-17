@@ -7,10 +7,10 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/pelletier/go-toml/v2"
 
-	"github.com/wadahiro/ldap-cronin/internal/attrs"
 	"github.com/wadahiro/ldap-cronin/internal/dn"
 	"github.com/wadahiro/ldap-cronin/internal/mask"
 	"github.com/wadahiro/ldap-cronin/internal/plan"
@@ -20,6 +20,9 @@ import (
 const (
 	defaultMaskValue = "********"
 	defaultWorkers   = 8
+	// defaultTimeout is generous because a single modify of a large group on Samba can take seconds; its job is only
+	// to turn a hung server into an error.
+	defaultTimeout = 2 * time.Minute
 )
 
 type Endpoint struct {
@@ -28,9 +31,16 @@ type Endpoint struct {
 	CAFile             string `toml:"ca_file"`
 	InsecureSkipVerify bool   `toml:"insecure_skip_verify"`
 	StartTLS           bool   `toml:"start_tls"`
+	// TimeoutText bounds each LDAP operation ("30s", "2m"; "0" for no limit). Read it through Timeout.
+	TimeoutText string `toml:"timeout"`
+	timeout     time.Duration
 }
 
-type Clone struct {
+// Timeout is the parsed per-operation timeout.
+func (e Endpoint) Timeout() time.Duration { return e.timeout }
+
+// Scope is what clone and diff work on.
+type Scope struct {
 	// Profile is the server type: auto (default; asks the source's root DSE), ad or ldap.
 	Profile string `toml:"profile"`
 	// RootDN is the top of the naming context that holds base_dn. Only needed when it cannot be derived
@@ -39,7 +49,11 @@ type Clone struct {
 	BaseDN  string            `toml:"base_dn"`
 	Objects []string          `toml:"objects"`
 	Filters map[string]string `toml:"filters"`
-	Workers int               `toml:"workers"` // number of parallel connections; 1 means sequential
+}
+
+// Run holds the run-time settings shared by clone and diff.
+type Run struct {
+	Workers int `toml:"workers"` // number of parallel target connections; 1 means sequential
 }
 
 type Attributes struct {
@@ -53,18 +67,18 @@ type Mask struct {
 	Attributes []string `toml:"attributes"`
 }
 
-// State is a local file shared by clone and diff.
-type State struct {
-	// File is the GUID mapping between source and target. When set, clone records it and diff
-	// uses it to detect renames and moves on the target. Empty means unused.
+// Mapping is the local file of source and target identifiers (objectGUID or entryUUID).
+type Mapping struct {
+	// File, when set, is recorded by clone and used by diff to detect renames and moves on the target.
 	File string `toml:"file"`
 }
 
 type Config struct {
-	State      State      `toml:"state"`
 	Source     Endpoint   `toml:"source"`
 	Target     Endpoint   `toml:"target"`
-	Clone      Clone      `toml:"clone"`
+	Scope      Scope      `toml:"scope"`
+	Run        Run        `toml:"run"`
+	Mapping    Mapping    `toml:"mapping"`
 	Attributes Attributes `toml:"attributes"`
 	Mask       Mask       `toml:"mask"`
 }
@@ -77,21 +91,44 @@ func Load(path string) (*Config, error) {
 	return Parse(raw)
 }
 
+// renamed maps sections of earlier versions to where their keys live now. Old files are not read (there is no
+// compatibility to keep at this stage), but they get an error that says what to change instead of "unknown field".
+var renamed = map[string]string{
+	"[clone]":         "[scope] (profile, root_dn, base_dn, objects) and [run] (workers)",
+	"[clone.filters]": "[scope.filters]",
+	"[state]":         "[mapping]",
+}
+
 func Parse(raw []byte) (*Config, error) {
+	for _, line := range strings.Split(string(raw), "\n") {
+		if now, ok := renamed[strings.TrimSpace(strings.SplitN(line, "#", 2)[0])]; ok {
+			return nil, fmt.Errorf("parse config: section %s was renamed; use %s", strings.TrimSpace(strings.SplitN(line, "#", 2)[0]), now)
+		}
+	}
 	var c Config
 	dec := toml.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&c); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
-	if len(c.Clone.Objects) == 0 {
-		c.Clone.Objects = append([]string(nil), attrs.Kinds...)
+	if len(c.Scope.Objects) == 0 {
+		c.Scope.Objects = []string{profile.KindOU, profile.KindGroup, profile.KindUser}
 	}
-	if c.Clone.Workers == 0 {
-		c.Clone.Workers = defaultWorkers
+	if c.Run.Workers == 0 {
+		c.Run.Workers = defaultWorkers
 	}
 	if c.Mask.Value == "" {
 		c.Mask.Value = defaultMaskValue
+	}
+	for name, ep := range map[string]*Endpoint{"source": &c.Source, "target": &c.Target} {
+		ep.timeout = defaultTimeout
+		if ep.TimeoutText != "" {
+			d, err := time.ParseDuration(ep.TimeoutText)
+			if err != nil || d < 0 {
+				return nil, fmt.Errorf("[%s] timeout must be a duration such as \"30s\" or \"2m\", got %q", name, ep.TimeoutText)
+			}
+			ep.timeout = d
+		}
 	}
 	if err := c.validate(); err != nil {
 		return nil, err
@@ -115,32 +152,46 @@ func (c *Config) validate() error {
 	if strings.EqualFold(strings.TrimRight(c.Source.URL, "/"), strings.TrimRight(c.Target.URL, "/")) {
 		return fmt.Errorf("source and target are the same server (%s)", c.Source.URL)
 	}
-	if c.Clone.BaseDN == "" {
-		return fmt.Errorf("[clone] base_dn is required")
+	if c.Scope.BaseDN == "" {
+		return fmt.Errorf("[scope] base_dn is required")
 	}
 	explicit, isExplicit, err := c.explicitProfile()
 	if err != nil {
 		return err
 	}
-	// Without DC= components the root is detected from the server later, so only reject what is certainly wrong here.
-	root := c.Clone.RootDN
+	// Where the naming context starts is the profile's business and may need the server, so only reject what is
+	// certainly wrong here: a base_dn that is the root it was given, or not below it.
+	root := c.Scope.RootDN
 	if root == "" {
-		root = dn.DomainRoot(c.Clone.BaseDN)
+		root = dn.DomainRoot(c.Scope.BaseDN)
 	}
-	if (root == "" && isExplicit && explicit.Name == profile.NameAD) || (root != "" && (dn.Equal(c.Clone.BaseDN, root) || !dn.IsDescendant(c.Clone.BaseDN, root))) {
-		return fmt.Errorf("[clone] base_dn must be an OU/container below the domain root (root_dn): %q", c.Clone.BaseDN)
+	if root != "" && (dn.Equal(c.Scope.BaseDN, root) || !dn.IsDescendant(c.Scope.BaseDN, root)) {
+		return fmt.Errorf("[scope] base_dn must be an OU/container below the domain root (root_dn): %q", c.Scope.BaseDN)
 	}
-	if c.Clone.Workers < 1 {
-		return fmt.Errorf("[clone] workers must be >= 1")
+	if c.Run.Workers < 1 {
+		return fmt.Errorf("[run] workers must be >= 1")
 	}
-	for _, o := range c.Clone.Objects {
-		if !contains(attrs.Kinds, o) {
-			return fmt.Errorf("[clone] objects: unknown kind %q (available: %s)", o, strings.Join(attrs.Kinds, ", "))
+	// With auto the profile is not known yet; a kind name any profile knows is accepted and checked again in JobFor.
+	candidates := profile.All()
+	if isExplicit {
+		candidates = []profile.Profile{explicit}
+	}
+	known := func(kind string) bool {
+		for _, p := range candidates {
+			if _, ok := p.Kind(kind); ok {
+				return true
+			}
+		}
+		return false
+	}
+	for _, o := range c.Scope.Objects {
+		if !known(o) {
+			return fmt.Errorf("[scope] objects: unknown kind %q (available: %s)", o, strings.Join(candidates[0].KindNames(), ", "))
 		}
 	}
-	for k := range c.Clone.Filters {
-		if !contains(attrs.Kinds, k) {
-			return fmt.Errorf("[clone.filters] unknown kind %q", k)
+	for k := range c.Scope.Filters {
+		if !known(k) {
+			return fmt.Errorf("[scope.filters] unknown kind %q", k)
 		}
 	}
 	// With profile = auto the attribute rules depend on the server, so they are checked in PlanOptionsFor.
@@ -152,12 +203,12 @@ func (c *Config) validate() error {
 
 func (c *Config) checkAttributes(p profile.Profile) error {
 	for _, a := range c.Mask.Attributes {
-		if !attrs.IsMaskableFor(p, a) {
+		if !p.Maskable(a) {
 			return fmt.Errorf("[mask] attribute %q cannot be masked with a fixed string (identity, unique, DN-reference or non-string attribute)", a)
 		}
 	}
-	for _, kind := range c.Clone.Objects {
-		if _, err := attrs.ResolveFor(p, kind, c.override()); err != nil {
+	for _, kind := range c.Scope.Objects {
+		if _, err := p.Attrs(kind, c.override()); err != nil {
 			return fmt.Errorf("[attributes] %s: %w", kind, err)
 		}
 	}
@@ -166,63 +217,50 @@ func (c *Config) checkAttributes(p profile.Profile) error {
 
 // explicitProfile returns the profile named in the config. ok is false for auto (resolved against the server later).
 func (c *Config) explicitProfile() (p profile.Profile, ok bool, err error) {
-	if c.Clone.Profile == "" || strings.EqualFold(c.Clone.Profile, profile.NameAuto) {
+	if c.Scope.Profile == "" || strings.EqualFold(c.Scope.Profile, profile.NameAuto) {
 		return profile.Profile{}, false, nil
 	}
-	p, err = profile.ByName(c.Clone.Profile)
+	p, err = profile.ByName(c.Scope.Profile)
 	if err != nil {
-		return p, false, fmt.Errorf("[clone] profile: %w", err)
+		return p, false, fmt.Errorf("[scope] profile: %w", err)
 	}
 	return p, true, nil
 }
 
 // ProfileName is the profile name from the config (auto when not set).
 func (c *Config) ProfileName() string {
-	if c.Clone.Profile == "" {
+	if c.Scope.Profile == "" {
 		return profile.NameAuto
 	}
-	return c.Clone.Profile
+	return c.Scope.Profile
 }
 
-func (c *Config) override() attrs.Override {
-	return attrs.Override{Include: c.Attributes.Include, Extra: c.Attributes.Extra, Exclude: c.Attributes.Exclude}
+func (c *Config) override() profile.Override {
+	return profile.Override{Include: c.Attributes.Include, Extra: c.Attributes.Extra, Exclude: c.Attributes.Exclude}
 }
 
-// PlanOptions assembles the scope settings shared by clone and diff. With profile = auto it assumes AD;
-// use PlanOptionsFor once the server type is known.
-func (c *Config) PlanOptions() (plan.Options, error) {
-	p, ok, err := c.explicitProfile()
-	if err != nil {
-		return plan.Options{}, err
-	}
-	if !ok {
-		p = profile.AD
-	}
-	return c.PlanOptionsFor(p)
-}
-
-// PlanOptionsFor assembles the scope settings for a resolved profile.
-func (c *Config) PlanOptionsFor(p profile.Profile) (plan.Options, error) {
+// JobFor assembles what clone and diff work on, once the server type is known.
+func (c *Config) JobFor(p profile.Profile) (plan.Job, error) {
 	if err := c.checkAttributes(p); err != nil {
-		return plan.Options{}, err
+		return plan.Job{}, err
 	}
-	resolved := map[string][]string{}
-	for _, kind := range attrs.Kinds {
-		list, err := attrs.ResolveFor(p, kind, c.override())
-		if err != nil {
-			return plan.Options{}, err
+	job := plan.Job{Profile: p, RootDN: c.Scope.RootDN, BaseDN: c.Scope.BaseDN, Masker: mask.New(c.Mask.Value, c.Mask.Attributes)}
+	for _, spec := range p.Kinds { // the profile's order, whatever order the config lists them in
+		if !contains(c.Scope.Objects, spec.Name) {
+			continue
 		}
-		resolved[kind] = list
+		list, err := p.Attrs(spec.Name, c.override())
+		if err != nil {
+			return plan.Job{}, fmt.Errorf("[attributes] %s: %w", spec.Name, err)
+		}
+		job.Kinds = append(job.Kinds, plan.NewKind(p, spec, c.Scope.Filters[spec.Name], list))
 	}
-	return plan.Options{
-		Profile: p,
-		RootDN:  c.Clone.RootDN,
-		BaseDN:  c.Clone.BaseDN,
-		Kinds:   c.Clone.Objects,
-		Filters: c.Clone.Filters,
-		Attrs:   resolved,
-		Masker:  mask.New(c.Mask.Value, c.Mask.Attributes),
-	}, nil
+	for _, o := range c.Scope.Objects {
+		if _, ok := p.Kind(o); !ok {
+			return plan.Job{}, fmt.Errorf("[scope] objects: the %s profile has no kind %q", p.Name, o)
+		}
+	}
+	return job, nil
 }
 
 func contains(list []string, s string) bool {

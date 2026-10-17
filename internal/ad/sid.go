@@ -1,5 +1,8 @@
-// Package adguid converts AD objectGUID and objectSid (binary as returned over LDAP) to and from their text notation.
-package adguid
+// Package ad holds what only Active Directory (and Samba AD) has: the binary objectGUID and objectSid forms and the
+// domain identity read from the root and the configuration partition. Nothing outside AD-only features uses it.
+//
+// sid.go converts AD objectGUID and objectSid (binary as returned over LDAP) to and from their text notation.
+package ad
 
 import (
 	"encoding/binary"

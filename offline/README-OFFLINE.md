@@ -67,7 +67,7 @@ Passwords are entered at run time, not written in the configuration file. See `R
 ```
 
 - Taking or restoring stops Samba cleanly and starts it again; about 7 seconds (longer with more data). The checksum is verified before restoring.
-- The GUID mapping used by `diff` can be stored too: `./setup.sh snapshot baseline --config config.toml` (or `--guid-map FILE`). Add the same option when restoring to write it back (an existing mapping is moved to `.bak`).
+- The mapping used by `diff` can be stored too: `./setup.sh snapshot baseline --config config.toml` (or `--mapping FILE`). Add the same option when restoring to write it back (an existing mapping is moved to `.bak`).
 - Snapshots are stored in `./snapshots/`. They contain password hashes; handle with care.
 - Another lab in the snapshot's state can run beside the current one: `./setup.sh restore baseline --instance dev2 --ldaps-port 22636` (omitted ports are chosen automatically). `./setup.sh reset --instance dev2 -y` deletes only dev2.
 

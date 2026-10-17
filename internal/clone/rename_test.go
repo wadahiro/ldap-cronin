@@ -2,6 +2,7 @@ package clone
 
 import (
 	"bytes"
+	"context"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -9,34 +10,33 @@ import (
 	"github.com/wadahiro/ldap-cronin/internal/diff"
 	"github.com/wadahiro/ldap-cronin/internal/dn"
 	"github.com/wadahiro/ldap-cronin/internal/fakedir"
-	"github.com/wadahiro/ldap-cronin/internal/guidmap"
+	"github.com/wadahiro/ldap-cronin/internal/identity"
 )
 
-var mapHeader = guidmap.Header{SourceDomain: "src-domain", TargetDomain: "dst-domain", BaseDN: base}
+var mapHeader = identity.Header{Scheme: "objectGUID", SourceRoot: identity.Key{1}, TargetRoot: identity.Key{2}, BaseDN: base}
 
 // clonedWithMapping clones the source to the target, records the GUID mapping and returns it reopened.
-func clonedWithMapping(t *testing.T) (src, dst *fakedir.Dir, guids *guidmap.Map) {
+func clonedWithMapping(t *testing.T) (src, dst *fakedir.Dir, guids *identity.Map) {
 	t.Helper()
 	return clonedFrom(t, seedSource())
 }
 
-func clonedFrom(t *testing.T, src *fakedir.Dir) (_, dst *fakedir.Dir, guids *guidmap.Map) {
+func clonedFrom(t *testing.T, src *fakedir.Dir) (_, dst *fakedir.Dir, guids *identity.Map) {
 	t.Helper()
 	dst = fakedir.New(domain)
 	path := filepath.Join(t.TempDir(), "guid-map.tsv")
-	m, err := guidmap.Open(path, mapHeader)
+	m, err := identity.Open(path, mapHeader)
 	if err != nil {
 		t.Fatal(err)
 	}
 	opt := options(t, allKinds()...)
-	opt.TrackGUID = true
-	if _, err := Run(src, dst, Options{Plan: opt, Workers: 4, GUIDMap: m}, &bytes.Buffer{}); err != nil {
+	if _, err := Run(context.Background(), src, dst, opt, Options{Workers: 4, Mapping: m}, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.Close(); err != nil {
 		t.Fatal(err)
 	}
-	guids, err = guidmap.Load(path, mapHeader)
+	guids, err = identity.Load(path, mapHeader)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,10 +67,14 @@ func userAt(src *fakedir.Dir, entryDN, sam string) {
 	})
 }
 
-func diffWith(t *testing.T, src, dst *fakedir.Dir, guids *guidmap.Map) ([]diff.Difference, diff.Summary) {
+func diffWith(t *testing.T, src, dst *fakedir.Dir, guids *identity.Map) ([]diff.Difference, diff.Summary) {
 	t.Helper()
 	var diffs []diff.Difference
-	sum, err := diff.Run(src, dst, options(t, allKinds()...), 4, guids, func(d diff.Difference) { diffs = append(diffs, d) })
+	var lookup identity.Lookup // a nil *Map must stay a nil interface, or diff would think tracking is on
+	if guids != nil {
+		lookup = guids
+	}
+	sum, err := diff.Run(context.Background(), src, dst, options(t, allKinds()...), diff.Options{Workers: 4, Lookup: lookup}, func(d diff.Difference) { diffs = append(diffs, d) })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +223,7 @@ func TestSummaryStatesWhetherRenameDetectionWasOn(t *testing.T) {
 	_, sumOff := diffWith(t, src, dst, nil)
 	diff.WriteSummary(&on, options(t, allKinds()...), sumOn, nil)
 	diff.WriteSummary(&off, options(t, allKinds()...), sumOff, nil)
-	if !strings.Contains(on.String(), "rename/move check: on (8 GUID pairs") || !strings.Contains(on.String(), "RENAMED") {
+	if !strings.Contains(on.String(), "rename/move check: on (8 objectGUID pairs") || !strings.Contains(on.String(), "RENAMED") {
 		t.Fatal(on.String())
 	}
 	if !strings.Contains(off.String(), "rename/move check: off") || strings.Contains(off.String(), "RENAMED     :") {
@@ -348,7 +352,7 @@ type outcome struct {
 	implied int
 }
 
-func outcomeOf(t *testing.T, src, dst *fakedir.Dir, guids *guidmap.Map) outcome {
+func outcomeOf(t *testing.T, src, dst *fakedir.Dir, guids *identity.Map) outcome {
 	t.Helper()
 	diffs, sum := diffWith(t, src, dst, guids)
 	o := outcome{renamed: map[string]diff.Difference{}, implied: sum.Implied}

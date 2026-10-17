@@ -25,12 +25,12 @@ It is read-only.
   `objectClass` (case), `userAccountControl` (excluding server-managed bits) and `accountExpires` (`0` and `9223372036854775807` both mean "never expires" and are treated as equal).
   Multi-valued attributes are compared ignoring order.
 - For DN reference attributes (`member`, `manager` and so on), references outside the scope (built-in objects and the like) are removed from both sides before comparing.
-- The objects compared are those that match `[clone] objects` and `[clone.filters]`.
+- The objects compared are those that match `[scope] objects` and `[scope.filters]`.
 - Use the same configuration file for clone and diff; different settings change the result (an `exclude` added only for diff hides that attribute).
 
 ## Kinds of output
 
-| Kind | Meaning | `[state] file` |
+| Kind | Meaning | `[mapping] file` |
 |---|---|---|
 | `ONLY_SOURCE` | Only in the source, not on the target (not cloned yet, or deleted on the target) | Not needed |
 | `ONLY_TARGET` | Only on the target, not in the source (newly created on the target) | Not needed |
@@ -38,7 +38,7 @@ It is read-only.
 | `RENAMED` | The same object has a different DN on the target (renamed or moved) | Required |
 | `REPLACED` | A different object than the cloned one exists at the same DN, and the original is nowhere to be found | Required |
 
-`RENAMED` and `REPLACED` are decided from the GUID mapping (`[state] file`); without it, see [when the mapping is missing or stale](#6-when-the-mapping-is-missing-or-stale).
+`RENAMED` and `REPLACED` are decided from the mapping (`[mapping] file`); without it, see [when the mapping is missing or stale](#6-when-the-mapping-is-missing-or-stale).
 
 ## Patterns: what happened on the target and how it appears
 
@@ -129,9 +129,9 @@ ONLY_TARGET CN=Newcomer,OU=Users,OU=IDM,DC=example,DC=com
 
 The same applies under a moved OU: a child deleted after the move is `ONLY_SOURCE`, a new one is `ONLY_TARGET`.
 
-### 3. Rename and move (`RENAMED`; requires `[state] file`)
+### 3. Rename and move (`RENAMED`; requires `[mapping] file`)
 
-The DN of an object was changed on the target; the unchanged `objectGUID` identifies it via the mapping.
+The DN of an object was changed on the target; the unchanged identifier (`objectGUID`, or `entryUUID` on a generic server) identifies it via the mapping.
 `(renamed)` means the RDN changed, `(moved)` means the parent changed, and both together give `(renamed and moved)`. **Objects moved outside the starting point (`base_dn`) are detected too.**
 
 ```
@@ -152,7 +152,7 @@ However, changing the RDN makes the server change `cn` (or `ou` for an OU) as we
 Moving or renaming an OU changes the DN of everything under it, so
 **children that are fully explained by the parent OU's move are not listed** (only the OU itself appears). The summary shows the count as `not listed: N entries moved along with a renamed/moved parent OU`.
 
-Only children found by GUID that moved with the parent as expected are left out. These **are** shown:
+Only children found by identifier that moved with the parent as expected are left out. These **are** shown:
 
 | What happened on the target | What is shown |
 |---|---|
@@ -193,17 +193,17 @@ Instead the original OU is shown as `RENAMED`, and the new OU at the original DN
 
 ### 5.5 Targets imported with `clone -native` (no mapping needed)
 
-A target imported with [`clone -native`](lab.md#importing-with-the-same-objectguid-and-objectsid-clone--native-samba-only) has the same `objectGUID` as the source, so the same detection (`RENAMED` / `REPLACED`) as in 3 to 5 above works without the mapping (`[state] file`).
-`diff` switches automatically when it finds that the `objectGUID` of `base_dn` (or of the first object under it, for a container) is the same on both sides.
+A target imported with [`clone -native`](lab.md#importing-with-the-same-objectguid-and-objectsid-clone--native-samba-only) has the same `objectGUID` as the source, so the same detection (`RENAMED` / `REPLACED`) as in 3 to 5 above works without the mapping (`[mapping] file`).
+`diff` switches automatically when the `objectGUID` of the first object it compares under `base_dn` (found with the configured filters, so built-in and filtered-out objects never decide; `base_dn` itself when nothing is under it) is the same on both sides.
 It does not switch on the domain GUID alone (a lab filled by `clone` over LDAP can share the domain GUID while object GUIDs differ).
 The summary shows `rename/move check: on (objectGUID preserved ...)`.
 
 ### 6. When the mapping is missing or stale
 
-If `[state] file` is not set, the file does not exist, or it belongs to a different source or target, `RENAMED` / `REPLACED` are not detected and **the behavior is the same as before**.
+If `[mapping] file` is not set, the file does not exist, or it belongs to a different source or target, `RENAMED` / `REPLACED` are not detected and **the behavior is the same as before**.
 A renamed or moved object looks like two entries: `ONLY_SOURCE` (the old DN) and `ONLY_TARGET` (the new DN).
 Whether a mapping exists and in what state is shown in the summary as `rename/move check: on / off` (when it is missing or does not match, the reason goes to standard error).
-A stale mapping (target recreated, GUIDs changed) cannot be looked up, so **no false detections are produced**.
+A stale mapping (target recreated, identifiers changed) cannot be looked up, so **no false detections are produced**.
 
 ## Quick reference: what happened on the target -> diff output
 
@@ -226,7 +226,7 @@ A stale mapping (target recreated, GUIDs changed) cannot be looked up, so **no f
 | A masked attribute was changed | Not detected (because it is masked) |
 | An attribute not in the allow list was changed | Not detected (add it with `extra_include` to detect it) |
 
-(*) Requires `[state] file`. Without it, a rename or move looks like two entries, `ONLY_SOURCE` + `ONLY_TARGET`, and `REPLACED` becomes an attribute comparison (GUIDs cannot be compared).
+(*) Requires `[mapping] file`. Without it, a rename or move looks like two entries, `ONLY_SOURCE` + `ONLY_TARGET`, and `REPLACED` becomes an attribute comparison (identifiers cannot be compared).
 
 ## How to read the summary
 
@@ -243,7 +243,7 @@ differences:
   RENAMED     : 2   (same object, but its DN differs on target: renamed/moved)
   REPLACED    : 1   (same DN, but a different object than the one cloned)
                     not listed: 12 entries moved along with a renamed/moved parent OU
-rename/move check: on (14 GUID pairs in the mapping file)
+rename/move check: on (14 objectGUID pairs in the mapping file)
 compared attributes:
   ou   : objectClass, cn, ou, description
   group: objectClass, cn, sAMAccountName, member
@@ -265,18 +265,18 @@ AD rewrites references to a renamed or moved object (`member`, `manager`, `manag
 
 ## How rename and move detection works, and its configuration
 
-When `[state] file` is set, `clone` records the correspondence between source and target `objectGUID` values and `diff` uses it.
-`objectGUID` cannot be copied to the target, so **the mapping is kept in a local file** (nothing is added to the target).
+When `[mapping] file` is set, `clone` records the correspondence between source and target identifiers (`objectGUID` on AD, `entryUUID` on a generic server) and `diff` uses it.
+The identifier is assigned by the target and cannot be copied, so **the mapping is kept in a local file** (nothing is added to the target).
 
 ```toml
-[state]
-file = "guid-map.tsv"
+[mapping]
+file = "mapping"
 ```
 
-- **The mapping file** consists of **fixed-length records** (66 bytes each) sorted by source GUID. `diff` **binary-searches the file** instead of loading it (constant memory; about 20 reads for a million entries), and only for entries whose DN was not found on the target.
+- **The mapping file** consists of **fixed-length records** (66 bytes each) sorted by source identifier. `diff` **binary-searches the file** instead of loading it (constant memory; about 20 reads for a million entries), and only for entries whose DN was not found on the target.
 - `clone` appends new pairs to a separate file and, at the end, rewrites the file after an external sort (sorting chunk by chunk and merging). The pairs from a `clone` that was interrupted are picked up by the next `clone`.
-- Only GUIDs are stored, no DNs or names. The header identifies **the `objectGUID` of the source and target domain roots** (plus `base_dn`), not the URL: it survives a host or port change (a lab restored on another port) but a different domain (a recreated target) is rejected, detection is off, and the reason goes to standard error.
+- Only identifiers are stored, no DNs or names. The header records the format version, the identifier attribute and **the identifiers of the source and target naming-context roots** (plus `base_dn`), not the URL: it survives a host or port change (a lab restored on another port) but a different directory (a recreated target) is rejected, detection is off, and the reason goes to standard error. A file written by an earlier version of the tool is refused the same way; run `clone` again to record a new one.
   It can be kept in a snapshot together with the data ([docs/lab.md](lab.md)).
-- The load of `clone` increases by exactly one read of the target GUID per newly created object (because the response to an add does not contain the GUID).
+- The load of `clone` increases by exactly one read of the target identifier per newly created object (because the response to an add does not contain it).
 - Only `clone` records the mapping; `-dry-run` does not.
 - **Re-running clone does not follow renames on the source side** (it only adds, and does not handle deletions). This feature exists so that `diff` can verify changes made on the target.

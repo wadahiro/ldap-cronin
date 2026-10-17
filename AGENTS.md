@@ -5,7 +5,7 @@ ldap-cronin (LDAP cRONIN): a Go CLI that clones OUs, groups and users between LD
 ## Commands
 
 - `make check` — format, vet, tidy, unit tests (`-race`) and build. Run before finishing any change.
-- `make e2e` — E2E against real servers; needs docker and takes about 6 minutes. Run it when touching `internal/lab`, `ldapdir`, `clone`, `diff` or `profile`.
+- `make e2e` — E2E against real servers; needs docker and takes about 6 minutes. Run it when touching `internal/lab`, `ldapdir`, `clone`, `diff`, `profile`, `identity`, `plan` or `app`.
 - `make fmt` — gofmt.
 
 ## Conventions

@@ -7,6 +7,7 @@ package lab
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -27,7 +28,7 @@ type Cmd struct {
 
 // Docker abstracts invoking the docker command. Tests replace it with a fake.
 type Docker interface {
-	Do(c Cmd) (string, error)
+	Do(ctx context.Context, c Cmd) (string, error)
 }
 
 // Process is a docker command that stays running and is driven over stdin/stdout.
@@ -40,7 +41,7 @@ type Process struct {
 
 // Streamer is a Docker that can start a docker command and keep talking to it. Used for the native import helper container.
 type Streamer interface {
-	Start(c Cmd) (*Process, error)
+	Start(ctx context.Context, c Cmd) (*Process, error)
 }
 
 // DockerError is a failed docker command. It includes standard error output.
@@ -87,8 +88,8 @@ func IsNotFound(err error) bool {
 // ExecDocker actually runs the docker command.
 type ExecDocker struct{}
 
-func (ExecDocker) Do(c Cmd) (string, error) {
-	cmd := exec.Command("docker", c.Args...)
+func (ExecDocker) Do(ctx context.Context, c Cmd) (string, error) {
+	cmd := exec.CommandContext(ctx, "docker", c.Args...)
 	if len(c.Env) > 0 {
 		cmd.Env = append(cmd.Environ(), c.Env...)
 	}
@@ -113,8 +114,8 @@ func (ExecDocker) Do(c Cmd) (string, error) {
 }
 
 // Start launches the docker command and wires up stdin/stdout. Standard error goes to c.Stderr (discarded if nil).
-func (ExecDocker) Start(c Cmd) (*Process, error) {
-	cmd := exec.Command("docker", c.Args...)
+func (ExecDocker) Start(ctx context.Context, c Cmd) (*Process, error) {
+	cmd := exec.CommandContext(ctx, "docker", c.Args...)
 	if len(c.Env) > 0 {
 		cmd.Env = append(cmd.Environ(), c.Env...)
 	}

@@ -2,6 +2,7 @@ package lab
 
 import (
 	"bufio"
+	"context"
 	_ "embed"
 	"encoding/base64"
 	"encoding/json"
@@ -86,56 +87,57 @@ var _ directory.Directory = (*Native)(nil)
 func (l *Lab) helperName() string { return l.container() + "-native" }
 
 // OpenNative stops the lab, starts the helper and runs the self-check. On failure it restores the lab and fails.
-func (l *Lab) OpenNative() (*Native, error) {
+func (l *Lab) OpenNative(ctx context.Context) (*Native, error) {
 	st, ok := l.D.(Streamer)
 	if !ok {
 		return nil, errors.New("this docker invocation method does not support native import")
 	}
-	if err := l.checkDocker(); err != nil {
+	if err := l.checkDocker(ctx); err != nil {
 		return nil, err
 	}
 	name := l.container()
-	_, exists, err := l.inspectLabels(name)
+	_, exists, err := l.inspectLabels(ctx, name)
 	if err != nil {
 		return nil, err
 	}
 	if !exists {
 		return nil, fmt.Errorf("lab %s does not exist; create it first with lab up (or restore)", name)
 	}
-	image, err := l.docker("container", "inspect", "--format", "{{.Config.Image}}", name)
+	image, err := l.docker(ctx, "container", "inspect", "--format", "{{.Config.Image}}", name)
 	if err != nil {
 		return nil, err
 	}
-	state, err := l.state(name)
+	state, err := l.state(ctx, name)
 	if err != nil {
 		return nil, err
 	}
 	n := &Native{l: l, wasUp: state != "exited"}
 	if n.wasUp {
 		l.logf("Stopping lab %s (only for the duration of the import; it resumes afterwards)", name)
-		if _, err := l.docker("stop", "-t", stopTimeoutSec, name); err != nil {
+		if _, err := l.docker(ctx, "stop", "-t", stopTimeoutSec, name); err != nil {
 			return nil, err
 		}
 	}
 	// If a helper container left over from a previous forced termination exists, remove it first.
-	if _, err := l.docker("rm", "-f", l.helperName()); err != nil && !IsNotFound(err) {
-		_ = n.restart()
+	if _, err := l.docker(ctx, "rm", "-f", l.helperName()); err != nil && !IsNotFound(err) {
+		_ = n.restart(ctx)
 		return nil, err
 	}
-	proc, err := st.Start(Cmd{
+	// The helper is not bound to ctx: killing it could interrupt a write to sam.ldb. call stops between requests instead.
+	proc, err := st.Start(context.WithoutCancel(ctx), Cmd{
 		Args: []string{"run", "-i", "--rm", "--name", l.helperName(),
 			"-v", l.volume("private") + ":/var/lib/samba", "-v", l.volume("etc") + ":/etc/samba",
 			"--entrypoint", "python3", image, "-u", "-c", nativeHelper},
 		Stderr: l.Err,
 	})
 	if err != nil {
-		_ = n.restart()
+		_ = n.restart(ctx)
 		return nil, err
 	}
 	n.proc, n.rd = proc, bufio.NewReaderSize(proc.Stdout, 1<<20)
-	resp, err := n.call(map[string]any{"op": "hello"})
+	resp, err := n.call(ctx, map[string]any{"op": "hello"})
 	if err != nil {
-		_ = n.Close()
+		_ = n.Close(ctx)
 		return nil, fmt.Errorf("cannot start the native helper (it may not work with this Samba): %w", err)
 	}
 	n.Info = NativeInfo{Samba: resp.Samba, Tested: resp.Tested, Base: resp.Base, DomainSID: resp.DomainSID, DomainGUID: resp.DomainGUID}
@@ -146,7 +148,12 @@ func (l *Lab) OpenNative() (*Native, error) {
 }
 
 // call sends one request and reads one response. A response with ok=false is returned as a NativeError.
-func (n *Native) call(req map[string]any) (*wireResponse, error) {
+// ctx is checked before sending, never while the helper works: killing it mid-request could leave sam.ldb half
+// written, so a cancelled import stops between requests and Close ends the helper by closing its standard input.
+func (n *Native) call(ctx context.Context, req map[string]any) (*wireResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	raw, err := json.Marshal(req)
@@ -217,8 +224,8 @@ func searchAttrs(attrs []string) []string {
 	return attrs
 }
 
-func (n *Native) Get(dn string, attrs []string) (*directory.Entry, error) {
-	resp, err := n.call(map[string]any{"op": "get", "dn": dn, "attrs": searchAttrs(attrs)})
+func (n *Native) Get(ctx context.Context, dn string, attrs []string) (*directory.Entry, error) {
+	resp, err := n.call(ctx, map[string]any{"op": "get", "dn": dn, "attrs": searchAttrs(attrs)})
 	if err != nil || resp.Entry == nil {
 		return nil, err
 	}
@@ -226,8 +233,8 @@ func (n *Native) Get(dn string, attrs []string) (*directory.Entry, error) {
 	return &e, err
 }
 
-func (n *Native) Walk(base, filter string, attrs []string, fn func(directory.Entry) error) error {
-	resp, err := n.call(map[string]any{"op": "search", "base": base, "filter": filter, "attrs": searchAttrs(attrs)})
+func (n *Native) Walk(ctx context.Context, base, filter string, attrs []string, fn func(directory.Entry) error) error {
+	resp, err := n.call(ctx, map[string]any{"op": "search", "base": base, "filter": filter, "attrs": searchAttrs(attrs)})
 	if err != nil {
 		return err
 	}
@@ -243,18 +250,18 @@ func (n *Native) Walk(base, filter string, attrs []string, fn func(directory.Ent
 	return nil
 }
 
-func (n *Native) Add(e directory.Entry) error {
-	_, err := n.call(map[string]any{"op": "add", "dn": e.DN, "attrs": encodeAttrs(e.Attrs)})
+func (n *Native) Add(ctx context.Context, e directory.Entry) error {
+	_, err := n.call(ctx, map[string]any{"op": "add", "dn": e.DN, "attrs": encodeAttrs(e.Attrs)})
 	return mapExists(err)
 }
 
-func (n *Native) Replace(dn string, attrs map[string][]string) error {
-	_, err := n.call(map[string]any{"op": "replace", "dn": dn, "attrs": encodeAttrs(attrs)})
+func (n *Native) Replace(ctx context.Context, dn string, attrs map[string][]string) error {
+	_, err := n.call(ctx, map[string]any{"op": "replace", "dn": dn, "attrs": encodeAttrs(attrs)})
 	return err
 }
 
-func (n *Native) AddValues(dn, attr string, values []string) error {
-	_, err := n.call(map[string]any{"op": "add_values", "dn": dn, "attr": attr, "values": encodeAttrs(map[string][]string{attr: values})[attr]})
+func (n *Native) AddValues(ctx context.Context, dn, attr string, values []string) error {
+	_, err := n.call(ctx, map[string]any{"op": "add_values", "dn": dn, "attr": attr, "values": encodeAttrs(map[string][]string{attr: values})[attr]})
 	return err
 }
 
@@ -269,8 +276,8 @@ func mapExists(err error) error {
 // Finish performs the post-import cleanup. It advances the RID allocation past the largest imported RID (otherwise
 // users created over LDAP after the import would collide with imported RIDs), and checks consistency with dbcheck.
 // Call it only when the import succeeded.
-func (n *Native) Finish() (NativeFinish, error) {
-	resp, err := n.call(map[string]any{"op": "finish"})
+func (n *Native) Finish(ctx context.Context) (NativeFinish, error) {
+	resp, err := n.call(ctx, map[string]any{"op": "finish"})
 	if err != nil {
 		return NativeFinish{}, err
 	}
@@ -278,8 +285,10 @@ func (n *Native) Finish() (NativeFinish, error) {
 	return NativeFinish{MaxRID: resp.MaxRID, RIDNext: resp.RIDNext, DBCheck: resp.DBCheck}, nil
 }
 
-// Close ends the helper and resumes the lab that was stopped.
-func (n *Native) Close() error {
+// Close ends the helper and resumes the lab that was stopped. It runs to the end even when ctx is cancelled, since
+// that is exactly when it matters: an interrupted import must not leave the lab stopped.
+func (n *Native) Close(ctx context.Context) error {
+	ctx = context.WithoutCancel(ctx)
 	if n.closed {
 		return nil
 	}
@@ -292,20 +301,21 @@ func (n *Native) Close() error {
 			n.l.warnf("helper exit: %v", err)
 		}
 	}
-	errs = append(errs, n.restart())
+	errs = append(errs, n.restart(ctx))
 	return errors.Join(errs...)
 }
 
-func (n *Native) restart() error {
+func (n *Native) restart(ctx context.Context) error {
+	ctx = context.WithoutCancel(ctx) // also on the failure paths of OpenNative
 	if !n.wasUp {
 		return nil
 	}
 	name := n.l.container()
 	n.l.logf("Resuming lab %s", name)
-	if _, err := n.l.docker("start", name); err != nil {
+	if _, err := n.l.docker(ctx, "start", name); err != nil {
 		return err
 	}
-	return n.l.waitHealthy(name)
+	return n.l.waitHealthy(ctx, name)
 }
 
 // Summary describes the post-import result in one line.

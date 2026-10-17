@@ -8,6 +8,7 @@ import (
 
 	"github.com/wadahiro/ldap-cronin/internal/mask"
 	"github.com/wadahiro/ldap-cronin/internal/plan"
+	"github.com/wadahiro/ldap-cronin/internal/profile"
 )
 
 func TestFormatSingleValued(t *testing.T) {
@@ -85,11 +86,10 @@ func TestFormatMultiValuedHonorsMaxValues(t *testing.T) {
 }
 
 func TestWriteSummaryListsWhatIsNotCompared(t *testing.T) {
-	opt := plan.Options{
-		Kinds:  []string{"ou", "user"},
-		Attrs:  map[string][]string{"ou": {"objectClass", "ou"}, "user": {"objectClass", "mail", "title"}},
-		Masker: mask.New("***", []string{"mail"}),
-	}
+	opt := plan.Job{Profile: profile.AD, Masker: mask.New("***", []string{"mail"}), Kinds: []plan.Kind{
+		{KindSpec: profile.KindSpec{Name: "ou"}, Attrs: []string{"objectClass", "ou"}},
+		{KindSpec: profile.KindSpec{Name: "user"}, Attrs: []string{"objectClass", "mail", "title"}},
+	}}
 	var b bytes.Buffer
 	WriteSummary(&b, opt, Summary{Compared: map[string]int{"ou": 3, "user": 5}, Differences: map[Kind]int{Differ: 2}}, []string{"telephoneNumber"})
 	got := b.String()
@@ -159,7 +159,9 @@ func TestFormatMultiValuedTagsCaseOnlyPairs(t *testing.T) {
 }
 
 func TestWriteSummaryShowsCaseOnlyCountOnlyWhenPresent(t *testing.T) {
-	opt := plan.Options{Kinds: []string{"user"}, Attrs: map[string][]string{"user": {"mail"}}, Masker: mask.New("***", nil)}
+	opt := plan.Job{Profile: profile.AD, Masker: mask.New("***", nil), Kinds: []plan.Kind{
+		{KindSpec: profile.KindSpec{Name: "user"}, Attrs: []string{"mail"}},
+	}}
 	var with, without bytes.Buffer
 	WriteSummary(&with, opt, Summary{Compared: map[string]int{"user": 1}, Differences: map[Kind]int{Differ: 3}, CaseOnly: 2}, nil)
 	WriteSummary(&without, opt, Summary{Compared: map[string]int{"user": 1}, Differences: map[Kind]int{Differ: 3}}, nil)

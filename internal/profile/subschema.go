@@ -1,9 +1,12 @@
-package plan
+package profile
 
 import (
+	"context"
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/wadahiro/ldap-cronin/internal/directory"
 )
 
 // Syntax OIDs (RFC 4517) of attributes whose values are DNs.
@@ -90,25 +93,28 @@ func dnRefsFromSchema(definitions []string) map[string]bool {
 	return out
 }
 
-// discoverSubschemaRefs reads attributeTypes from the subschema subentry (RFC 4512). There is no back-link marker
-// in a plain schema, so back links such as memberOf are excluded through the profile's never-clone list instead.
-func (p *Plan) discoverSubschemaRefs() (backLinks, unsupported map[string]bool, err error) {
-	root, err := p.src.Get("", []string{"subschemaSubentry"})
+// subschema reads attributeTypes from the subschema subentry (RFC 4512). There is no back-link marker in a plain
+// schema, so back links such as memberOf are excluded through the profile's never-clone list instead.
+type subschema struct{}
+
+func (subschema) Discover(ctx context.Context, src directory.Directory) (Schema, bool, error) {
+	root, err := src.Get(ctx, "", []string{"subschemaSubentry"})
 	if err != nil {
-		return nil, nil, fmt.Errorf("read root DSE: %w", err)
+		return Schema{}, false, fmt.Errorf("read root DSE: %w", err)
 	}
-	if root == nil || len(root.Values("subschemaSubentry")) == 0 {
-		return nil, nil, nil
+	if root == nil || first(root.Values("subschemaSubentry")) == "" {
+		return Schema{}, false, nil
 	}
-	sub, err := p.src.Get(root.Values("subschemaSubentry")[0], []string{"attributeTypes"})
+	sub, err := src.Get(ctx, first(root.Values("subschemaSubentry")), []string{"attributeTypes"})
 	if err != nil {
-		return nil, nil, fmt.Errorf("read schema: %w", err)
+		return Schema{}, false, fmt.Errorf("read schema: %w", err)
 	}
 	if sub == nil {
-		return nil, nil, nil
+		return Schema{}, false, nil
 	}
+	s := Schema{Refs: map[string]RefInfo{}, BackLinks: map[string]bool{}, Unsupported: map[string]bool{}}
 	for name, single := range dnRefsFromSchema(sub.Values("attributeTypes")) {
-		p.refs[name] = refInfo{single: single}
+		s.Refs[name] = RefInfo{Single: single}
 	}
-	return map[string]bool{}, map[string]bool{}, nil
+	return s, true, nil
 }

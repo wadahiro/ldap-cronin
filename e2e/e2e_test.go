@@ -5,6 +5,7 @@ package e2e
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"fmt"
 	"os"
@@ -16,14 +17,15 @@ import (
 
 	"github.com/go-ldap/ldap/v3"
 
-	"github.com/wadahiro/ldap-cronin/internal/attrs"
 	"github.com/wadahiro/ldap-cronin/internal/clone"
 	"github.com/wadahiro/ldap-cronin/internal/config"
 	"github.com/wadahiro/ldap-cronin/internal/diff"
 	"github.com/wadahiro/ldap-cronin/internal/directory"
-	"github.com/wadahiro/ldap-cronin/internal/guidmap"
+	"github.com/wadahiro/ldap-cronin/internal/dn"
+	"github.com/wadahiro/ldap-cronin/internal/identity"
 	"github.com/wadahiro/ldap-cronin/internal/ldapdir"
 	"github.com/wadahiro/ldap-cronin/internal/plan"
+	"github.com/wadahiro/ldap-cronin/internal/profile"
 	"github.com/wadahiro/ldap-cronin/internal/workpool"
 )
 
@@ -60,23 +62,23 @@ var (
 
 func mustGet(t *testing.T, c *ldapdir.Client, dn string, attrs ...string) *directory.Entry {
 	t.Helper()
-	e, err := c.Get(dn, attrs)
+	e, err := c.Get(context.Background(), dn, attrs)
 	if err != nil || e == nil {
 		t.Fatalf("%s: %v", dn, err)
 	}
 	return e
 }
 
-func runDiff(opt plan.Options, src, dst directory.Directory) ([]diff.Difference, error) {
+func runDiff(opt plan.Job, src, dst directory.Directory) ([]diff.Difference, error) {
 	var diffs []diff.Difference
-	_, err := diff.Run(src, dst, opt, 8, nil, func(d diff.Difference) { diffs = append(diffs, d) })
+	_, err := diff.Run(context.Background(), src, dst, opt, diff.Options{Workers: 8}, func(d diff.Difference) { diffs = append(diffs, d) })
 	return diffs, err
 }
 
 // runDiffWith is runDiff with a mapping (nil for none).
-func runDiffWith(opt plan.Options, src, dst directory.Directory, guids guidmap.Lookup) ([]diff.Difference, error) {
+func runDiffWith(opt plan.Job, src, dst directory.Directory, guids identity.Lookup) ([]diff.Difference, error) {
 	var diffs []diff.Difference
-	_, err := diff.RunWith(src, dst, opt, 8, guids, func(d diff.Difference) { diffs = append(diffs, d) })
+	_, err := diff.Run(context.Background(), src, dst, opt, diff.Options{Workers: 8, Lookup: guids}, func(d diff.Difference) { diffs = append(diffs, d) })
 	return diffs, err
 }
 
@@ -89,12 +91,12 @@ func dialWith(t *testing.T, url string, rangeSize, workers int) *ldapdir.Client 
 		t.Fatal(err)
 	}
 	t.Cleanup(c.Close)
-	return c
+	return c.With(profile.AD.Ranged)
 }
 
-func planOptions(t *testing.T) plan.Options { return planOptionsFor(t, baseDN) }
+func planOptions(t *testing.T) plan.Job { return planOptionsFor(t, baseDN) }
 
-func planOptionsFor(t *testing.T, base string) plan.Options {
+func planOptionsFor(t *testing.T, base string) plan.Job {
 	t.Helper()
 	raw := `
 [source]
@@ -103,7 +105,7 @@ bind_dn = "` + adminDN + `"
 [target]
 url = "` + dstURL + `"
 bind_dn = "` + adminDN + `"
-[clone]
+[scope]
 base_dn = "` + base + `"
 [attributes]
 extra_include = ["extensionAttribute1", "mailNickname", "seeAlso"]
@@ -114,7 +116,7 @@ attributes = ["mail"]
 	if err != nil {
 		t.Fatal(err)
 	}
-	opt, err := cfg.PlanOptions()
+	opt, err := cfg.JobFor(profile.AD)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +125,7 @@ attributes = ["mail"]
 
 // Attributes holding DNs are determined from the source schema, not from a fixed list.
 func TestReferenceAttributesAreDetectedFromSambaSchema(t *testing.T) {
-	p, err := plan.Build(dial(t, srcURL), planOptions(t))
+	p, err := plan.Build(context.Background(), dial(t, srcURL), planOptions(t), plan.Read{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +147,7 @@ func TestReferenceAttributesAreDetectedFromSambaSchema(t *testing.T) {
 // Every attribute in the allow list must exist in the Samba schema (requesting a nonexistent attribute can make an add fail).
 func TestDefaultAttributesExistInSambaSchema(t *testing.T) {
 	c := dial(t, dstURL)
-	entries, err := directory.Collect(c, "CN=Schema,CN=Configuration,"+realmDN, "(objectClass=attributeSchema)", []string{"lDAPDisplayName"})
+	entries, err := directory.Collect(context.Background(), c, "CN=Schema,CN=Configuration,"+realmDN, "(objectClass=attributeSchema)", []string{"lDAPDisplayName"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,10 +155,10 @@ func TestDefaultAttributesExistInSambaSchema(t *testing.T) {
 	for _, e := range entries {
 		known[strings.ToLower(e.Values("lDAPDisplayName")[0])] = true
 	}
-	for kind, list := range attrs.Defaults() {
-		for _, name := range list {
+	for _, k := range profile.AD.Kinds {
+		for _, name := range k.Default {
 			if !known[strings.ToLower(name)] {
-				t.Errorf("%s: %s is not in Samba schema", kind, name)
+				t.Errorf("%s: %s is not in Samba schema", k.Name, name)
 			}
 		}
 	}
@@ -165,7 +167,7 @@ func TestDefaultAttributesExistInSambaSchema(t *testing.T) {
 func TestCloneThenDiffThenIdempotentThenDetectTamper(t *testing.T) {
 	src, dst := dial(t, srcURL), dial(t, dstURL)
 	opt := planOptions(t)
-	copts := clone.Options{Plan: opt, UserPassword: fixedPw, Workers: 4}
+	job, copts := opt, clone.Options{UserPassword: fixedPw, Workers: 4}
 
 	// A diff before clone (the starting OU does not exist on the target) yields a list of MISSING entries instead of failing.
 	pre, err := runDiff(opt, src, dst)
@@ -179,7 +181,7 @@ func TestCloneThenDiffThenIdempotentThenDetectTamper(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	rep, err := clone.Run(src, dst, copts, &out)
+	rep, err := clone.Run(context.Background(), src, dst, job, copts, &out)
 	if err != nil {
 		t.Fatalf("clone: %v\n%s", err, out.String())
 	}
@@ -203,7 +205,7 @@ func TestCloneThenDiffThenIdempotentThenDetectTamper(t *testing.T) {
 
 	t.Run("fixtures", func(t *testing.T) {
 		get := func(dn string, a ...string) *directoryEntry {
-			e, err := dst.Get(dn, a)
+			e, err := dst.Get(context.Background(), dn, a)
 			if err != nil || e == nil {
 				t.Fatalf("%s: %v", dn, err)
 			}
@@ -249,7 +251,7 @@ func TestCloneThenDiffThenIdempotentThenDetectTamper(t *testing.T) {
 
 	t.Run("second run changes nothing", func(t *testing.T) {
 		before := mustGet(t, dst, aliceDN, "pwdLastSet").Values("pwdLastSet")
-		rep, err := clone.Run(src, dst, copts, &bytes.Buffer{})
+		rep, err := clone.Run(context.Background(), src, dst, job, copts, &bytes.Buffer{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -268,7 +270,7 @@ func TestCloneThenDiffThenIdempotentThenDetectTamper(t *testing.T) {
 	})
 
 	t.Run("diff detects a manual change", func(t *testing.T) {
-		if err := dst.Replace(aliceDN, map[string][]string{"title": {"Hacked"}}); err != nil {
+		if err := dst.Replace(context.Background(), aliceDN, map[string][]string{"title": {"Hacked"}}); err != nil {
 			t.Fatal(err)
 		}
 		diffs, err := runDiff(opt, src, dst)
@@ -279,7 +281,7 @@ func TestCloneThenDiffThenIdempotentThenDetectTamper(t *testing.T) {
 			t.Fatalf("%+v", diffs)
 		}
 		// A re-run must repair it.
-		if _, err := clone.Run(src, dst, copts, &bytes.Buffer{}); err != nil {
+		if _, err := clone.Run(context.Background(), src, dst, job, copts, &bytes.Buffer{}); err != nil {
 			t.Fatal(err)
 		}
 		assertNoDiff("after repair")
@@ -324,17 +326,17 @@ func TestBulkUsersPagingAndLargeGroupRanges(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	must(src.Add(directory.Entry{DN: bulkBase, Attrs: map[string][]string{"objectClass": {"organizationalUnit"}, "ou": {name}}}))
+	must(src.Add(context.Background(), directory.Entry{DN: bulkBase, Attrs: map[string][]string{"objectClass": {"organizationalUnit"}, "ou": {name}}}))
 	idx := make([]int, users)
 	for i := range idx {
 		idx[i] = i
 	}
-	must(workpool.Each(workers, idx, func(i int) error {
-		return src.Add(directory.Entry{DN: userDN(i), Attrs: map[string][]string{
+	must(workpool.Each(context.Background(), workers, idx, func(ctx context.Context, i int) error {
+		return src.Add(context.Background(), directory.Entry{DN: userDN(i), Attrs: map[string][]string{
 			"objectClass": {"user"}, "cn": {userName(i)}, "sAMAccountName": {userName(i)},
 		}})
 	}))
-	must(src.Add(directory.Entry{DN: groupDN, Attrs: map[string][]string{
+	must(src.Add(context.Background(), directory.Entry{DN: groupDN, Attrs: map[string][]string{
 		"objectClass": {"group"}, "cn": {"BulkGroup"}, "sAMAccountName": {name + "G"}, "groupType": {"-2147483646"},
 	}}))
 	for lo := 0; lo < users; lo += 500 {
@@ -342,18 +344,18 @@ func TestBulkUsersPagingAndLargeGroupRanges(t *testing.T) {
 		for i := lo; i < min(lo+500, users); i++ {
 			chunk = append(chunk, userDN(i))
 		}
-		must(src.AddValues(groupDN, "member", chunk))
+		must(src.AddValues(context.Background(), groupDN, "member", chunk))
 	}
 
 	lap("seed source")
-	g, err := src.Get(groupDN, []string{"member"})
+	g, err := src.Get(context.Background(), groupDN, []string{"member"})
 	if err != nil || g == nil || len(g.Values("member")) != users {
 		t.Fatalf("source group members: want %d, got %v (err=%v)", users, len(g.Values("member")), err)
 	}
 
 	opt := planOptionsFor(t, bulkBase)
 	lap("read group (ranged)")
-	rep, err := clone.Run(src, dst, clone.Options{Plan: opt, UserPassword: fixedPw, Workers: workers}, &bytes.Buffer{})
+	rep, err := clone.Run(context.Background(), src, dst, opt, clone.Options{UserPassword: fixedPw, Workers: workers}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -362,11 +364,11 @@ func TestBulkUsersPagingAndLargeGroupRanges(t *testing.T) {
 		t.Fatalf("added=%d want %d, warnings=%d", rep.Added, want, rep.WarningCount)
 	}
 
-	got, err := dst.Get(groupDN, []string{"member"})
+	got, err := dst.Get(context.Background(), groupDN, []string{"member"})
 	if err != nil || got == nil || len(got.Values("member")) != users {
 		t.Fatalf("target group members: want %d, got %d (err=%v)", users, len(got.Values("member")), err)
 	}
-	found, err := directory.Collect(dst, bulkBase, opt.SearchFilter(attrs.KindUser), []string{"sAMAccountName"})
+	found, err := directory.Collect(context.Background(), dst, bulkBase, userFilter(t, opt), []string{"sAMAccountName"})
 	if err != nil || len(found) != users {
 		t.Fatalf("paged user search on target: want %d, got %d (err=%v)", users, len(found), err)
 	}
@@ -377,7 +379,7 @@ func TestBulkUsersPagingAndLargeGroupRanges(t *testing.T) {
 	if err != nil || len(diffs) != 0 {
 		t.Fatalf("diff after bulk clone: %d diffs, err=%v", len(diffs), err)
 	}
-	rep, err = clone.Run(src, dst, clone.Options{Plan: opt, UserPassword: fixedPw, Workers: workers}, &bytes.Buffer{})
+	rep, err = clone.Run(context.Background(), src, dst, opt, clone.Options{UserPassword: fixedPw, Workers: workers}, &bytes.Buffer{})
 	lap("re-run (no-op)")
 	if err != nil || rep.Added != 0 || rep.Updated != 0 {
 		t.Fatalf("bulk re-run must change nothing: %+v err=%v", rep, err)
@@ -385,8 +387,8 @@ func TestBulkUsersPagingAndLargeGroupRanges(t *testing.T) {
 }
 
 // Scenario under test: after the test AD is built, another program renames and moves objects on the target.
-// Using the GUID mapping between source and target, diff must detect those changes.
-func TestRenameAndMoveOnTargetAreDetectedWithTheGUIDMapping(t *testing.T) {
+// Using the mapping between source and target, diff must detect those changes.
+func TestRenameAndMoveOnTargetAreDetectedWithTheMapping(t *testing.T) {
 	runID := time.Now().UnixNano() % 1_000_000
 	root := fmt.Sprintf("OU=Ren%06d,%s", runID, realmDN)
 	dept := "OU=Dept," + root
@@ -406,27 +408,26 @@ func TestRenameAndMoveOnTargetAreDetectedWithTheGUIDMapping(t *testing.T) {
 	ou := func(dnStr, name string) directory.Entry {
 		return directory.Entry{DN: dnStr, Attrs: map[string][]string{"objectClass": {"organizationalUnit"}, "ou": {name}}}
 	}
-	must(src.Add(ou(root, fmt.Sprintf("Ren%06d", runID))))
-	must(src.Add(ou(dept, "Dept")))
+	must(src.Add(context.Background(), ou(root, fmt.Sprintf("Ren%06d", runID))))
+	must(src.Add(context.Background(), ou(dept, "Dept")))
 	for _, e := range []directory.Entry{user("Ann", dept), user("Bob", dept), user("Cid", root), user("Dee", dept)} {
-		must(src.Add(e))
+		must(src.Add(context.Background(), e))
 	}
 
-	// Run clone and record the GUID mapping.
+	// Run clone and record the mapping.
 	mapPath := filepath.Join(t.TempDir(), "guid-map.tsv")
-	srcDomain, err := guidmap.DomainID(src, root)
+	srcDomain, err := identity.RootKey(context.Background(), src, dn.DomainRoot(root), identity.ObjectGUID)
 	must(err)
-	dstDomain, err := guidmap.DomainID(dst, root)
+	dstDomain, err := identity.RootKey(context.Background(), dst, dn.DomainRoot(root), identity.ObjectGUID)
 	must(err)
-	header := guidmap.Header{SourceDomain: srcDomain, TargetDomain: dstDomain, BaseDN: root}
-	gm, err := guidmap.Open(mapPath, header)
+	header := identity.Header{Scheme: "objectGUID", SourceRoot: srcDomain, TargetRoot: dstDomain, BaseDN: root}
+	gm, err := identity.Open(mapPath, header)
 	must(err)
 	opt := planOptionsFor(t, root)
-	opt.TrackGUID = true
-	_, err = clone.Run(src, dst, clone.Options{Plan: opt, UserPassword: fixedPw, Workers: 4, GUIDMap: gm}, &bytes.Buffer{})
+	_, err = clone.Run(context.Background(), src, dst, opt, clone.Options{UserPassword: fixedPw, Workers: 4, Mapping: gm}, &bytes.Buffer{})
 	must(err)
 	must(gm.Close())
-	guids, err := guidmap.Load(mapPath, header)
+	guids, err := identity.Load(mapPath, header)
 	must(err)
 	defer guids.Close()
 	if guids.Len() != 6 {
@@ -454,7 +455,7 @@ func TestRenameAndMoveOnTargetAreDetectedWithTheGUIDMapping(t *testing.T) {
 	must(conn.Del(ldap.NewDelRequest("CN=Dee,OU=Division,"+root, nil))) // Dee was deleted after the OU moved
 
 	var diffs []diff.Difference
-	sum, err := diff.Run(src, dst, opt, 8, guids, func(d diff.Difference) { diffs = append(diffs, d) })
+	sum, err := diff.Run(context.Background(), src, dst, opt, diff.Options{Workers: 8, Lookup: guids}, func(d diff.Difference) { diffs = append(diffs, d) })
 	must(err)
 	for _, d := range diffs {
 		var b bytes.Buffer
@@ -517,26 +518,25 @@ func TestRecreatedObjectsOnTargetAreNotMistakenForTheOriginals(t *testing.T) {
 		}
 	}
 	src, dst := dial(t, srcURL), dial(t, dstURL)
-	must(src.Add(ou(root, fmt.Sprintf("Rec%06d", runID))))
-	must(src.Add(ou(dept, "Dept")))
+	must(src.Add(context.Background(), ou(root, fmt.Sprintf("Rec%06d", runID))))
+	must(src.Add(context.Background(), ou(dept, "Dept")))
 	for _, e := range []directory.Entry{user("Eve", root), user("Fay", dept)} {
-		must(src.Add(e))
+		must(src.Add(context.Background(), e))
 	}
 
 	mapPath := filepath.Join(t.TempDir(), "guid-map.tsv")
-	srcDomain, err := guidmap.DomainID(src, root)
+	srcDomain, err := identity.RootKey(context.Background(), src, dn.DomainRoot(root), identity.ObjectGUID)
 	must(err)
-	dstDomain, err := guidmap.DomainID(dst, root)
+	dstDomain, err := identity.RootKey(context.Background(), dst, dn.DomainRoot(root), identity.ObjectGUID)
 	must(err)
-	header := guidmap.Header{SourceDomain: srcDomain, TargetDomain: dstDomain, BaseDN: root}
-	gm, err := guidmap.Open(mapPath, header)
+	header := identity.Header{Scheme: "objectGUID", SourceRoot: srcDomain, TargetRoot: dstDomain, BaseDN: root}
+	gm, err := identity.Open(mapPath, header)
 	must(err)
 	opt := planOptionsFor(t, root)
-	opt.TrackGUID = true
-	_, err = clone.Run(src, dst, clone.Options{Plan: opt, UserPassword: fixedPw, Workers: 4, GUIDMap: gm}, &bytes.Buffer{})
+	_, err = clone.Run(context.Background(), src, dst, opt, clone.Options{UserPassword: fixedPw, Workers: 4, Mapping: gm}, &bytes.Buffer{})
 	must(err)
 	must(gm.Close())
-	guids, err := guidmap.Load(mapPath, header)
+	guids, err := identity.Load(mapPath, header)
 	must(err)
 	defer guids.Close()
 
@@ -549,14 +549,14 @@ func TestRecreatedObjectsOnTargetAreNotMistakenForTheOriginals(t *testing.T) {
 	must(conn.Del(ldap.NewDelRequest("CN=Eve,"+root, nil)))
 	eve := user("Eve", root)
 	eve.Attrs["description"] = []string{"recreated by another program"}
-	must(dst.Add(eve))
+	must(dst.Add(context.Background(), eve))
 	// Dept: after it was moved (renamed), an OU with the same name and a new user inside it were created. Fay moved together with Dept.
 	must(conn.ModifyDN(ldap.NewModifyDNRequest(dept, "OU=Division", true, "")))
-	must(dst.Add(ou(dept, "Dept")))
-	must(dst.Add(user("Newcomer", dept)))
+	must(dst.Add(context.Background(), ou(dept, "Dept")))
+	must(dst.Add(context.Background(), user("Newcomer", dept)))
 
 	var diffs []diff.Difference
-	sum, err := diff.Run(src, dst, opt, 8, guids, func(d diff.Difference) { diffs = append(diffs, d) })
+	sum, err := diff.Run(context.Background(), src, dst, opt, diff.Options{Workers: 8, Lookup: guids}, func(d diff.Difference) { diffs = append(diffs, d) })
 	must(err)
 	for _, d := range diffs {
 		var b bytes.Buffer
@@ -580,4 +580,13 @@ func TestRecreatedObjectsOnTargetAreNotMistakenForTheOriginals(t *testing.T) {
 	if sum.Differences[diff.OnlySource] != 0 || sum.Implied != 1 { // Fay merely followed her parent
 		t.Fatalf("%+v implied=%d", sum.Differences, sum.Implied)
 	}
+}
+
+func userFilter(t *testing.T, job plan.Job) string {
+	t.Helper()
+	k, ok := job.Kind(profile.KindUser)
+	if !ok {
+		t.Fatal("the job has no user kind")
+	}
+	return k.Filter
 }

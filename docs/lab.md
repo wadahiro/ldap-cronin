@@ -22,7 +22,7 @@ ldap-cronin lab restore baseline                 # restore the original state (a
 | `lab down` | Stops it. The data is kept, and running `up` again resumes with the same settings |
 | `lab reset [-y] [--snapshots]` | Deletes the domain data and the settings (`.env`). Snapshots are kept by default |
 | `lab status` | Shows the state of the lab and the number of snapshots |
-| `lab snapshot [name] [--note text] [--force] [--config f \| --guid-map f]` | Saves the current data as a snapshot. `--config` / `--guid-map` also include the GUID mapping |
+| `lab snapshot [name] [--note text] [--force] [--config f \| --mapping f]` | Saves the current data as a snapshot. `--config` / `--mapping` also include the mapping |
 | `lab snapshots` | Lists the snapshots |
 | `lab restore [name]` | Restores the data to a snapshot's state. Without a name, you pick from a list. **If the target lab does not exist, it is created from the snapshot** ([starting another lab](#starting-another-lab-from-a-snapshot-on-a-different-port)) |
 | `lab snapshot-rm name` | Deletes a snapshot |
@@ -58,7 +58,7 @@ snapshots/
   baseline/
     private.tar      contents of /var/lib/samba (the domain data)
     etc.tar          contents of /etc/samba (the configuration)
-    guid-map.tsv     the GUID mapping (only when taken with --config / --guid-map)
+    mapping          the mapping file (only when taken with --config / --mapping)
     snapshot.json    name, note, time taken, domain, NetBIOS name, host name, image, size and SHA-256 of each file
 ```
 
@@ -86,7 +86,7 @@ baseline                 2026-10-16 22:34:54  corp.example.local         44.4MB 
 after-delete             2026-10-16 22:35:04  corp.example.local         44.4MB  -    after deleting 4 users
 ```
 
-`DOMAIN` is the domain of the lab the snapshot was taken from; you can restore only into a lab with the same domain (or a newly created lab). `MAP` shows whether the GUID mapping is included.
+`DOMAIN` is the domain of the lab the snapshot was taken from; you can restore only into a lab with the same domain (or a newly created lab). `MAP` shows whether the mapping is included.
 
 Without a name, `lab restore` lets you choose by number (newest first; Enter selects it, `q` cancels).
 
@@ -111,6 +111,8 @@ Without a terminal (script, CI) it prints the candidates and asks for a name.
 
 A restore discards every change made since the snapshot. You can restore any snapshot any number of times.
 
+Ctrl-C does not interrupt steps 3 to 5 of a restore, or the restart at the end of a snapshot: a half-written volume or a lab left stopped would be worse than waiting the few seconds they take. The command stops once they are done (a second Ctrl-C ends it at once). An interrupted snapshot is discarded; the lab is restarted.
+
 ### Starting another lab from a snapshot on a different port
 
 While the current lab keeps running, you can start another lab in the snapshot's state next to it, on different host ports. It uses separate volumes, so the two do not affect each other. Name it with `--instance` and `restore`.
@@ -118,7 +120,7 @@ While the current lab keeps running, you can start another lab in the snapshot's
 ```sh
 ldap-cronin lab restore baseline --instance dev2 --ldaps-port 22636    # start a lab in baseline's state on different ports
 ldap-cronin lab restore --instance dev2                                # pick from the list; free ports are chosen automatically
-ldap-cronin lab restore baseline --instance dev2 --guid-map guid-map-dev2.tsv   # write the mapping back to a file for dev2
+ldap-cronin lab restore baseline --instance dev2 --mapping mapping-dev2   # write the mapping back to a file for dev2
 ldap-cronin lab status                                                 # show all instances
 ldap-cronin lab snapshot --instance dev2 after-test                    # you can take snapshots of dev2 too
 ldap-cronin lab reset --instance dev2 -y                               # delete only dev2 (the original lab, .env and snapshots are untouched)
@@ -150,18 +152,18 @@ About 7 seconds each to take and to restore with about 44 MB of data (Samba's in
 - `lab reset` keeps snapshots unless `--snapshots` is given.
 - `docker volume prune` deletes the lab's volumes after `lab down`, so **take a snapshot right after `clone`**.
 
-### Including the GUID mapping in a snapshot
+### Including the mapping in a snapshot
 
-The GUID mapping that `diff` uses to detect renames and moves ([docs/diff.md](diff.md)) must match the restored data. Include it in the snapshot and **one restore brings back both**.
+The mapping that `diff` uses to detect renames and moves ([docs/diff.md](diff.md)) must match the restored data. Include it in the snapshot and **one restore brings back both**.
 
 ```sh
-ldap-cronin clone -config config.toml                          # the mapping in [state] file is recorded
-ldap-cronin lab snapshot baseline --config config.toml         # include the mapping with the data (--guid-map FILE also works)
-ldap-cronin lab restore baseline --config config.toml          # restore the data and write the mapping back to [state] file (an existing mapping is moved to .bak)
+ldap-cronin clone -config config.toml                          # the mapping in [mapping] file is recorded
+ldap-cronin lab snapshot baseline --config config.toml         # include the mapping with the data (--mapping FILE also works)
+ldap-cronin lab restore baseline --config config.toml          # restore the data and write the mapping back to [mapping] file (an existing mapping is moved to .bak)
 ```
 
-- The mapping comes from `[state] file` in `--config`, or from `--guid-map`. If neither is given, it is neither included nor written back. Restoring a snapshot that contains one without either only reports where the mapping is and leaves your current one untouched.
-- **When restoring into another instance, specify a different file** (`--instance dev2 --guid-map guid-map-dev2.tsv`) so the original lab's mapping is not overwritten.
+- The mapping comes from `[mapping] file` in `--config`, or from `--mapping`. If neither is given, it is neither included nor written back. Restoring a snapshot that contains one without either only reports where the mapping is and leaves your current one untouched.
+- **When restoring into another instance, specify a different file** (`--instance dev2 --mapping mapping-dev2`) so the original lab's mapping is not overwritten.
 - The mapping is keyed by the **domain** (the `objectGUID` of the domain root), not by host name and port, so it works for an instance on a different port. A mapping from a different domain (such as a recreated lab) is rejected.
 - Restored `objectGUID` values are unchanged, so a snapshot with the mapping taken right after `clone` keeps `diff` rename/move detection correct after any restore.
 - The mapping's checksum is verified before restoring; if corrupt, the current data is left untouched.
@@ -183,8 +185,8 @@ ldap-cronin diff -config config.toml
 - `clone -native` selects the lab with `-lab-prefix` (default `ldap-cronin`) and `-lab-instance`. The lab container is stopped only during the import and resumed afterwards, also on failure. If the lab's domain (root DN, SID, GUID) differs from the source, it refuses without writing anything.
 - After the import it runs `dbcheck` (Samba's database check) and fails on errors. It also advances the RID allocation so RIDs of users created over LDAP later do not collide with imported ones.
 - It can be re-run: an object that already exists with the same `objectGUID` gets only its attribute differences updated. **If an object with a different `objectGUID` exists at the same DN, it fails without rewriting** (`objectGUID` cannot be changed).
-- It does not create the `[state] file` (GUID mapping); it is not needed when the `objectGUID` is the same.
-- `diff` switches to mapping-free detection automatically when the `objectGUID` is the same on both sides; the summary shows `rename/move check: on (objectGUID preserved ...)`. The decision uses the `objectGUID` of the `base_dn` object (if `base_dn` is a container that exists in the lab from the start, such as `CN=Users`, the first object under it). **The domain GUID alone is not enough**: after a plain LDAP `clone` into a `--like-source` lab, the domain GUID matches but the objects' GUIDs differ.
+- It does not create the `[mapping] file` (mapping); it is not needed when the `objectGUID` is the same.
+- `diff` switches to mapping-free detection automatically when the `objectGUID` is the same on both sides; the summary shows `rename/move check: on (objectGUID preserved ...)`. The decision uses the `objectGUID` of the first object `diff` compares under `base_dn`, found with the configured filters (`base_dn` itself only when nothing is under it, because a container that exists in the lab from the start, such as `CN=Users`, has the lab's own `objectGUID`). **The domain GUID alone is not enough**: after a plain LDAP `clone` into a `--like-source` lab, the domain GUID matches but the objects' GUIDs differ.
 
 ### Limitations (read these)
 
@@ -220,6 +222,7 @@ For how the package is built see [DEVELOPMENT.md](DEVELOPMENT.md); for the proce
 | `existing container has different settings` | The domain name or ports differ from the lab that was created. The data is not lost. To recreate it, use `lab reset` (snapshots are kept) |
 | `docker run failed (port in use ...)` | Specify free ports with `--ldap-port` / `--ldaps-port` |
 | `cannot connect to the docker daemon` | docker is not running, or you lack permission (docker group, sudo) |
+| The lab logs `security xattrs are not writable here (rootless docker?)` | Not an error. Under rootless docker (for example the default of lima), Samba cannot write NT ACLs as `security.*` extended attributes, so the lab keeps them as `user.NTACL` instead. That is weaker (the file owner could change an ACL), which does not matter for a disposable lab. Rootful docker keeps Samba's default |
 | A restore failed halfway | The volumes are in an incomplete state. Run `lab restore` again |
 | `password unknown` (when restore creates a new lab) | Give the password in effect when the snapshot was taken, with `--admin-password` or the environment variable `SAMBA_ADMIN_PASSWORD` |
 | `port N is used by instance ...` | The host port overlaps with another instance. Change `--ldap-port` / `--ldaps-port` |

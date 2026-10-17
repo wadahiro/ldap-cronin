@@ -1,7 +1,8 @@
-package guidmap
+package identity
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -14,9 +15,15 @@ import (
 	"github.com/wadahiro/ldap-cronin/internal/fakedir"
 )
 
-var hdr = Header{SourceDomain: "aa", TargetDomain: "bb", BaseDN: "OU=IDM,DC=x"}
+var hdr = Header{Scheme: "objectGUID", SourceRoot: g(0xaa), TargetRoot: g(0xbb), BaseDN: "OU=IDM,DC=x"}
 
-func g(n int) string { return fmt.Sprintf("%032x", n) } // 32 hex digits (GUID notation)
+func g(n int) Key {
+	k, err := ParseHex(fmt.Sprintf("%032x", n))
+	if err != nil {
+		panic(err)
+	}
+	return k
+}
 
 func TestRecordPersistsAcrossRuns(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "map.tsv")
@@ -35,7 +42,7 @@ func TestRecordPersistsAcrossRuns(t *testing.T) {
 	}
 	defer loaded.Close()
 	if got, ok := loaded.Target(g(1)); !ok || got != g(101) || loaded.Len() != 2 {
-		t.Fatalf("got %q %v len=%d", got, ok, loaded.Len())
+		t.Fatalf("got %s %v len=%d", got, ok, loaded.Len())
 	}
 	if _, ok := loaded.Target(g(3)); ok {
 		t.Fatal("unknown GUID must not be found")
@@ -90,7 +97,7 @@ func TestChangedPairReplacesTheOldOne(t *testing.T) {
 	loaded, _ := Load(path, hdr)
 	defer loaded.Close()
 	if got, _ := loaded.Target(g(1)); got != g(999) || loaded.Len() != 1 {
-		t.Fatalf("got %q len=%d", got, loaded.Len())
+		t.Fatalf("got %s len=%d", got, loaded.Len())
 	}
 }
 
@@ -106,15 +113,15 @@ func TestExternalSortMergesManyRunsAndExistingTable(t *testing.T) {
 	order := rng.Perm(n)
 
 	m, _ := Open(path, hdr)
-	for _, i := range order[:n/2] { // first run: half
-		m.Record(g(i), g(i+100000))
+	for _, i := range order[:n/2] { // first run: half (keys start at 1: the zero key means "none")
+		m.Record(g(i+1), g(i+100000))
 	}
 	m.Close()
 	m, _ = Open(path, hdr)
 	for _, i := range order[n/2:] { // second run: the other half (merged with the existing table)
-		m.Record(g(i), g(i+100000))
+		m.Record(g(i+1), g(i+100000))
 	}
-	m.Record(g(order[0]), g(777777)) // overwrite an existing entry
+	m.Record(g(order[0]+1), g(777777)) // overwrite an existing entry
 	m.Close()
 
 	loaded, _ := Load(path, hdr)
@@ -127,8 +134,8 @@ func TestExternalSortMergesManyRunsAndExistingTable(t *testing.T) {
 		if i == order[0] {
 			want = g(777777)
 		}
-		if got, ok := loaded.Target(g(i)); !ok || got != want {
-			t.Fatalf("lookup %d: got %q %v, want %q", i, got, ok, want)
+		if got, ok := loaded.Target(g(i + 1)); !ok || got != want {
+			t.Fatalf("lookup %d: got %s %v, want %s", i, got, ok, want)
 		}
 	}
 	if leftovers, _ := filepath.Glob(path + ".*"); len(leftovers) != 0 {
@@ -151,7 +158,7 @@ func TestLeftoverFromAnInterruptedRunIsMergedNextTime(t *testing.T) {
 	loaded, _ := Load(path, hdr)
 	defer loaded.Close()
 	if got, ok := loaded.Target(g(1)); !ok || got != g(101) {
-		t.Fatalf("pair recorded by the interrupted run was lost: %q %v", got, ok)
+		t.Fatalf("pair recorded by the interrupted run was lost: %s %v", got, ok)
 	}
 }
 
@@ -161,7 +168,7 @@ func TestMapOfAnotherSourceTargetPairIsRejected(t *testing.T) {
 	m.Record(g(1), g(2))
 	m.Close()
 	other := hdr
-	other.TargetDomain = "cc" // a different domain
+	other.TargetRoot = g(0xcc) // a different directory
 	if _, err := Load(path, other); !errors.Is(err, ErrHeaderMismatch) {
 		t.Fatalf("Load: %v", err)
 	}
@@ -188,56 +195,91 @@ func TestCorruptSizeIsRejected(t *testing.T) {
 	}
 }
 
-func TestInvalidGUIDLengthIsRejected(t *testing.T) {
-	m, _ := Open(filepath.Join(t.TempDir(), "map.tsv"), hdr)
-	defer m.Close()
-	if err := m.Record("abc", g(1)); err == nil {
-		t.Fatal("a GUID that is not 32 hex chars must be rejected (it would break the fixed-length layout)")
+func TestZeroKeysAreNotRecorded(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "map.tsv")
+	m, _ := Open(path, hdr)
+	m.Record(Key{}, g(1))
+	m.Record(g(1), Key{})
+	m.Close()
+	loaded, _ := Load(path, hdr)
+	defer loaded.Close()
+	if loaded.Len() != 0 {
+		t.Fatalf("an object without an identifier must not be recorded: len=%d", loaded.Len())
 	}
 }
 
-func TestHexAndFilterValue(t *testing.T) {
-	raw := "\x00\x01\xab\xff"
-	if Hex(raw) != "0001abff" || FilterValue(Hex(raw)) != `\00\01\ab\ff` || Hex("") != "" {
-		t.Fatalf("%q %q", Hex(raw), FilterValue(Hex(raw)))
+// A file of an older version, or for another scheme, is refused instead of being misread.
+func TestOldFormatAndOtherSchemeAreRefused(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "map.tsv")
+	os.WriteFile(path, []byte("# ldap-cronin guid-map v3 source-domain=aa target-domain=bb base_dn=x\n"), 0o600)
+	if _, err := Load(path, hdr); !errors.Is(err, ErrOldFormat) {
+		t.Fatalf("an old file must be reported as such: %v", err)
+	}
+	if _, err := Open(path, hdr); !errors.Is(err, ErrOldFormat) {
+		t.Fatalf("clone must not overwrite an old file silently: %v", err)
+	}
+
+	path = filepath.Join(t.TempDir(), "map.tsv")
+	m, _ := Open(path, hdr)
+	m.Record(g(1), g(2))
+	m.Close()
+	other := hdr
+	other.Scheme = "entryUUID"
+	if _, err := Load(path, other); !errors.Is(err, ErrHeaderMismatch) {
+		t.Fatalf("keys recorded as objectGUID must not be read as entryUUID: %v", err)
 	}
 }
 
-func TestDomainIDIsTheObjectGUIDOfTheDomainRootAndSurvivesAnotherURL(t *testing.T) {
+func TestRootKeyIdentifiesTheDirectoryWhateverTheURL(t *testing.T) {
 	d := fakedir.New()
 	d.Put("DC=ad,DC=example,DC=com", map[string][]string{"objectClass": {"domainDNS"}})
-	id, err := DomainID(d, "OU=IDM,OU=Users,DC=ad,DC=example,DC=com") // looks at the domain root of the base DN
-	if err != nil || len(id) != 32 {
-		t.Fatalf("%q %v", id, err)
+	k, err := RootKey(context.Background(), d, "DC=ad,DC=example,DC=com", ObjectGUID)
+	if err != nil || k.IsZero() {
+		t.Fatalf("%s %v", k, err)
 	}
-	again, _ := DomainID(d, "OU=Other,DC=ad,DC=example,DC=com")
-	if again != id {
-		t.Fatal("the same domain must have the same identity whatever the base DN")
+	again, _ := RootKey(context.Background(), d, "DC=ad,DC=example,DC=com", ObjectGUID)
+	if again != k {
+		t.Fatal("the same directory must give the same key")
 	}
-
 	other := fakedir.New()
+	other.Put("DC=pad", map[string][]string{}) // bump the counter so the next object gets another identifier
 	other.Put("DC=ad,DC=example,DC=com", map[string][]string{"objectClass": {"domainDNS"}})
-	other.Put("DC=pad", map[string][]string{}) // bump the GUID to make it a different domain
-	otherID, _ := DomainID(other, "OU=IDM,DC=ad,DC=example,DC=com")
-	if otherID == "" {
-		t.Fatal("no id")
+	if ok, _ := RootKey(context.Background(), other, "DC=ad,DC=example,DC=com", ObjectGUID); ok == k {
+		t.Fatal("another directory must give another key")
 	}
-
-	if _, err := DomainID(fakedir.New(), "OU=IDM,DC=missing,DC=test"); err == nil {
-		t.Fatal("a missing domain root must be an error")
+	if _, err := RootKey(context.Background(), fakedir.New(), "DC=missing,DC=test", ObjectGUID); err == nil {
+		t.Fatal("a missing root must be an error")
 	}
 }
 
-func TestTextUUIDAndRawGUIDShareTheSameKey(t *testing.T) {
+// Each scheme parses only its own form, and the filter it builds finds the same key again.
+func TestSchemesParseTheirOwnFormAndShareTheKeySpace(t *testing.T) {
 	raw := string([]byte{0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88})
-	text := "12345678-9abc-def0-1122-334455667788"
-	if Hex(text) != Hex(raw) {
-		t.Fatalf("entryUUID text and 16 raw bytes must give one key: %s vs %s", Hex(text), Hex(raw))
+	text := "12345678-9ABC-def0-1122-334455667788"
+	kg, err := ObjectGUID.Key(raw)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if UUIDText(Hex(text)) != text {
-		t.Fatalf("UUIDText must invert Hex for search filters: %s", UUIDText(Hex(text)))
+	ku, err := EntryUUID.Key(text)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if Hex("not-a-uuid") == "" || Hex("") != "" {
-		t.Fatal("other values keep the plain hex form; empty stays empty")
+	if kg != ku {
+		t.Fatalf("16 raw bytes and the same UUID in text must give one key: %s vs %s", kg, ku)
+	}
+	if f := ObjectGUID.Filter(kg); f != `(objectGUID=\12\34\56\78\9a\bc\de\f0\11\22\33\44\55\66\77\88)` {
+		t.Fatal(f)
+	}
+	if f := EntryUUID.Filter(ku); f != "(entryUUID=12345678-9abc-def0-1122-334455667788)" {
+		t.Fatal(f)
+	}
+	if _, err := ObjectGUID.Key(text); err == nil {
+		t.Fatal("objectGUID must not accept text")
+	}
+	if _, err := EntryUUID.Key(raw); err == nil {
+		t.Fatal("entryUUID must not accept raw bytes")
+	}
+	if k, err := EntryUUID.Key(""); err != nil || !k.IsZero() {
+		t.Fatal("an empty value is the zero key")
 	}
 }

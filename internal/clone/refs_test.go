@@ -2,13 +2,13 @@ package clone
 
 import (
 	"bytes"
+	"context"
 	"strings"
 	"testing"
 
-	"github.com/wadahiro/ldap-cronin/internal/attrs"
 	"github.com/wadahiro/ldap-cronin/internal/fakedir"
-	"github.com/wadahiro/ldap-cronin/internal/mask"
 	"github.com/wadahiro/ldap-cronin/internal/plan"
+	"github.com/wadahiro/ldap-cronin/internal/profile"
 )
 
 const schemaNC = "CN=Schema,CN=Configuration," + domain
@@ -33,18 +33,9 @@ func withSchema(d *fakedir.Dir) *fakedir.Dir {
 	return d
 }
 
-func optionsWith(t *testing.T, o attrs.Override, maskAttrs ...string) plan.Options {
+func optionsWith(t *testing.T, o profile.Override, maskAttrs ...string) plan.Job {
 	t.Helper()
-	opt := options(t, allKinds()...)
-	for _, k := range attrs.Kinds {
-		list, err := attrs.Resolve(k, o)
-		if err != nil {
-			t.Fatal(err)
-		}
-		opt.Attrs[k] = list
-	}
-	opt.Masker = mask.New("***", maskAttrs)
-	return opt
+	return jobFor(t, profile.AD, base, allKinds(), o, maskAttrs...)
 }
 
 func strictTarget() *fakedir.Dir {
@@ -57,10 +48,10 @@ func TestSchemaDetectedReferenceIsDeferredUntilTargetExists(t *testing.T) {
 	src := withSchema(seedSource())
 	// alice (which may be created first) references bob and eng via seeAlso. It must be applied regardless of order.
 	src.Lookup(alice).Attrs["seeAlso"] = []string{bob, eng}
-	opt := optionsWith(t, attrs.Override{Extra: []string{"seeAlso"}})
+	opt := optionsWith(t, profile.Override{Extra: []string{"seeAlso"}})
 	dst := strictTarget()
 
-	rep, err := Run(src, dst, Options{Plan: opt, Workers: 4}, &bytes.Buffer{})
+	rep, err := Run(context.Background(), src, dst, opt, Options{Workers: 4}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatalf("seeAlso must be applied after all objects exist: %v", err)
 	}
@@ -75,7 +66,7 @@ func TestSchemaDetectedReferenceIsDeferredUntilTargetExists(t *testing.T) {
 func TestReferenceToObjectOutsideScopeIsSkippedWithWarning(t *testing.T) {
 	src := withSchema(seedSource())
 	src.Lookup(alice).Attrs["seeAlso"] = []string{"CN=Ghost,OU=Nowhere," + domain}
-	rep, err := Run(src, strictTarget(), Options{Plan: optionsWith(t, attrs.Override{Extra: []string{"seeAlso"}}), Workers: 2}, &bytes.Buffer{})
+	rep, err := Run(context.Background(), src, strictTarget(), optionsWith(t, profile.Override{Extra: []string{"seeAlso"}}), Options{Workers: 2}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,13 +77,13 @@ func TestReferenceToObjectOutsideScopeIsSkippedWithWarning(t *testing.T) {
 
 func TestSingleValuedReferenceIsReplacedWhenChanged(t *testing.T) {
 	src := withSchema(seedSource())
-	opt := optionsWith(t, attrs.Override{})
+	opt := optionsWith(t, profile.Override{})
 	dst := strictTarget()
-	if _, err := Run(src, dst, Options{Plan: opt, Workers: 1}, &bytes.Buffer{}); err != nil {
+	if _, err := Run(context.Background(), src, dst, opt, Options{Workers: 1}, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
 	src.Lookup(alice).Attrs["manager"] = []string{bob}
-	if _, err := Run(src, dst, Options{Plan: opt, Workers: 1}, &bytes.Buffer{}); err != nil {
+	if _, err := Run(context.Background(), src, dst, opt, Options{Workers: 1}, &bytes.Buffer{}); err != nil {
 		t.Fatalf("a changed single-valued reference must replace, not add a 2nd value: %v", err)
 	}
 	if got := dst.Lookup(alice).Values("manager"); len(got) != 1 || !strings.EqualFold(got[0], bob) {
@@ -101,24 +92,24 @@ func TestSingleValuedReferenceIsReplacedWhenChanged(t *testing.T) {
 }
 
 func TestBackLinkAttributeIsRejected(t *testing.T) {
-	_, err := Run(withSchema(seedSource()), fakedir.New(domain),
-		Options{Plan: optionsWith(t, attrs.Override{Extra: []string{"directReports"}})}, &bytes.Buffer{})
+	_, err := Run(context.Background(), withSchema(seedSource()), fakedir.New(domain),
+		optionsWith(t, profile.Override{Extra: []string{"directReports"}}), Options{}, &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "back link") {
 		t.Fatalf("got %v", err)
 	}
 }
 
 func TestDNBinaryAttributeIsRejected(t *testing.T) {
-	_, err := Run(withSchema(seedSource()), fakedir.New(domain),
-		Options{Plan: optionsWith(t, attrs.Override{Extra: []string{"msExchFoo"}})}, &bytes.Buffer{})
+	_, err := Run(context.Background(), withSchema(seedSource()), fakedir.New(domain),
+		optionsWith(t, profile.Override{Extra: []string{"msExchFoo"}}), Options{}, &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "DN-Binary") {
 		t.Fatalf("got %v", err)
 	}
 }
 
 func TestMaskingADNAttributeDiscoveredFromSchemaIsRejected(t *testing.T) {
-	_, err := Run(withSchema(seedSource()), fakedir.New(domain),
-		Options{Plan: optionsWith(t, attrs.Override{Extra: []string{"seeAlso"}}, "seeAlso")}, &bytes.Buffer{})
+	_, err := Run(context.Background(), withSchema(seedSource()), fakedir.New(domain),
+		optionsWith(t, profile.Override{Extra: []string{"seeAlso"}}, "seeAlso"), Options{}, &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "cannot be masked") {
 		t.Fatalf("got %v", err)
 	}

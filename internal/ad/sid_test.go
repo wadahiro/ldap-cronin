@@ -1,4 +1,4 @@
-package adguid
+package ad
 
 import (
 	"bytes"

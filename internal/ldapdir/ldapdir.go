@@ -4,6 +4,7 @@
 package ldapdir
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/go-ldap/ldap/v3"
 
@@ -27,30 +29,37 @@ type ConnConfig struct {
 	CAFile             string
 	InsecureSkipVerify bool
 	StartTLS           bool
+	// Timeout bounds every request on a connection, so a hung server fails the run instead of blocking it forever.
+	// A context cannot do this: go-ldap's Add and Modify take none. 0 means no limit.
+	Timeout time.Duration
 	// RangeSize is the number of values fetched per request when retrieving member in ranges (member;range=0-N). 0 means the default.
 	RangeSize int
 }
 
 // Client pools workers connections and borrows one per operation, which makes parallel execution possible.
+// Its settings never change after Dial: views made by With share the pool but not the settings, so a client that is
+// already in use by several goroutines is never reconfigured under them.
 type Client struct {
 	pool      chan *ldap.Conn
 	rangeSize int
 	ranged    map[string]bool
 }
 
-// SetRangedAttrs sets the attributes retrieved with the AD range option (member;range=0-N). Servers that do not
-// implement the option (OpenLDAP and most others) need an empty list, or the attribute would come back empty.
-// Call it before the client is shared between goroutines.
-func (c *Client) SetRangedAttrs(names []string) {
-	c.ranged = map[string]bool{}
-	for _, n := range names {
-		c.ranged[strings.ToLower(n)] = true
+// With returns a view of the same connections that retrieves the given attributes with the AD range option
+// (member;range=0-N). A plain client requests no ranges, which is right for servers without the option (OpenLDAP
+// and most others): there, a ranged request returns the attribute empty. Close either one to close the pool.
+func (c *Client) With(ranged []string) *Client {
+	v := *c
+	v.ranged = map[string]bool{}
+	for _, n := range ranged {
+		v.ranged[strings.ToLower(n)] = true
 	}
+	return &v
 }
 
 func Dial(c ConnConfig, workers int) (*Client, error) {
 	workers = max(workers, 1)
-	client := &Client{pool: make(chan *ldap.Conn, workers), rangeSize: c.RangeSize, ranged: defaultRanged}
+	client := &Client{pool: make(chan *ldap.Conn, workers), rangeSize: c.RangeSize}
 	if client.rangeSize <= 0 {
 		client.rangeSize = DefaultRangeSize
 	}
@@ -65,7 +74,19 @@ func Dial(c ConnConfig, workers int) (*Client, error) {
 	return client, nil
 }
 
-func (c *Client) acquire() *ldap.Conn  { return <-c.pool }
+// acquire borrows a connection, or gives up when ctx ends first (all connections busy and the run is stopping).
+func (c *Client) acquire(ctx context.Context) (*ldap.Conn, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	select {
+	case conn := <-c.pool:
+		return conn, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
 func (c *Client) release(l *ldap.Conn) { c.pool <- l }
 
 func dialOne(c ConnConfig) (*ldap.Conn, error) {
@@ -95,6 +116,9 @@ func dialOne(c ConnConfig) (*ldap.Conn, error) {
 			return nil, fmt.Errorf("starttls %s: %w", c.URL, err)
 		}
 	}
+	if c.Timeout > 0 {
+		conn.SetTimeout(c.Timeout)
+	}
 	if err := conn.Bind(c.BindDN, c.Password); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("bind %s as %s: %w", c.URL, c.BindDN, err)
@@ -115,13 +139,20 @@ func (c *Client) Close() {
 
 // Walk processes a paged search one page at a time and never accumulates all entries in memory.
 // The paging cookie is tied to the connection, so the same connection is used throughout the scan.
-func (c *Client) Walk(base, filter string, attrs []string, fn func(directory.Entry) error) error {
-	conn := c.acquire()
+func (c *Client) Walk(ctx context.Context, base, filter string, attrs []string, fn func(directory.Entry) error) error {
+	conn, err := c.acquire(ctx)
+	if err != nil {
+		return err
+	}
 	defer c.release(conn)
 	paging := ldap.NewControlPaging(pageSize)
 	req := ldap.NewSearchRequest(base, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 0, 0, false,
 		filter, rangedRequestFor(c.ranged, attrs, c.rangeSize), []ldap.Control{paging})
 	for {
+		// Checked per page: moving to SearchAsync for finer cancellation would mean rewriting the paging and range loop for no visible gain.
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		res, err := conn.Search(req)
 		if err != nil {
 			// A target whose search base does not exist yet (e.g. diff run before clone) is treated as having zero entries.
@@ -147,8 +178,11 @@ func (c *Client) Walk(base, filter string, attrs []string, fn func(directory.Ent
 	}
 }
 
-func (c *Client) Get(dn string, attrs []string) (*directory.Entry, error) {
-	conn := c.acquire()
+func (c *Client) Get(ctx context.Context, dn string, attrs []string) (*directory.Entry, error) {
+	conn, err := c.acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
 	defer c.release(conn)
 	req := ldap.NewSearchRequest(dn, ldap.ScopeBaseObject, ldap.NeverDerefAliases, 1, 0, false, "(objectClass=*)", rangedRequestFor(c.ranged, attrs, c.rangeSize), nil)
 	res, err := conn.Search(req)
@@ -168,8 +202,11 @@ func (c *Client) Get(dn string, attrs []string) (*directory.Entry, error) {
 	return &entry, nil
 }
 
-func (c *Client) Add(e directory.Entry) error {
-	conn := c.acquire()
+func (c *Client) Add(ctx context.Context, e directory.Entry) error {
+	conn, err := c.acquire(ctx)
+	if err != nil {
+		return err
+	}
 	defer c.release(conn)
 	req := ldap.NewAddRequest(e.DN, nil)
 	for _, name := range sortedKeys(e.Attrs) {
@@ -187,8 +224,11 @@ func (c *Client) Add(e directory.Entry) error {
 	return nil
 }
 
-func (c *Client) Replace(dn string, attrs map[string][]string) error {
-	conn := c.acquire()
+func (c *Client) Replace(ctx context.Context, dn string, attrs map[string][]string) error {
+	conn, err := c.acquire(ctx)
+	if err != nil {
+		return err
+	}
 	defer c.release(conn)
 	req := ldap.NewModifyRequest(dn, nil)
 	for _, name := range sortedKeys(attrs) {
@@ -200,8 +240,11 @@ func (c *Client) Replace(dn string, attrs map[string][]string) error {
 	return nil
 }
 
-func (c *Client) AddValues(dn, attr string, values []string) error {
-	conn := c.acquire()
+func (c *Client) AddValues(ctx context.Context, dn, attr string, values []string) error {
+	conn, err := c.acquire(ctx)
+	if err != nil {
+		return err
+	}
 	defer c.release(conn)
 	req := ldap.NewModifyRequest(dn, nil)
 	req.Add(attr, values)
