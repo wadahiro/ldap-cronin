@@ -9,7 +9,6 @@ import (
 	"crypto/tls"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -75,10 +74,10 @@ func runDiff(opt plan.Job, src, dst directory.Directory) ([]diff.Difference, err
 	return diffs, err
 }
 
-// runDiffWith is runDiff with a mapping (nil for none).
-func runDiffWith(opt plan.Job, src, dst directory.Directory, guids identity.Lookup) ([]diff.Difference, error) {
+// runDiffWith is runDiff with a resolver (nil for none).
+func runDiffWith(opt plan.Job, src, dst directory.Directory, res identity.Resolver) ([]diff.Difference, error) {
 	var diffs []diff.Difference
-	_, err := diff.Run(context.Background(), src, dst, opt, diff.Options{Workers: 8, Lookup: guids}, func(d diff.Difference) { diffs = append(diffs, d) })
+	_, err := diff.Run(context.Background(), src, dst, opt, diff.Options{Workers: 8, Resolver: res}, func(d diff.Difference) { diffs = append(diffs, d) })
 	return diffs, err
 }
 
@@ -386,9 +385,24 @@ func TestBulkUsersPagingAndLargeGroupRanges(t *testing.T) {
 	}
 }
 
+// markerOf is the marker of objects cloned from src, as app builds it. It also checks that the target indexes the
+// marker attribute: the image sets searchFlags before any data exists.
+func markerOf(t *testing.T, src, dst directory.Directory, root string) identity.Marker {
+	t.Helper()
+	key, err := identity.RootKey(context.Background(), src, dn.DomainRoot(root), identity.ObjectGUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	warning, err := profile.AD.MarkerCheck.CheckMarker(context.Background(), dst, profile.AD.Marker, identity.MarkerLen)
+	if err != nil || warning != "" {
+		t.Fatalf("the lab image must index %s: %q %v", profile.AD.Marker, warning, err)
+	}
+	return identity.NewMarker(profile.AD.Marker, key)
+}
+
 // Scenario under test: after the test AD is built, another program renames and moves objects on the target.
-// Using the mapping between source and target, diff must detect those changes.
-func TestRenameAndMoveOnTargetAreDetectedWithTheMapping(t *testing.T) {
+// Using the markers clone wrote, diff must detect those changes.
+func TestRenameAndMoveOnTargetAreDetectedWithTheMarkers(t *testing.T) {
 	runID := time.Now().UnixNano() % 1_000_000
 	root := fmt.Sprintf("OU=Ren%06d,%s", runID, realmDN)
 	dept := "OU=Dept," + root
@@ -414,24 +428,15 @@ func TestRenameAndMoveOnTargetAreDetectedWithTheMapping(t *testing.T) {
 		must(src.Add(context.Background(), e))
 	}
 
-	// Run clone and record the mapping.
-	mapPath := filepath.Join(t.TempDir(), "guid-map.tsv")
-	srcDomain, err := identity.RootKey(context.Background(), src, dn.DomainRoot(root), identity.ObjectGUID)
-	must(err)
-	dstDomain, err := identity.RootKey(context.Background(), dst, dn.DomainRoot(root), identity.ObjectGUID)
-	must(err)
-	header := identity.Header{Scheme: "objectGUID", SourceRoot: srcDomain, TargetRoot: dstDomain, BaseDN: root}
-	gm, err := identity.Open(mapPath, header)
-	must(err)
+	// Run clone writing the markers.
+	m := markerOf(t, src, dst, root)
 	opt := planOptionsFor(t, root)
-	_, err = clone.Run(context.Background(), src, dst, opt, clone.Options{UserPassword: fixedPw, Workers: 4, Mapping: gm}, &bytes.Buffer{})
+	_, err := clone.Run(context.Background(), src, dst, opt, clone.Options{UserPassword: fixedPw, Workers: 4, Marker: &m}, &bytes.Buffer{})
 	must(err)
-	must(gm.Close())
-	guids, err := identity.Load(mapPath, header)
+	marked, err := directory.Collect(context.Background(), dst, root, "("+m.Attr+"=ldap-cronin:*)", []string{directory.NoAttrs})
 	must(err)
-	defer guids.Close()
-	if guids.Len() != 6 {
-		t.Fatalf("pairs=%d", guids.Len())
+	if len(marked) != 6 {
+		t.Fatalf("marked=%d", len(marked))
 	}
 
 	// Reproduce the changes another program makes on the target.
@@ -455,7 +460,7 @@ func TestRenameAndMoveOnTargetAreDetectedWithTheMapping(t *testing.T) {
 	must(conn.Del(ldap.NewDelRequest("CN=Dee,OU=Division,"+root, nil))) // Dee was deleted after the OU moved
 
 	var diffs []diff.Difference
-	sum, err := diff.Run(context.Background(), src, dst, opt, diff.Options{Workers: 8, Lookup: guids}, func(d diff.Difference) { diffs = append(diffs, d) })
+	sum, err := diff.Run(context.Background(), src, dst, opt, diff.Options{Workers: 8, Resolver: identity.ByMarker(m)}, func(d diff.Difference) { diffs = append(diffs, d) })
 	must(err)
 	for _, d := range diffs {
 		var b bytes.Buffer
@@ -497,7 +502,8 @@ func TestRenameAndMoveOnTargetAreDetectedWithTheMapping(t *testing.T) {
 }
 
 // Deleted and recreated at the same DN, or the OU moved and an OU with the same name was recreated.
-// Even at the same DN it is a different object (different GUID), so it is reported as a different one rather than compared as the same.
+// A recreated object has no marker: it is UNMARKED when the cloned one is gone, and a different object when the
+// cloned one is found elsewhere.
 func TestRecreatedObjectsOnTargetAreNotMistakenForTheOriginals(t *testing.T) {
 	runID := time.Now().UnixNano() % 1_000_000
 	root := fmt.Sprintf("OU=Rec%06d,%s", runID, realmDN)
@@ -524,21 +530,10 @@ func TestRecreatedObjectsOnTargetAreNotMistakenForTheOriginals(t *testing.T) {
 		must(src.Add(context.Background(), e))
 	}
 
-	mapPath := filepath.Join(t.TempDir(), "guid-map.tsv")
-	srcDomain, err := identity.RootKey(context.Background(), src, dn.DomainRoot(root), identity.ObjectGUID)
-	must(err)
-	dstDomain, err := identity.RootKey(context.Background(), dst, dn.DomainRoot(root), identity.ObjectGUID)
-	must(err)
-	header := identity.Header{Scheme: "objectGUID", SourceRoot: srcDomain, TargetRoot: dstDomain, BaseDN: root}
-	gm, err := identity.Open(mapPath, header)
-	must(err)
+	m := markerOf(t, src, dst, root)
 	opt := planOptionsFor(t, root)
-	_, err = clone.Run(context.Background(), src, dst, opt, clone.Options{UserPassword: fixedPw, Workers: 4, Mapping: gm}, &bytes.Buffer{})
+	_, err := clone.Run(context.Background(), src, dst, opt, clone.Options{UserPassword: fixedPw, Workers: 4, Marker: &m}, &bytes.Buffer{})
 	must(err)
-	must(gm.Close())
-	guids, err := identity.Load(mapPath, header)
-	must(err)
-	defer guids.Close()
 
 	conn, err := ldap.DialURL(dstURL, ldap.DialWithTLSConfig(&tls.Config{InsecureSkipVerify: true}))
 	must(err)
@@ -556,7 +551,7 @@ func TestRecreatedObjectsOnTargetAreNotMistakenForTheOriginals(t *testing.T) {
 	must(dst.Add(context.Background(), user("Newcomer", dept)))
 
 	var diffs []diff.Difference
-	sum, err := diff.Run(context.Background(), src, dst, opt, diff.Options{Workers: 8, Lookup: guids}, func(d diff.Difference) { diffs = append(diffs, d) })
+	sum, err := diff.Run(context.Background(), src, dst, opt, diff.Options{Workers: 8, Resolver: identity.ByMarker(m)}, func(d diff.Difference) { diffs = append(diffs, d) })
 	must(err)
 	for _, d := range diffs {
 		var b bytes.Buffer
@@ -564,8 +559,8 @@ func TestRecreatedObjectsOnTargetAreNotMistakenForTheOriginals(t *testing.T) {
 		t.Log("\n" + strings.TrimRight(b.String(), "\n"))
 	}
 
-	if sum.Differences[diff.Replaced] != 1 { // Eve
-		t.Fatalf("REPLACED=%d, want 1 (Eve): %+v", sum.Differences[diff.Replaced], sum.Differences)
+	if sum.Differences[diff.Unmarked] != 1 { // Eve
+		t.Fatalf("UNMARKED=%d, want 1 (Eve): %+v", sum.Differences[diff.Unmarked], sum.Differences)
 	}
 	if sum.Differences[diff.Renamed] != 1 { // the original Dept (to Division)
 		t.Fatalf("RENAMED=%d, want 1 (the original Dept): %+v", sum.Differences[diff.Renamed], sum.Differences)

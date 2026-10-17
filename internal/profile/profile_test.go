@@ -19,9 +19,9 @@ func (r rootDSE) Get(ctx context.Context, dn string, _ []string) (*directory.Ent
 	}
 	return &directory.Entry{Attrs: r.attrs}, nil
 }
-func (r rootDSE) Add(context.Context, directory.Entry) error                 { return nil }
-func (r rootDSE) Replace(context.Context, string, map[string][]string) error { return nil }
-func (r rootDSE) AddValues(context.Context, string, string, []string) error  { return nil }
+func (r rootDSE) Add(context.Context, directory.Entry, ...directory.Control) error { return nil }
+func (r rootDSE) Replace(context.Context, string, map[string][]string) error       { return nil }
+func (r rootDSE) AddValues(context.Context, string, string, []string) error        { return nil }
 
 func TestDetectRecognizesActiveDirectoryByItsCapability(t *testing.T) {
 	ad := rootDSE{map[string][]string{"supportedCapabilities": {"1.2.840.113556.1.4.800", "1.2.840.113556.1.4.1670"}}}

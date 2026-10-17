@@ -27,7 +27,7 @@ The operations against the target per user are as follows (the counts are guaran
 
 | Situation | Operations |
 |---|---|
-| New user (first run) | AD: **3**: add (disabled), set password, finalize UAC. Generic LDAP: **1**: the add carries the password. With `[mapping] file`, one extra read of the target identifier |
+| New user (first run) | AD: **3**: add (disabled), set password, finalize UAC. Generic LDAP: **1**: the add carries the password. With `[mapping] mode = "file"`, one extra read of the target identifier. Markers and preserved identifiers ride in the same add |
 | Existing, unchanged user (re-run) | **2**: add (rejected), then one read. No writes |
 | New group | 1 add + member additions (1 per 500 values) |
 
@@ -49,7 +49,7 @@ Measured: about 10 MB for 200,000 users (holding every entry took about 660 MB).
 
 ## Stopping a run and hung servers
 
-- **Ctrl-C** (or SIGTERM) stops `clone` and `diff` at their next LDAP operation; what is already sent finishes. The mapping is still written, so a re-run continues where `clone` stopped (it is idempotent). An interrupted `diff` prints no summary, since a partial comparison would read as "no differences" in the part it did not reach. A second Ctrl-C ends the process at once. The exit code is 2.
+- **Ctrl-C** (or SIGTERM) stops `clone` and `diff` at their next LDAP operation; what is already sent finishes. A mapping file (`mode = "file"`) is still written, so a re-run continues where `clone` stopped (it is idempotent). An interrupted `diff` prints no summary, since a partial comparison would read as "no differences" in the part it did not reach. A second Ctrl-C ends the process at once. The exit code is 2.
 - **`timeout`** in `[source]` / `[target]` (default `2m`, `"0"` for none) bounds every LDAP operation, so a server that stops answering fails the run instead of blocking it. It is generous because one modify of a large group on Samba can take seconds.
 
 ## Performance figures (measured with Samba4 as the target)

@@ -29,8 +29,14 @@ const (
 type Options struct {
 	UserPassword string
 	Workers      int // sequential if 1 or less
-	// Mapping, when set, records the source and target identifiers of every object, so diff can detect renames and
-	// moves made on the target. It alone decides whether identifiers are read: there is no separate switch to forget.
+	// Marker, when set, writes the source key into every object clone creates or updates, so diff can tell where
+	// it went when the program under test renames or moves it.
+	Marker *identity.Marker
+	// Preserve creates every object with the source identifier through the profile's Preserver (entryUUID with the
+	// relax control on OpenLDAP); Operational also copies the Preserver's operational attributes at creation.
+	Preserve, Operational bool
+	// Mapping, when set, records the source and target identifiers of every object in a local file, for targets
+	// that allow neither of the above.
 	Mapping *identity.Map
 	// Native passes the source identifiers through (objectGUID, objectSid), for an import into the lab Samba that
 	// keeps them. An existing object with another identifier is then an error instead of an update.
@@ -58,7 +64,16 @@ type runner struct {
 }
 
 func Run(ctx context.Context, src, dst directory.Directory, job plan.Job, opt Options, out io.Writer) (*Report, error) {
-	p, err := plan.Build(ctx, src, job, plan.Read{Identity: opt.Mapping != nil || opt.Native, CarryOver: opt.Native})
+	read := plan.Read{Identity: opt.Marker != nil || opt.Preserve || opt.Mapping != nil || opt.Native, CarryOver: opt.Native}
+	if opt.Preserve {
+		if job.Profile.Preserve == nil {
+			return nil, fmt.Errorf("the %s profile cannot preserve identifiers over LDAP", job.Profile.Name)
+		}
+		if opt.Operational {
+			read.Extra = job.Profile.Preserve.Operational
+		}
+	}
+	p, err := plan.Build(ctx, src, job, read)
 	if err != nil {
 		return nil, err
 	}
@@ -126,7 +141,11 @@ func (r *runner) ensure(ctx context.Context, n plan.Node) error {
 	if cur != nil {
 		return r.track(ctx, n.Entry, false, cur)
 	}
-	if err := r.dst.Add(ctx, r.withoutDeferred(n.Entry)); err != nil {
+	desired, err := r.desired(n.Entry)
+	if err != nil {
+		return err
+	}
+	if err := r.add(ctx, desired); err != nil {
 		return fmt.Errorf("add parent %s: %w", n.Entry.DN, err)
 	}
 	r.count(func(rep *Report) { rep.Added++ })
@@ -139,7 +158,10 @@ func (r *runner) ensure(ctx context.Context, n plan.Node) error {
 // identifier (for the mapping) and what account needs, so the caller needs no additional Get.
 // account is nil for entries that are not accounts.
 func (r *runner) upsert(ctx context.Context, e directory.Entry, account profile.Account) (created bool, cur *directory.Entry, err error) {
-	desired := r.withoutDeferred(e)
+	desired, err := r.desired(e)
+	if err != nil {
+		return false, nil, err
+	}
 	extra := r.guidAttr()
 	add := desired
 	if account != nil {
@@ -149,12 +171,12 @@ func (r *runner) upsert(ctx context.Context, e directory.Entry, account profile.
 		extra = append(extra, account.ReadExtra()...)
 		add = account.AddEntry(desired, r.opt.UserPassword)
 	}
-	err = r.dst.Add(ctx, add)
+	err = r.add(ctx, add)
 	if errors.Is(err, directory.ErrSchemaViolation) {
 		// A group class such as groupOfNames requires a member at creation, which the deferred reference pass cannot give.
 		// Retrying with the in-scope references keeps the common case (AD, where nothing is required) on the cheaper path.
 		if withRefs := r.withScopedRefs(e, add); len(withRefs.Attrs) > len(add.Attrs) {
-			err = r.dst.Add(ctx, withRefs)
+			err = r.add(ctx, withRefs)
 		}
 	}
 	if err == nil {
@@ -173,7 +195,7 @@ func (r *runner) upsert(ctx context.Context, e directory.Entry, account profile.
 	if err != nil {
 		return false, nil, err
 	}
-	if r.opt.Native {
+	if r.opt.Native || r.opt.Preserve {
 		if err := r.checkIdentity(e.DN, desired, cur); err != nil {
 			return false, nil, err
 		}
@@ -185,7 +207,7 @@ func (r *runner) upsert(ctx context.Context, e directory.Entry, account profile.
 		got = *cur
 	}
 	plain, _ := r.plan.Changes(desired, got, names, func(n string) bool {
-		return strings.EqualFold(n, "objectClass") || plan.IsRDNAttr(e.DN, n) || r.isIdentityAttr(n)
+		return strings.EqualFold(n, "objectClass") || plan.IsRDNAttr(e.DN, n) || r.creationOnly(n)
 	})
 	changes := make(map[string][]string, len(plain))
 	for _, c := range plain {
@@ -254,19 +276,37 @@ func (r *runner) track(ctx context.Context, e directory.Entry, created bool, cur
 	return r.opt.Mapping.Record(source, target)
 }
 
-// isIdentityAttr reports whether name is the identifier or another attribute a native import carries over.
-// They can be given only at creation, so an update never sends them.
-func (r *runner) isIdentityAttr(name string) bool {
+// creationOnly reports whether name is the identifier, another attribute a native import carries over, or an
+// operational attribute a preserving Add sets. They can be given only at creation, so an update never sends them.
+func (r *runner) creationOnly(name string) bool {
 	scheme := r.prof.Identity
 	if strings.EqualFold(name, scheme.Attr()) {
 		return true
 	}
-	for _, a := range scheme.CarryOver() {
+	list := scheme.CarryOver()
+	if r.prof.Preserve != nil {
+		list = append(append([]string(nil), list...), r.prof.Preserve.Operational...)
+	}
+	for _, a := range list {
 		if strings.EqualFold(name, a) {
 			return true
 		}
 	}
 	return false
+}
+
+// add creates an entry, with the profile's control when identifiers are preserved.
+func (r *runner) add(ctx context.Context, e directory.Entry) error {
+	if !r.opt.Preserve {
+		return r.dst.Add(ctx, e)
+	}
+	pr := r.prof.Preserve
+	err := r.dst.Add(ctx, e, pr.Control)
+	if errors.Is(err, directory.ErrInsufficientAccess) || errors.Is(err, directory.ErrControlUnsupported) {
+		// Falling back to an Add without the identifier would leave a target that looks like production and is not.
+		return fmt.Errorf("the target refused to keep %s: %w; %s", r.prof.Identity.Attr(), err, pr.Remedy)
+	}
+	return err
 }
 
 // checkIdentity verifies that an existing target object has the same identifier as the source.
@@ -278,7 +318,7 @@ func (r *runner) checkIdentity(entryDN string, desired directory.Entry, cur *dir
 	attr := r.prof.Identity.Attr()
 	want, got := first(desired.Values(attr)), first(cur.Values(attr))
 	if want != "" && got != want {
-		return fmt.Errorf("%s already exists on the target but its %s differs from the source (a different object); it cannot be changed later, so rebuild the target", entryDN, attr)
+		return fmt.Errorf("%s already exists on the target but its %s differs from the source (a different object); it cannot be changed later, so rebuild the target (or, for a target cloned before without preserved identifiers, set [mapping] mode = \"file\" or \"off\")", entryDN, attr)
 	}
 	return nil
 }
@@ -430,16 +470,28 @@ func (r *runner) warn(format string, args ...any) {
 	}
 }
 
-// withoutDeferred returns a copy with the DN reference attributes removed that are applied later.
-func (r *runner) withoutDeferred(e directory.Entry) directory.Entry {
+// desired returns what the target entry should hold before references are applied: e without the DN reference
+// attributes (applied later), and with the marker when there is one.
+func (r *runner) desired(e directory.Entry) (directory.Entry, error) {
 	out := directory.Entry{DN: e.DN, Attrs: map[string][]string{}}
+	keep := r.opt.Native || r.opt.Preserve
 	for n, v := range e.Attrs {
-		// objectGUID is assigned by the target, so it is not copied (it is read only for the mapping).
-		// A native import, however, passes objectGUID and objectSid through unchanged so the target is created with the same values as the source.
-		if r.plan.IsRef(n) || len(v) == 0 || (!r.opt.Native && strings.EqualFold(n, r.prof.Identity.Attr())) {
+		// The identifier is assigned by the target, so it is not copied (it is read for the marker or the mapping).
+		// A native import and a preserving Add, however, pass it through so the target object has the source's.
+		// creatorsName and modifiersName hold DNs but are written at creation, not with the references.
+		if (r.plan.IsRef(n) && !r.creationOnly(n)) || len(v) == 0 || (!keep && strings.EqualFold(n, r.prof.Identity.Attr())) {
 			continue
 		}
 		out.Attrs[n] = v
 	}
-	return out
+	if r.opt.Marker != nil {
+		k, err := identity.Of(r.prof.Identity, e)
+		if err != nil {
+			return out, fmt.Errorf("%s on the source: %w", e.DN, err)
+		}
+		if !k.IsZero() {
+			out.Attrs[r.opt.Marker.Attr] = []string{r.opt.Marker.Encode(k)}
+		}
+	}
+	return out, nil
 }

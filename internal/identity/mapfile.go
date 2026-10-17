@@ -162,9 +162,6 @@ func (m *Map) Target(source Key) (Key, bool) {
 	return k, err == nil
 }
 
-// Preserved is false: a mapping file exists exactly because the target assigned its own identifiers.
-func (m *Map) Preserved() bool { return false }
-
 func (m *Map) target(source string) (string, bool) {
 	if m.main == nil || len(source) != guidHexLen {
 		return "", false

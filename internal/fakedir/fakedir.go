@@ -22,26 +22,72 @@ type Dir struct {
 	// RequireAttr maps a lowercase objectClass to an attribute that Add must carry (e.g. groupofnames -> member),
 	// like a real server enforcing the schema's MUST list. Add then returns directory.ErrSchemaViolation.
 	RequireAttr map[string]string
+	// Relax is the OID of a control that lets an Add set Operational attributes, like OpenLDAP's relax control.
+	// Empty: such a control, sent as critical, is refused as unsupported. An Add that sets an Operational attribute
+	// without it is refused, as a real server does.
+	Relax string
+	// RelaxDenied refuses the Relax control for lack of rights (OpenLDAP without manage access).
+	RelaxDenied bool
 	nextGUID    uint64
 }
 
+// Operational are the attributes an Add may set only with the Relax control.
+var Operational = []string{"entryUUID", "createTimestamp", "modifyTimestamp", "creatorsName", "modifiersName"}
+
 // assignGUID gives an entry the identifiers a real server assigns: objectGUID (16 raw bytes, as AD) and entryUUID
 // (the same 16 bytes as text, as RFC 4530 servers). One fake serves both profiles; each reads only its own attribute.
-// An entry that brings its own objectGUID (a native import) keeps it.
+// An entry that brings its own objectGUID (a native import) or entryUUID (an Add with relax) keeps it, and gets the
+// other one from the same bytes.
 func (d *Dir) assignGUID(attrs map[string][]string) {
-	for n := range attrs {
-		if strings.EqualFold(n, "objectGUID") {
-			return
+	var b []byte
+	e := directory.Entry{Attrs: attrs}
+	if v := e.Values("objectGUID"); len(v) > 0 { // objectGUID wins: a test that replaces it means a new object
+		b = []byte(v[0])
+	} else if v := e.Values("entryUUID"); len(v) > 0 {
+		if raw, err := hex.DecodeString(strings.ReplaceAll(v[0], "-", "")); err == nil && len(raw) == 16 {
+			b = raw
 		}
 	}
-	d.nextGUID++
-	b := make([]byte, 16)
-	for i := 0; i < 8; i++ {
-		b[15-i] = byte(d.nextGUID >> (8 * i))
+	if b == nil {
+		d.nextGUID++
+		b = make([]byte, 16)
+		for i := 0; i < 8; i++ {
+			b[15-i] = byte(d.nextGUID >> (8 * i))
+		}
+	}
+	for n := range attrs {
+		if strings.EqualFold(n, "objectGUID") || strings.EqualFold(n, "entryUUID") {
+			delete(attrs, n)
+		}
 	}
 	h := hex.EncodeToString(b)
 	attrs["objectGUID"] = []string{string(b)}
 	attrs["entryUUID"] = []string{h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:]}
+}
+
+// checkControls applies the rules of the Relax control to an Add.
+func (d *Dir) checkControls(e directory.Entry, controls []directory.Control) error {
+	relax := false
+	for _, c := range controls {
+		switch {
+		case d.Relax != "" && c.OID == d.Relax:
+			if d.RelaxDenied {
+				return fmt.Errorf("add %s: %w (no write access to entry)", e.DN, directory.ErrInsufficientAccess)
+			}
+			relax = true
+		case c.Critical:
+			return fmt.Errorf("add %s: %w (%s)", e.DN, directory.ErrControlUnsupported, c.OID)
+		}
+	}
+	if relax {
+		return nil
+	}
+	for _, a := range Operational {
+		if len(e.Values(a)) > 0 {
+			return fmt.Errorf("add %s: %s: no user modification allowed", e.DN, a)
+		}
+	}
+	return nil
 }
 
 // New returns an empty directory holding roots (DNs that already exist as parents, such as the domain root).
@@ -112,7 +158,7 @@ func (d *Dir) Get(ctx context.Context, dnStr string, attrs []string) (*directory
 	return &p, nil
 }
 
-func (d *Dir) Add(ctx context.Context, e directory.Entry) error {
+func (d *Dir) Add(ctx context.Context, e directory.Entry, controls ...directory.Control) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -130,6 +176,9 @@ func (d *Dir) Add(ctx context.Context, e directory.Entry) error {
 		return err
 	}
 	if err := d.checkRequired(e); err != nil {
+		return err
+	}
+	if err := d.checkControls(e, controls); err != nil {
 		return err
 	}
 	added := &directory.Entry{DN: e.DN, Attrs: clone(e.Attrs)}
@@ -223,11 +272,13 @@ func project(e directory.Entry, attrs []string) directory.Entry {
 	return out
 }
 
-// matches interprets only the filters clone uses (objectClass and objectCategory=person).
+// matches interprets only the filters clone uses (objectClass and objectCategory=person), and a single equality
+// on any other attribute (identifiers, markers).
 func matches(e directory.Entry, filter string) bool {
 	classes := strings.ToLower(strings.Join(e.Values("objectClass"), ","))
+	lower := strings.ToLower(filter)
 	switch {
-	case strings.HasPrefix(filter, "(objectGUID=") || strings.HasPrefix(filter, "(entryUUID="):
+	case strings.Count(filter, "(") == 1 && !strings.HasPrefix(lower, "(objectclass=") && !strings.HasPrefix(lower, "(objectcategory="):
 		return equalityMatches(e, filter)
 	case strings.Contains(filter, "attributeSchema"):
 		return strings.Contains(classes, "attributeschema")

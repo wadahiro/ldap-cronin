@@ -1,13 +1,9 @@
 package main
 
 import (
-	"bytes"
 	"flag"
 	"io"
-	"os"
-	"path/filepath"
 	"reflect"
-	"strings"
 	"testing"
 
 	"github.com/wadahiro/ldap-cronin/internal/lab"
@@ -47,58 +43,6 @@ func TestParseInterleavedRejectsUnknownFlags(t *testing.T) {
 	fs.SetOutput(io.Discard)
 	if _, err := parseInterleaved(fs, []string{"x", "--nope"}); err == nil {
 		t.Fatal("unknown flag must fail")
-	}
-}
-
-func TestMappingPathPrefersTheExplicitFileThenTheConfigsMappingFile(t *testing.T) {
-	cfg := filepath.Join(t.TempDir(), "config.toml")
-	if err := os.WriteFile(cfg, []byte(`
-[mapping]
-file = "from-config.tsv"
-[source]
-url = "ldaps://s:636"
-bind_dn = "CN=a"
-[target]
-url = "ldaps://t:636"
-bind_dn = "CN=a"
-[scope]
-base_dn = "OU=IDM,DC=x,DC=test"
-`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	var errw bytes.Buffer
-	if got, err := mappingPath(cfg, "explicit.tsv", &errw); err != nil || got != "explicit.tsv" {
-		t.Fatalf("%q %v", got, err)
-	}
-	if got, err := mappingPath(cfg, "", &errw); err != nil || got != "from-config.tsv" {
-		t.Fatalf("%q %v", got, err)
-	}
-	if got, err := mappingPath("", "", &errw); err != nil || got != "" {
-		t.Fatalf("%q %v", got, err)
-	}
-	if _, err := mappingPath(filepath.Join(t.TempDir(), "none.toml"), "", &errw); err == nil {
-		t.Fatal("an unreadable --config must be an error")
-	}
-}
-
-func TestMappingPathWarnsWhenTheConfigHasNoMappingFile(t *testing.T) {
-	cfg := filepath.Join(t.TempDir(), "config.toml")
-	if err := os.WriteFile(cfg, []byte(`
-[source]
-url = "ldaps://s:636"
-bind_dn = "CN=a"
-[target]
-url = "ldaps://t:636"
-bind_dn = "CN=a"
-[scope]
-base_dn = "OU=IDM,DC=x,DC=test"
-`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	var errw bytes.Buffer
-	got, err := mappingPath(cfg, "", &errw)
-	if err != nil || got != "" || !strings.Contains(errw.String(), "[mapping] file") {
-		t.Fatalf("%q %v %q", got, err, errw.String())
 	}
 }
 

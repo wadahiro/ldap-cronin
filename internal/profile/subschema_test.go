@@ -63,9 +63,9 @@ func (n namingContexts) Get(ctx context.Context, dnStr string, _ []string) (*dir
 	}
 	return &directory.Entry{Attrs: map[string][]string{"namingContexts": n}}, nil
 }
-func (n namingContexts) Add(context.Context, directory.Entry) error                 { return nil }
-func (n namingContexts) Replace(context.Context, string, map[string][]string) error { return nil }
-func (n namingContexts) AddValues(context.Context, string, string, []string) error  { return nil }
+func (n namingContexts) Add(context.Context, directory.Entry, ...directory.Control) error { return nil }
+func (n namingContexts) Replace(context.Context, string, map[string][]string) error       { return nil }
+func (n namingContexts) AddValues(context.Context, string, string, []string) error        { return nil }
 
 func TestRootResolvers(t *testing.T) {
 	cases := []struct {

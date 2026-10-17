@@ -22,6 +22,10 @@ func Format(w io.Writer, d Difference, maxValues int) {
 		fmt.Fprintln(w, "            same DN, but a different object than the one that was cloned (the original is gone)")
 		return
 	}
+	if d.Kind == Unmarked {
+		fmt.Fprintln(w, "            no marker: recreated, marker removed, or added to the source after the clone")
+		return
+	}
 	if d.Kind != Differ {
 		return
 	}

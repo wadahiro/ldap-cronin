@@ -22,7 +22,7 @@ ldap-cronin lab restore baseline                 # restore the original state (a
 | `lab down` | Stops it. The data is kept, and running `up` again resumes with the same settings |
 | `lab reset [-y] [--snapshots]` | Deletes the domain data and the settings (`.env`). Snapshots are kept by default |
 | `lab status` | Shows the state of the lab and the number of snapshots |
-| `lab snapshot [name] [--note text] [--force] [--config f \| --mapping f]` | Saves the current data as a snapshot. `--config` / `--mapping` also include the mapping |
+| `lab snapshot [name] [--note text] [--force]` | Saves the current data as a snapshot |
 | `lab snapshots` | Lists the snapshots |
 | `lab restore [name]` | Restores the data to a snapshot's state. Without a name, you pick from a list. **If the target lab does not exist, it is created from the snapshot** ([starting another lab](#starting-another-lab-from-a-snapshot-on-a-different-port)) |
 | `lab snapshot-rm name` | Deletes a snapshot |
@@ -58,7 +58,6 @@ snapshots/
   baseline/
     private.tar      contents of /var/lib/samba (the domain data)
     etc.tar          contents of /etc/samba (the configuration)
-    mapping          the mapping file (only when taken with --config / --mapping)
     snapshot.json    name, note, time taken, domain, NetBIOS name, host name, image, size and SHA-256 of each file
 ```
 
@@ -81,12 +80,12 @@ A name consists of letters, digits, `_`, `.` and `-`, at most 64 characters.
 
 ```
 $ ldap-cronin lab snapshots
-NAME                     CREATED              DOMAIN                       SIZE  MAP  NOTE
-baseline                 2026-10-16 22:34:54  corp.example.local         44.4MB  yes  right after clone
-after-delete             2026-10-16 22:35:04  corp.example.local         44.4MB  -    after deleting 4 users
+NAME                     CREATED              DOMAIN                       SIZE  NOTE
+baseline                 2026-10-16 22:34:54  corp.example.local         44.4MB  right after clone
+after-delete             2026-10-16 22:35:04  corp.example.local         44.4MB  after deleting 4 users
 ```
 
-`DOMAIN` is the domain of the lab the snapshot was taken from; you can restore only into a lab with the same domain (or a newly created lab). `MAP` shows whether the mapping is included.
+`DOMAIN` is the domain of the lab the snapshot was taken from; you can restore only into a lab with the same domain (or a newly created lab).
 
 Without a name, `lab restore` lets you choose by number (newest first; Enter selects it, `q` cancels).
 
@@ -120,7 +119,6 @@ While the current lab keeps running, you can start another lab in the snapshot's
 ```sh
 ldap-cronin lab restore baseline --instance dev2 --ldaps-port 22636    # start a lab in baseline's state on different ports
 ldap-cronin lab restore --instance dev2                                # pick from the list; free ports are chosen automatically
-ldap-cronin lab restore baseline --instance dev2 --mapping mapping-dev2   # write the mapping back to a file for dev2
 ldap-cronin lab status                                                 # show all instances
 ldap-cronin lab snapshot --instance dev2 after-test                    # you can take snapshots of dev2 too
 ldap-cronin lab reset --instance dev2 -y                               # delete only dev2 (the original lab, .env and snapshots are untouched)
@@ -152,21 +150,11 @@ About 7 seconds each to take and to restore with about 44 MB of data (Samba's in
 - `lab reset` keeps snapshots unless `--snapshots` is given.
 - `docker volume prune` deletes the lab's volumes after `lab down`, so **take a snapshot right after `clone`**.
 
-### Including the mapping in a snapshot
+### Rename detection after a restore
 
-The mapping that `diff` uses to detect renames and moves ([docs/diff.md](diff.md)) must match the restored data. Include it in the snapshot and **one restore brings back both**.
+`clone` writes a marker of the source object into `adminDisplayName` of every object it creates ([docs/diff.md](diff.md#how-rename-and-move-detection-works-and-its-configuration)). The markers are part of the data, so **a restore, into this lab or another instance on another port, keeps `diff`'s rename and move detection working** with nothing to carry beside the snapshot.
 
-```sh
-ldap-cronin clone -config config.toml                          # the mapping in [mapping] file is recorded
-ldap-cronin lab snapshot baseline --config config.toml         # include the mapping with the data (--mapping FILE also works)
-ldap-cronin lab restore baseline --config config.toml          # restore the data and write the mapping back to [mapping] file (an existing mapping is moved to .bak)
-```
-
-- The mapping comes from `[mapping] file` in `--config`, or from `--mapping`. If neither is given, it is neither included nor written back. Restoring a snapshot that contains one without either only reports where the mapping is and leaves your current one untouched.
-- **When restoring into another instance, specify a different file** (`--instance dev2 --mapping mapping-dev2`) so the original lab's mapping is not overwritten.
-- The mapping is keyed by the **domain** (the `objectGUID` of the domain root), not by host name and port, so it works for an instance on a different port. A mapping from a different domain (such as a recreated lab) is rejected.
-- Restored `objectGUID` values are unchanged, so a snapshot with the mapping taken right after `clone` keeps `diff` rename/move detection correct after any restore.
-- The mapping's checksum is verified before restoring; if corrupt, the current data is left untouched.
+The lab image indexes `adminDisplayName` when the domain is created, before any data exists (Samba does not index values written before the index existed until a reindex), and on every start of an older lab. If you configure another marker attribute (`[mapping] attribute`), index it before the first `clone`: set bit 1 in the `searchFlags` of its `attributeSchema` entry over LDAP; for a lab that already holds markers in it, run `samba-tool dbcheck --reindex` in the container once afterwards.
 
 ## Importing with the same objectGUID and objectSid (`clone -native`, Samba only)
 
@@ -177,7 +165,7 @@ A normal `clone` creates objects over LDAP, so the target assigns new `objectGUI
 ldap-cronin lab up --like-source config.toml
 # 2. Import into the lab (it does not connect to the target LDAP; it stops the lab and writes directly to the Samba database)
 ldap-cronin clone -native -config config.toml
-# 3. diff works without the mapping (objectGUID is the same, so GUIDs are matched directly)
+# 3. diff matches objects by objectGUID directly (it is the same on both sides)
 ldap-cronin diff -config config.toml
 ```
 
@@ -185,8 +173,8 @@ ldap-cronin diff -config config.toml
 - `clone -native` selects the lab with `-lab-prefix` (default `ldap-cronin`) and `-lab-instance`. The lab container is stopped only during the import and resumed afterwards, also on failure. If the lab's domain (root DN, SID, GUID) differs from the source, it refuses without writing anything.
 - After the import it runs `dbcheck` (Samba's database check) and fails on errors. It also advances the RID allocation so RIDs of users created over LDAP later do not collide with imported ones.
 - It can be re-run: an object that already exists with the same `objectGUID` gets only its attribute differences updated. **If an object with a different `objectGUID` exists at the same DN, it fails without rewriting** (`objectGUID` cannot be changed).
-- It does not create the `[mapping] file` (mapping); it is not needed when the `objectGUID` is the same.
-- `diff` switches to mapping-free detection automatically when the `objectGUID` is the same on both sides; the summary shows `rename/move check: on (objectGUID preserved ...)`. The decision uses the `objectGUID` of the first object `diff` compares under `base_dn`, found with the configured filters (`base_dn` itself only when nothing is under it, because a container that exists in the lab from the start, such as `CN=Users`, has the lab's own `objectGUID`). **The domain GUID alone is not enough**: after a plain LDAP `clone` into a `--like-source` lab, the domain GUID matches but the objects' GUIDs differ.
+- It writes no marker and no mapping file: neither is needed when the `objectGUID` is the same.
+- `diff` switches to matching by `objectGUID` automatically when the `objectGUID` is the same on both sides; the summary shows `rename/move check: on (objectGUID preserved ...)`. The decision uses the `objectGUID` of the first object `diff` compares under `base_dn`, found with the configured filters (`base_dn` itself only when nothing is under it, because a container that exists in the lab from the start, such as `CN=Users`, has the lab's own `objectGUID`). **The domain GUID alone is not enough**: after a plain LDAP `clone` into a `--like-source` lab, the domain GUID matches but the objects' GUIDs differ.
 
 ### Limitations (read these)
 

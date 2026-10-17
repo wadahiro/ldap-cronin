@@ -88,6 +88,26 @@ type NativeSupport interface {
 	Domain(ctx context.Context, src directory.Directory, root string) (Domain, error)
 }
 
+// Preserver keeps the source identifier when an object is created over LDAP: the Add carries the identifier and a
+// control that lets a client set it. The target object's own identifier is then the source key, and diff needs
+// neither a marker nor a mapping file.
+type Preserver struct {
+	Control directory.Control
+	// Operational are the other server-maintained attributes the control lets an Add set. They are copied at
+	// creation when [mapping] operational is on (the default), so the target looks like production, and are never
+	// compared: any later change on the target updates modifyTimestamp.
+	Operational []string
+	// Remedy is said when the target refuses the control.
+	Remedy string
+}
+
+// MarkerChecker validates the attribute that holds the marker against the target schema before anything is written.
+type MarkerChecker interface {
+	// CheckMarker returns an error when attr cannot hold a marker of minLen characters, and a warning when it can
+	// but every lookup by marker will be slow (no index).
+	CheckMarker(ctx context.Context, dst directory.Directory, attr string, minLen int) (warning string, err error)
+}
+
 // Domain identifies a source domain for a native import.
 type Domain struct{ Root, Realm, NetBIOS, SID, GUID string }
 
@@ -116,9 +136,15 @@ type Profile struct {
 	Values map[string]compare.Normalizer
 
 	Identity identity.Scheme
-	Refs     RefDiscoverer
-	Root     RootResolver
-	Account  Account
+	// Preserve is nil when the target cannot be given the source identifiers over LDAP.
+	Preserve *Preserver
+	// Marker is the default attribute for the marker ([mapping] attribute); empty when the profile has none.
+	Marker string
+	// MarkerCheck is nil when the profile cannot read what the target schema says about an attribute.
+	MarkerCheck MarkerChecker
+	Refs        RefDiscoverer
+	Root        RootResolver
+	Account     Account
 	// Native is nil when clone -native is not possible for this server type.
 	Native NativeSupport
 }

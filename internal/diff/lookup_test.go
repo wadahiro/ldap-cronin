@@ -40,11 +40,11 @@ func baseOnly(g byte) *fakedir.Dir {
 
 func TestIdentityIsChosenOnlyWhenTheProbeHasTheSameIdentifier(t *testing.T) {
 	job := jobOf(t, profile.AD, lBase)
-	got, _, err := ChooseLookup(context.Background(), baseOnly(1), baseOnly(1), job, nil)
-	if err != nil || got == nil || !got.Preserved() {
+	got, _, err := ChooseResolver(context.Background(), baseOnly(1), baseOnly(1), job, nil)
+	if err != nil || !preserved(got) {
 		t.Fatalf("same objectGUID: %v %v", got, err)
 	}
-	got, why, err := ChooseLookup(context.Background(), baseOnly(1), baseOnly(2), job, nil)
+	got, why, err := ChooseResolver(context.Background(), baseOnly(1), baseOnly(2), job, nil)
 	if err != nil || got != nil || !strings.Contains(why, lBase) {
 		t.Fatalf("a different objectGUID (an LDAP clone) must not enable identity: %v %q %v", got, why, err)
 	}
@@ -62,10 +62,10 @@ func TestIdentityProbeSkipsAnExistingContainerAsBaseDN(t *testing.T) {
 		return d
 	}
 	job := jobOf(t, profile.AD, users)
-	if got, why, err := ChooseLookup(context.Background(), build(1, 9), build(2, 9), job, nil); err != nil || got == nil || !got.Preserved() {
+	if got, why, err := ChooseResolver(context.Background(), build(1, 9), build(2, 9), job, nil); err != nil || !preserved(got) {
 		t.Fatalf("the child decides: %v %q %v", got, why, err)
 	}
-	if got, _, _ := ChooseLookup(context.Background(), build(1, 9), build(1, 8), job, nil); got != nil {
+	if got, _, _ := ChooseResolver(context.Background(), build(1, 9), build(1, 8), job, nil); got != nil {
 		t.Fatal("a different child objectGUID must not enable identity")
 	}
 }
@@ -79,7 +79,7 @@ func TestIdentityProbeFollowsTheConfiguredFilters(t *testing.T) {
 		return d
 	}
 	job := jobOf(t, profile.AD, lBase)
-	if got, _, _ := ChooseLookup(context.Background(), build(9), build(8), job, nil); got != nil {
+	if got, _, _ := ChooseResolver(context.Background(), build(9), build(8), job, nil); got != nil {
 		t.Fatal("with the default filters Alice is compared, and her objectGUID differs")
 	}
 	// Only groups are selected now (fakedir reads "objectClass=group" as group): Alice is out of scope and the base decides.
@@ -90,22 +90,31 @@ func TestIdentityProbeFollowsTheConfiguredFilters(t *testing.T) {
 		}
 	}
 	job.Kinds = kinds
-	if got, why, err := ChooseLookup(context.Background(), build(9), build(8), job, nil); err != nil || got == nil || !got.Preserved() {
+	if got, why, err := ChooseResolver(context.Background(), build(9), build(8), job, nil); err != nil || !preserved(got) {
 		t.Fatalf("an object outside the job must not decide: %v %q %v", got, why, err)
 	}
 }
 
-// Identifiers can only be preserved by a native import, so a server type without one keeps the mapping as is.
-func TestWithoutNativeSupportTheMappingIsKept(t *testing.T) {
-	m := fakeLookup{}
-	got, why, err := ChooseLookup(context.Background(), baseOnly(1), baseOnly(1), jobOf(t, profile.LDAP, lBase), m)
-	if err != nil || got != m || why != "" {
+// A generic server can carry the source identifiers too (entryUUID kept with the relax control), and a fallback
+// is used as is when the identifiers differ.
+func TestPreservedEntryUUIDIsChosenOnGenericServersAndTheFallbackOtherwise(t *testing.T) {
+	ldapBase := func(uuid string) *fakedir.Dir {
+		d := fakedir.New("dc=example,dc=com")
+		d.Put("ou=IDM,dc=example,dc=com", map[string][]string{"objectClass": {"organizationalUnit"}, "ou": {"IDM"}, "entryUUID": {uuid}})
+		return d
+	}
+	job := jobOf(t, profile.LDAP, "ou=IDM,dc=example,dc=com")
+	same := "00000000-0000-0000-0000-000000000007"
+	if got, why, err := ChooseResolver(context.Background(), ldapBase(same), ldapBase(same), job, nil); err != nil || !preserved(got) {
+		t.Fatalf("%v %q %v", got, why, err)
+	}
+	fallback := identity.ByMarker(identity.NewMarker("description", identity.Key{1}))
+	got, why, err := ChooseResolver(context.Background(), ldapBase(same), ldapBase("00000000-0000-0000-0000-000000000008"), job, fallback)
+	if err != nil || got != fallback || why == "" {
 		t.Fatalf("%v %q %v", got, why, err)
 	}
 }
 
-type fakeLookup struct{}
-
-func (fakeLookup) Target(identity.Key) (identity.Key, bool) { return identity.Key{}, false }
-func (fakeLookup) Len() int                                 { return 0 }
-func (fakeLookup) Preserved() bool                          { return false }
+func preserved(r identity.Resolver) bool {
+	return r != nil && strings.Contains(r.Describe(), "preserved")
+}

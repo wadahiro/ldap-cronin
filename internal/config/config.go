@@ -67,11 +67,33 @@ type Mask struct {
 	Attributes []string `toml:"attributes"`
 }
 
-// Mapping is the local file of source and target identifiers (objectGUID or entryUUID).
+// Modes of [mapping]: how a target object tells which source object it was cloned from, so diff can report
+// renames and moves made on the target.
+const (
+	MappingAuto     = "auto"     // preserve where the profile can, otherwise marker where it has a default attribute
+	MappingPreserve = "preserve" // the target object gets the source identifier (OpenLDAP: relax control)
+	MappingMarker   = "marker"   // clone writes the source key into an attribute of every object
+	MappingFile     = "file"     // a local file of source and target identifiers
+	MappingOff      = "off"
+)
+
+const defaultMappingFile = "mapping"
+
+// Mapping says how target objects carry their source identity.
 type Mapping struct {
-	// File, when set, is recorded by clone and used by diff to detect renames and moves on the target.
+	Mode string `toml:"mode"`
+	// Attribute holds the marker; empty means the profile's default (adminDisplayName on AD).
+	Attribute string `toml:"attribute"`
+	// OperationalText (preserve only) also copies the operational attributes the profile lets an Add set
+	// (createTimestamp, modifyTimestamp, creatorsName, modifiersName). Read it through Operational.
+	OperationalText *bool `toml:"operational"`
+	// File is the mapping file of mode = "file".
 	File string `toml:"file"`
 }
+
+// Operational reports whether a preserving clone copies the operational attributes (default: yes, so the target
+// looks like production).
+func (m Mapping) Operational() bool { return m.OperationalText == nil || *m.OperationalText }
 
 type Config struct {
 	Source     Endpoint   `toml:"source"`
@@ -119,6 +141,12 @@ func Parse(raw []byte) (*Config, error) {
 	}
 	if c.Mask.Value == "" {
 		c.Mask.Value = defaultMaskValue
+	}
+	if c.Mapping.Mode == "" {
+		c.Mapping.Mode = MappingAuto
+	}
+	if c.Mapping.Mode == MappingFile && c.Mapping.File == "" {
+		c.Mapping.File = defaultMappingFile
 	}
 	for name, ep := range map[string]*Endpoint{"source": &c.Source, "target": &c.Target} {
 		ep.timeout = defaultTimeout
@@ -171,6 +199,9 @@ func (c *Config) validate() error {
 	if c.Run.Workers < 1 {
 		return fmt.Errorf("[run] workers must be >= 1")
 	}
+	if err := c.Mapping.validate(); err != nil {
+		return err
+	}
 	// With auto the profile is not known yet; a kind name any profile knows is accepted and checked again in JobFor.
 	candidates := profile.All()
 	if isExplicit {
@@ -197,6 +228,88 @@ func (c *Config) validate() error {
 	// With profile = auto the attribute rules depend on the server, so they are checked in PlanOptionsFor.
 	if isExplicit {
 		return c.checkAttributes(explicit)
+	}
+	return nil
+}
+
+func (m Mapping) validate() error {
+	switch m.Mode {
+	case MappingAuto, MappingPreserve, MappingMarker, MappingFile, MappingOff:
+	default:
+		return fmt.Errorf("[mapping] mode must be auto, preserve, marker, file or off, got %q", m.Mode)
+	}
+	if m.File != "" && m.Mode != MappingFile {
+		return fmt.Errorf("[mapping] file is used only with mode = %q", MappingFile)
+	}
+	if m.Attribute != "" && m.Mode != MappingAuto && m.Mode != MappingMarker {
+		return fmt.Errorf("[mapping] attribute is used only with mode = %q", MappingMarker)
+	}
+	if m.OperationalText != nil && m.Mode != MappingAuto && m.Mode != MappingPreserve {
+		return fmt.Errorf("[mapping] operational is used only with mode = %q", MappingPreserve)
+	}
+	return nil
+}
+
+// MappingFor resolves [mapping] for a profile: auto becomes marker when an attribute is configured, preserve where
+// the profile can preserve identifiers over LDAP, marker where it has a default marker attribute, and off
+// otherwise. attr is the marker attribute for marker.
+func (c *Config) MappingFor(p profile.Profile) (mode, attr string, err error) {
+	m := c.Mapping
+	attr = m.Attribute
+	if attr == "" {
+		attr = p.Marker
+	}
+	mode = m.Mode
+	if mode == MappingAuto {
+		switch {
+		case m.Attribute != "":
+			mode = MappingMarker
+		case p.Preserve != nil:
+			mode = MappingPreserve
+		case p.Marker != "":
+			mode = MappingMarker
+		default:
+			mode = MappingOff
+		}
+	}
+	switch mode {
+	case MappingPreserve:
+		if p.Preserve == nil {
+			return "", "", fmt.Errorf("[mapping] mode = %q: the %s profile cannot give the target the source identifiers over LDAP; use %q or %q", MappingPreserve, p.Name, MappingMarker, MappingFile)
+		}
+		return mode, "", nil
+	case MappingMarker:
+		if attr == "" {
+			return "", "", fmt.Errorf("[mapping] mode = %q needs an attribute with the %s profile, which has no default", MappingMarker, p.Name)
+		}
+		if err := c.checkMarker(p, attr); err != nil {
+			return "", "", err
+		}
+		return mode, attr, nil
+	}
+	return mode, "", nil
+}
+
+// checkMarker refuses a marker attribute that the tool would also copy, compare or mask, or one the server manages.
+func (c *Config) checkMarker(p profile.Profile, attr string) error {
+	if profile.Set(p.NeverClone)[strings.ToLower(attr)] || strings.EqualFold(attr, p.Identity.Attr()) {
+		return fmt.Errorf("[mapping] attribute %q is managed by the server or a credential and cannot hold a marker", attr)
+	}
+	for _, a := range c.Mask.Attributes {
+		if strings.EqualFold(a, attr) {
+			return fmt.Errorf("[mapping] attribute %q is masked; a masked attribute cannot hold a marker", attr)
+		}
+	}
+	for _, kind := range c.Scope.Objects {
+		list, err := p.Attrs(kind, c.override())
+		if err != nil {
+			continue // reported by checkAttributes
+		}
+		for _, a := range list {
+			if strings.EqualFold(a, attr) {
+				return fmt.Errorf("[mapping] attribute %q is in the attributes of %s, so clone would copy it and diff compare it; choose another or exclude it", attr, kind)
+			}
+		}
 	}
 	return nil
 }
@@ -242,6 +355,9 @@ func (c *Config) override() profile.Override {
 // JobFor assembles what clone and diff work on, once the server type is known.
 func (c *Config) JobFor(p profile.Profile) (plan.Job, error) {
 	if err := c.checkAttributes(p); err != nil {
+		return plan.Job{}, err
+	}
+	if _, _, err := c.MappingFor(p); err != nil {
 		return plan.Job{}, err
 	}
 	job := plan.Job{Profile: p, RootDN: c.Scope.RootDN, BaseDN: c.Scope.BaseDN, Masker: mask.New(c.Mask.Value, c.Mask.Attributes)}

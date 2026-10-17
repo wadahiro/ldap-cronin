@@ -17,7 +17,6 @@ import (
 
 	"golang.org/x/term"
 
-	"github.com/wadahiro/ldap-cronin/internal/config"
 	"github.com/wadahiro/ldap-cronin/internal/lab"
 )
 
@@ -70,19 +69,13 @@ Flags (reset):
 Flags (snapshot):
   --note <text>             Note (shown in the list)
   --force                   Overwrite if the same name exists
-  --config <file>           The tool's config file. Includes the mapping of its [mapping] file in the snapshot
-  --mapping <file>          Specify the mapping directly (takes precedence over --config).
-                            When included, diff's rename and move detection keeps working after a restore
 
 Flags (restore, when no target container exists and a new one is created):
   --ldap-port <n>           Published LDAP port (for other instances, a free port is chosen if omitted)
   --ldaps-port <n>          Published LDAPS port (same as above)
   --admin-password <pw>     Administrator password (the one in effect when the snapshot was taken; defaults to the environment variable, then .env)
 
-Flags (restore, when the snapshot includes a mapping):
-  --config <file>           The tool's config file. Writes the mapping back to its [mapping] file (an existing one is moved aside to .bak)
-  --mapping <file>          Specify where to write it back directly (takes precedence over --config). When restoring into another instance,
-                            give a different file so the original lab's mapping is not overwritten
+The markers clone writes are part of the data, so diff's rename and move detection keeps working after a restore.
 
 Example: start a second lab in the baseline state on a different port while keeping the current lab running
   ldap-cronin lab restore baseline --instance dev2 --ldaps-port 22636
@@ -132,9 +125,6 @@ func runLab(ctx context.Context, args []string, out, errW io.Writer) error {
 		domGUID   string
 		ldapPort  int
 		ldapsPort int
-
-		configPath string
-		mapping    string
 	)
 	switch sub {
 	case "up":
@@ -159,11 +149,7 @@ func runLab(ctx context.Context, args []string, out, errW io.Writer) error {
 	case "snapshot":
 		fs.StringVar(&snap.Note, "note", "", "")
 		fs.BoolVar(&snap.Force, "force", false, "")
-		fs.StringVar(&configPath, "config", "", "")
-		fs.StringVar(&mapping, "mapping", "", "")
 	case "restore":
-		fs.StringVar(&configPath, "config", "", "")
-		fs.StringVar(&mapping, "mapping", "", "")
 		fs.StringVar(&password, "admin-password", "", "")
 		fs.IntVar(&ldapPort, "ldap-port", 0, "")
 		fs.IntVar(&ldapsPort, "ldaps-port", 0, "")
@@ -209,9 +195,6 @@ func runLab(ctx context.Context, args []string, out, errW io.Writer) error {
 		return l.Status(ctx)
 	case "snapshot":
 		snap.Name = name
-		if snap.Mapping, err = mappingPath(configPath, mapping, errW); err != nil {
-			return err
-		}
 		_, err := l.Snapshot(ctx, snap)
 		return err
 	case "snapshots":
@@ -222,11 +205,7 @@ func runLab(ctx context.Context, args []string, out, errW io.Writer) error {
 		fmt.Fprint(out, lab.FormatSnapshots(list))
 		return nil
 	case "restore":
-		dest, err := mappingPath(configPath, mapping, errW)
-		if err != nil {
-			return err
-		}
-		_, err = l.RestoreWith(ctx, name, lab.RestoreOptions{LDAPPort: ldapPort, LDAPSPort: ldapsPort, AdminPassword: password, Mapping: dest})
+		_, err = l.RestoreWith(ctx, name, lab.RestoreOptions{LDAPPort: ldapPort, LDAPSPort: ldapsPort, AdminPassword: password})
 		return err
 	case "snapshot-rm":
 		if name == "" {
@@ -267,25 +246,6 @@ func likeSource(ctx context.Context, cfgPath string) (lab.Settings, error) {
 	}
 	defer s.Close()
 	return s.LikeSource(ctx)
-}
-
-// mappingPath decides the path of the mapping file: --mapping takes precedence, otherwise the [mapping] file of --config.
-// If neither is given it is empty (no mapping is handled).
-func mappingPath(configPath, explicit string, errW io.Writer) (string, error) {
-	if explicit != "" {
-		return explicit, nil
-	}
-	if configPath == "" {
-		return "", nil
-	}
-	cfg, err := config.Load(configPath)
-	if err != nil {
-		return "", fmt.Errorf("--config %s: %w", configPath, err)
-	}
-	if cfg.Mapping.File == "" {
-		fmt.Fprintf(errW, "warning: no [mapping] file in %s, so the mapping is not handled\n", configPath)
-	}
-	return cfg.Mapping.File, nil
 }
 
 // parseInterleaved lets flags appear both before and after the positional argument (the snapshot name).

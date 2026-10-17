@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/wadahiro/ldap-cronin/internal/clone"
+	"github.com/wadahiro/ldap-cronin/internal/config"
 	"github.com/wadahiro/ldap-cronin/internal/dn"
 	"github.com/wadahiro/ldap-cronin/internal/lab"
 	"github.com/wadahiro/ldap-cronin/internal/plan"
@@ -63,7 +64,7 @@ func (s *Session) Native(ctx context.Context, l *lab.Lab, out io.Writer) (report
 	if err := checkSameDomain(n.Info, src); err != nil {
 		return nil, err
 	}
-	if s.Cfg.Mapping.File != "" {
+	if s.Cfg.Mapping.Mode == config.MappingFile {
 		fmt.Fprintf(s.Warn, "note: a native import keeps the identifiers, so no mapping (%s) is recorded; diff matches them directly\n", s.Cfg.Mapping.File)
 	}
 	// One worker: the helper handles one request at a time anyway.

@@ -133,9 +133,9 @@ func TestNativeImportKeepsObjectGUIDAndObjectSid(t *testing.T) {
 	// diff without a mapping reports no differences, including references (member/manager).
 	opt := planOptionsFor(t, cloneBase)
 	var diffs []diff.Difference
-	sum, err := diff.Run(context.Background(), src, dst, opt, diff.Options{Workers: 4, Lookup: identity.Identity{}}, func(d diff.Difference) { diffs = append(diffs, d) })
+	sum, err := diff.Run(context.Background(), src, dst, opt, diff.Options{Workers: 4, Resolver: identity.ByIdentity(identity.ObjectGUID)}, func(d diff.Difference) { diffs = append(diffs, d) })
 	must(err)
-	if len(diffs) != 0 || !sum.Identity {
+	if len(diffs) != 0 || !strings.Contains(sum.Matching, "preserved") {
 		var b bytes.Buffer
 		for _, d := range diffs {
 			diff.Format(&b, d, diff.DefaultMaxValues)
@@ -202,7 +202,7 @@ func TestNativeImportKeepsObjectGUIDAndObjectSid(t *testing.T) {
 	// Even when renamed on the target, it is detected as RENAMED without a mapping.
 	must(conn.ModifyDN(ldap.NewModifyDNRequest(alice, "CN=Alice Smith", true, "")))
 	diffs = nil
-	_, err = diff.Run(context.Background(), src, dst, opt, diff.Options{Workers: 4, Lookup: identity.Identity{}}, func(d diff.Difference) { diffs = append(diffs, d) })
+	_, err = diff.Run(context.Background(), src, dst, opt, diff.Options{Workers: 4, Resolver: identity.ByIdentity(identity.ObjectGUID)}, func(d diff.Difference) { diffs = append(diffs, d) })
 	must(err)
 	renamed := false
 	for _, d := range diffs {

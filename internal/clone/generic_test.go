@@ -112,8 +112,8 @@ func TestGenericDiffFindsNoDifferenceAfterClone(t *testing.T) {
 
 var _ directory.Directory = (*fakedir.Dir)(nil)
 
-// A generic server identifies objects by entryUUID (text). The mapping records it, and a rename made on the target
-// is found again through an entryUUID filter, without a real server.
+// A generic server identifies objects by entryUUID (text). The mapping file (mode = "file") records it, and a
+// rename made on the target is found again through an entryUUID filter, without a real server.
 func TestGenericRenameOnTargetIsFoundThroughEntryUUID(t *testing.T) {
 	src, dst := genericSource(), fakedir.New(gRoot)
 	header := identity.Header{Scheme: "entryUUID", SourceRoot: identity.Key{1}, TargetRoot: identity.Key{2}, BaseDN: gBase}
@@ -141,7 +141,7 @@ func TestGenericRenameOnTargetIsFoundThroughEntryUUID(t *testing.T) {
 	renamed := "uid=alice2,ou=People," + gBase
 	moveEntry(dst, gAlice, renamed)
 	var diffs []diff.Difference
-	if _, err := diff.Run(context.Background(), src, dst, genericOptions(t), diff.Options{Workers: 2, Lookup: guids},
+	if _, err := diff.Run(context.Background(), src, dst, genericOptions(t), diff.Options{Workers: 2, Resolver: identity.ByMap(guids, identity.EntryUUID)},
 		func(d diff.Difference) { diffs = append(diffs, d) }); err != nil {
 		t.Fatal(err)
 	}
@@ -190,5 +190,62 @@ func TestGenericDryRunNeverPrintsPassword(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "TopSecret") || !strings.Contains(out.String(), "# userPassword: <redacted>") {
 		t.Fatal(out.String())
+	}
+}
+
+// With the relax control the target keeps the source's entryUUID and the creation metadata, so a rename is found
+// by the identifier itself, with no marker and no file.
+func TestGenericPreserveKeepsEntryUUIDAndTheOperationalAttributes(t *testing.T) {
+	src, dst := genericSource(), fakedir.New(gRoot)
+	src.Lookup(gAlice).Attrs["createTimestamp"] = []string{"20200102030405Z"}
+	src.Lookup(gAlice).Attrs["creatorsName"] = []string{"cn=admin," + gRoot}
+	dst.Relax = profile.RelaxOID
+	var log bytes.Buffer
+	if _, err := Run(context.Background(), src, dst, genericOptions(t), Options{UserPassword: "Fixed1!", Workers: 2, Preserve: true, Operational: true}, &log); err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range []string{gAlice, gEng, "ou=People," + gBase} {
+		if want, got := src.Lookup(d).Values("entryUUID"), dst.Lookup(d).Values("entryUUID"); len(got) != 1 || got[0] != want[0] {
+			t.Fatalf("%s: entryUUID %v, the source has %v", d, got, want)
+		}
+	}
+	a := dst.Lookup(gAlice)
+	if v := a.Values("createTimestamp"); len(v) != 1 || v[0] != "20200102030405Z" {
+		t.Fatalf("createTimestamp %v", v)
+	}
+	if v := a.Values("creatorsName"); len(v) != 1 || v[0] != "cn=admin,"+gRoot {
+		t.Fatalf("creatorsName %v (a DN-valued operational attribute is written at creation, not with the references)", v)
+	}
+
+	// A second run finds everything unchanged: the creation-only attributes are never sent again.
+	rep, err := Run(context.Background(), src, dst, genericOptions(t), Options{UserPassword: "Fixed1!", Workers: 2, Preserve: true, Operational: true}, &log)
+	if err != nil || rep.Updated != 0 {
+		t.Fatalf("%+v %v", rep, err)
+	}
+
+	renamed := "uid=alice2,ou=People," + gBase
+	moveEntry(dst, gAlice, renamed)
+	var diffs []diff.Difference
+	if _, err := diff.Run(context.Background(), src, dst, genericOptions(t), diff.Options{Workers: 2, Resolver: identity.ByIdentity(identity.EntryUUID)},
+		func(d diff.Difference) { diffs = append(diffs, d) }); err != nil {
+		t.Fatal(err)
+	}
+	if len(diffs) != 1 || diffs[0].Kind != diff.Renamed || diffs[0].TargetDN != renamed {
+		t.Fatalf("%+v", diffs)
+	}
+}
+
+// A target that refuses the control stops the clone with the remedy, instead of silently creating objects with new
+// identifiers.
+func TestGenericPreserveStopsWhenTheTargetRefusesTheControl(t *testing.T) {
+	for name, dst := range map[string]*fakedir.Dir{
+		"no manage access": {Entries: map[string]*directory.Entry{}, Relax: profile.RelaxOID, RelaxDenied: true},
+		"unsupported":      {Entries: map[string]*directory.Entry{}},
+	} {
+		dst.Put(gRoot, map[string][]string{"objectClass": {"dcObject", "organization"}})
+		_, err := Run(context.Background(), genericSource(), dst, genericOptions(t), Options{UserPassword: "Fixed1!", Workers: 1, Preserve: true}, &bytes.Buffer{})
+		if err == nil || !strings.Contains(err.Error(), "manage") || len(dst.Entries) != 1 {
+			t.Fatalf("%s: %v (%d entries)", name, err, len(dst.Entries))
+		}
 	}
 }

@@ -17,7 +17,6 @@ import (
 	"github.com/wadahiro/ldap-cronin/internal/clone"
 	"github.com/wadahiro/ldap-cronin/internal/config"
 	"github.com/wadahiro/ldap-cronin/internal/diff"
-	"github.com/wadahiro/ldap-cronin/internal/identity"
 	"github.com/wadahiro/ldap-cronin/internal/ldapdir"
 	"github.com/wadahiro/ldap-cronin/internal/profile"
 )
@@ -85,7 +84,8 @@ func startOpenLDAP(t *testing.T, image, name string) int {
 }
 
 // A generic LDAP server (OpenLDAP) is cloned with the ldap profile: groupOfNames needs a member at creation,
-// the fixed password goes into userPassword, and renames are found through entryUUID.
+// the fixed password goes into userPassword, the relax control keeps the source's entryUUID and creation metadata,
+// and renames are found through entryUUID with neither a marker nor a mapping file.
 func TestGenericLDAPCloneWithOpenLDAP(t *testing.T) {
 	image := os.Getenv("E2E_OPENLDAP_IMAGE")
 	if image == "" {
@@ -137,7 +137,7 @@ base_dn = %q
 	}
 
 	var out bytes.Buffer
-	rep, err := clone.Run(context.Background(), src, dst, opt, clone.Options{UserPassword: "Fixed-Passw0rd", Workers: 4}, &out)
+	rep, err := clone.Run(context.Background(), src, dst, opt, clone.Options{UserPassword: "Fixed-Passw0rd", Workers: 4, Preserve: true, Operational: true}, &out)
 	if err != nil {
 		t.Fatalf("clone: %v\n%s", err, out.String())
 	}
@@ -166,29 +166,34 @@ base_dn = %q
 		t.Fatal("the source's password must not have been copied")
 	}
 
-	// Rename and move on the target, then find the entry again by entryUUID through a mapping.
-	mapPath := t.TempDir() + "/map.tsv"
-	srcID, err := identity.RootKey(context.Background(), src, olBase, opt.Profile.Identity)
-	if err != nil {
-		t.Fatal(err)
+	// The relax control kept the identifier and the creation metadata (the source bind is the rootdn, as is the target's).
+	// Only the OU is checked for the modification metadata: the memberof overlay rewrites the members' memberOf
+	// when the group is added, which updates their modifyTimestamp as it does on production.
+	keep := []string{"entryUUID", "createTimestamp", "modifyTimestamp", "creatorsName", "modifiersName"}
+	for _, d := range []string{olClone, alice, "cn=Eng,ou=Groups," + olClone} {
+		if d != olClone {
+			keep = []string{"entryUUID", "createTimestamp", "creatorsName"}
+		}
+		want, err := src.Get(context.Background(), d, keep)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := dst.Get(context.Background(), d, keep)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, a := range keep {
+			if w, g := want.Values(a), got.Values(a); len(w) != 1 || len(g) != 1 || w[0] != g[0] {
+				t.Fatalf("%s %s: source %v, target %v", d, a, w, g)
+			}
+		}
 	}
-	dstID, err := identity.RootKey(context.Background(), dst, olBase, opt.Profile.Identity)
-	if err != nil {
-		t.Fatal(err)
+	// A second run changes nothing: the creation-only attributes are never sent again.
+	if rep, err := clone.Run(context.Background(), src, dst, opt, clone.Options{UserPassword: "Fixed-Passw0rd", Workers: 4, Preserve: true, Operational: true}, &bytes.Buffer{}); err != nil || rep.Updated != 0 {
+		t.Fatalf("re-run: %+v %v", rep, err)
 	}
-	if srcID == dstID {
-		t.Fatal("two servers must have different root identifiers")
-	}
-	gm, err := identity.Open(mapPath, identity.Header{Scheme: "entryUUID", SourceRoot: srcID, TargetRoot: dstID, BaseDN: olClone})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := clone.Run(context.Background(), src, dst, opt, clone.Options{UserPassword: "Fixed-Passw0rd", Workers: 4, Mapping: gm}, &bytes.Buffer{}); err != nil {
-		t.Fatal(err)
-	}
-	if err := gm.Close(); err != nil {
-		t.Fatal(err)
-	}
+
+	// Rename and move on the target, then find the entry again by the preserved entryUUID.
 	conn, err := ldap.DialURL(fmt.Sprintf("ldap://%s:%d", host, dstPort))
 	if err != nil {
 		t.Fatal(err)
@@ -200,12 +205,11 @@ base_dn = %q
 	if err := conn.ModifyDN(ldap.NewModifyDNRequest("uid=bob,ou=People,"+olClone, "uid=robert", true, "ou=Groups,"+olClone)); err != nil {
 		t.Fatal(err)
 	}
-	loaded, err := identity.Load(mapPath, identity.Header{Scheme: "entryUUID", SourceRoot: srcID, TargetRoot: dstID, BaseDN: olClone})
-	if err != nil {
-		t.Fatal(err)
+	res, why, err := diff.ChooseResolver(context.Background(), src, dst, opt, nil)
+	if err != nil || res == nil {
+		t.Fatalf("the preserved entryUUID must be recognized: %q %v", why, err)
 	}
-	defer loaded.Close()
-	diffs, err = runDiffWith(opt, src, dst, loaded)
+	diffs, err = runDiffWith(opt, src, dst, res)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,6 +220,6 @@ base_dn = %q
 		}
 	}
 	if !renamed {
-		t.Fatalf("the rename must be found through entryUUID: %+v", diffs)
+		t.Fatalf("the rename must be found through the preserved entryUUID: %+v", diffs)
 	}
 }

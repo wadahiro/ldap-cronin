@@ -30,15 +30,16 @@ It is read-only.
 
 ## Kinds of output
 
-| Kind | Meaning | `[mapping] file` |
+| Kind | Meaning | Needs object matching |
 |---|---|---|
-| `ONLY_SOURCE` | Only in the source, not on the target (not cloned yet, or deleted on the target) | Not needed |
-| `ONLY_TARGET` | Only on the target, not in the source (newly created on the target) | Not needed |
-| `DIFF` | Present on both sides, but attribute values differ | Not needed |
-| `RENAMED` | The same object has a different DN on the target (renamed or moved) | Required |
-| `REPLACED` | A different object than the cloned one exists at the same DN, and the original is nowhere to be found | Required |
+| `ONLY_SOURCE` | Only in the source, not on the target (not cloned yet, or deleted on the target) | No |
+| `ONLY_TARGET` | Only on the target, not in the source (newly created on the target) | No |
+| `DIFF` | Present on both sides, but attribute values differ | No |
+| `RENAMED` | The same object has a different DN on the target (renamed or moved) | Yes |
+| `REPLACED` | A different object than the cloned one exists at the same DN (its identifier or marker names another object), and the original is nowhere to be found | Yes |
+| `UNMARKED` | The object at the source DN has no marker (marker mode only): recreated, marker removed, or added to the source after the clone | Yes |
 
-`RENAMED` and `REPLACED` are decided from the mapping (`[mapping] file`); without it, see [when the mapping is missing or stale](#6-when-the-mapping-is-missing-or-stale).
+Object matching tells which source object a target object was cloned from; it is on by default ([how it works](#how-rename-and-move-detection-works-and-its-configuration)). Without it, see [when matching is off](#6-when-matching-is-off). `RENAMED`, `REPLACED` and `UNMARKED` do not change the exit code.
 
 ## Patterns: what happened on the target and how it appears
 
@@ -129,9 +130,9 @@ ONLY_TARGET CN=Newcomer,OU=Users,OU=IDM,DC=example,DC=com
 
 The same applies under a moved OU: a child deleted after the move is `ONLY_SOURCE`, a new one is `ONLY_TARGET`.
 
-### 3. Rename and move (`RENAMED`; requires `[mapping] file`)
+### 3. Rename and move (`RENAMED`)
 
-The DN of an object was changed on the target; the unchanged identifier (`objectGUID`, or `entryUUID` on a generic server) identifies it via the mapping.
+The DN of an object was changed on the target; the unchanged identifier (`objectGUID`, or `entryUUID` on a generic server) identifies it, or the marker clone wrote into it.
 `(renamed)` means the RDN changed, `(moved)` means the parent changed, and both together give `(renamed and moved)`. **Objects moved outside the starting point (`base_dn`) are detected too.**
 
 ```
@@ -174,14 +175,14 @@ Only children found by identifier that moved with the parent as expected are lef
 
 ### 5. A different object recreated at the same DN
 
-Even with the same DN, an object whose `objectGUID` differs from the one recorded by clone is treated as a different object.
-
-**5-1. Deleted and recreated at the same DN** (the original is nowhere to be found): `REPLACED`.
-**Attributes are still compared, to see how the different object differs from the source values** (a `DIFF` follows if there are differences; if they are identical, only `REPLACED` is shown).
+**5-1. Deleted and recreated at the same DN** (the original is nowhere to be found).
+With markers (AD), the new object has no marker, so diff cannot say whether it was recreated, had its marker removed, or was added to the source after the clone: `UNMARKED`.
+With preserved identifiers (generic LDAP, `clone -native`) or a mapping file, its identifier differs from the cloned one: `REPLACED`. An object whose marker names *another* source object (a marker copied by the program under test) is `REPLACED` too.
+**Attributes are still compared, to see how the object differs from the source values** (a `DIFF` follows if there are differences).
 
 ```
-REPLACED    CN=Eve,OU=Users,OU=IDM,DC=example,DC=com
-            same DN, but a different object than the one that was cloned (the original is gone)
+UNMARKED    CN=Eve,OU=Users,OU=IDM,DC=example,DC=com
+            no marker: recreated, marker removed, or added to the source after the clone
 DIFF        CN=Eve,OU=Users,OU=IDM,DC=example,DC=com
             description:
               source: (none)
@@ -191,19 +192,19 @@ DIFF        CN=Eve,OU=Users,OU=IDM,DC=example,DC=com
 **5-2. An OU with the same name was recreated after the OU was moved**: the original OU is still alive elsewhere, so it is not called `REPLACED`.
 Instead the original OU is shown as `RENAMED`, and the new OU at the original DN (and anything created in it) as `ONLY_TARGET`.
 
-### 5.5 Targets imported with `clone -native` (no mapping needed)
+### 5.5 Targets that hold the source identifiers (`clone -native`, generic LDAP)
 
-A target imported with [`clone -native`](lab.md#importing-with-the-same-objectguid-and-objectsid-clone--native-samba-only) has the same `objectGUID` as the source, so the same detection (`RENAMED` / `REPLACED`) as in 3 to 5 above works without the mapping (`[mapping] file`).
-`diff` switches automatically when the `objectGUID` of the first object it compares under `base_dn` (found with the configured filters, so built-in and filtered-out objects never decide; `base_dn` itself when nothing is under it) is the same on both sides.
+A target imported with [`clone -native`](lab.md#importing-with-the-same-objectguid-and-objectsid-clone--native-samba-only), or a generic server cloned with `[mapping] mode = "preserve"` (the default there), has the same identifier (`objectGUID`, `entryUUID`) as the source, so objects are matched by the identifier itself.
+`diff` switches to this automatically when the identifier of the first object it compares under `base_dn` (found with the configured filters, so built-in and filtered-out objects never decide; `base_dn` itself when nothing is under it) is the same on both sides, whatever the mode.
 It does not switch on the domain GUID alone (a lab filled by `clone` over LDAP can share the domain GUID while object GUIDs differ).
 The summary shows `rename/move check: on (objectGUID preserved ...)`.
 
-### 6. When the mapping is missing or stale
+### 6. When matching is off
 
-If `[mapping] file` is not set, the file does not exist, or it belongs to a different source or target, `RENAMED` / `REPLACED` are not detected and **the behavior is the same as before**.
+With `[mapping] mode = "off"`, or `mode = "file"` with a missing file or one of another source or target, `RENAMED` / `REPLACED` / `UNMARKED` are not reported.
 A renamed or moved object looks like two entries: `ONLY_SOURCE` (the old DN) and `ONLY_TARGET` (the new DN).
-Whether a mapping exists and in what state is shown in the summary as `rename/move check: on / off` (when it is missing or does not match, the reason goes to standard error).
-A stale mapping (target recreated, identifiers changed) cannot be looked up, so **no false detections are produced**.
+The summary says `rename/move check: on / off` (with a mapping file that cannot be used, the reason goes to standard error).
+Markers of another source and a stale mapping (target recreated, identifiers changed) match nothing, so **no false detections are produced**.
 
 ## Quick reference: what happened on the target -> diff output
 
@@ -220,13 +221,13 @@ A stale mapping (target recreated, identifiers changed) cannot be looked up, so 
 | Moved to a different parent (including outside the starting point) | `RENAMED` (`moved`) (*) |
 | Renamed and an attribute was changed too | `RENAMED` and a `DIFF` under the current DN (*) |
 | An OU was moved or renamed with its contents | Only `RENAMED` for the OU (the contents are only counted) (*) |
-| Deleted and recreated at the same DN | `REPLACED` (and a `DIFF` if attributes differ) (*) |
+| Deleted and recreated at the same DN | `UNMARKED` with markers, `REPLACED` with identifiers (and a `DIFF` if attributes differ) (*) |
 | Moved, and an object with the same name was created at the original DN | `RENAMED` for the original and `ONLY_TARGET` for the new one (*) |
 | A password was changed | Not detected (not compared) |
 | A masked attribute was changed | Not detected (because it is masked) |
 | An attribute not in the allow list was changed | Not detected (add it with `extra_include` to detect it) |
 
-(*) Requires `[mapping] file`. Without it, a rename or move looks like two entries, `ONLY_SOURCE` + `ONLY_TARGET`, and `REPLACED` becomes an attribute comparison (identifiers cannot be compared).
+(*) Requires object matching (on by default). With `[mapping] mode = "off"`, a rename or move looks like two entries, `ONLY_SOURCE` + `ONLY_TARGET`, and a recreated object is only compared by its attributes.
 
 ## How to read the summary
 
@@ -241,9 +242,9 @@ differences:
   DIFF        : 3   (in both, but attribute values differ)
                     of which case only: 1
   RENAMED     : 2   (same object, but its DN differs on target: renamed/moved)
-  REPLACED    : 1   (same DN, but a different object than the one cloned)
+  UNMARKED    : 1   (same DN, no marker: recreated, or added to the source after the clone)
                     not listed: 12 entries moved along with a renamed/moved parent OU
-rename/move check: on (14 objectGUID pairs in the mapping file)
+rename/move check: on (markers in adminDisplayName)
 compared attributes:
   ou   : objectClass, cn, ou, description
   group: objectClass, cn, sAMAccountName, member
@@ -256,7 +257,7 @@ not compared:
 ```
 
 - `compared objects`: objects compared, per type.
-- `RENAMED` / `REPLACED` appear only when the mapping is in use (`rename/move check: on`). `not listed` is the number of entries left out because they merely moved along with their parent OU.
+- `RENAMED` / `REPLACED` / `UNMARKED` appear only when objects are matched (`rename/move check: on`; `REPLACED` and `UNMARKED` only when there are any). `not listed` is the number of entries left out because they merely moved along with their parent OU. A line saying objects were found more than once means a marker (or, on OpenLDAP, an `entryUUID`) was copied onto another object; the first one found was used.
 - `compared attributes`: the attributes that were compared (excluding masked ones). `not compared`: what was not compared (masked, `exclude`d, password-related, and attributes not in the allow list).
 
 ## References that point to renamed objects
@@ -265,18 +266,38 @@ AD rewrites references to a renamed or moved object (`member`, `manager`, `manag
 
 ## How rename and move detection works, and its configuration
 
-When `[mapping] file` is set, `clone` records the correspondence between source and target identifiers (`objectGUID` on AD, `entryUUID` on a generic server) and `diff` uses it.
-The identifier is assigned by the target and cannot be copied, so **the mapping is kept in a local file** (nothing is added to the target).
+`diff` must know which source object each target object was cloned from. The target carries that fact itself, in one of two ways, chosen by `[mapping] mode`:
 
 ```toml
 [mapping]
-file = "mapping"
+# mode = "auto"                  # auto | preserve | marker | file | off
+# attribute = "adminDisplayName" # marker: the attribute that holds it (default: the profile's)
+# operational = true             # preserve: also copy createTimestamp, modifyTimestamp, creatorsName, modifiersName
+# file = "mapping"               # file: the local mapping file
 ```
 
+| Mode | How | Default for |
+|---|---|---|
+| `preserve` | `clone` creates every object with the source's identifier (`entryUUID`) through the **relax control**, so the target's identifier *is* the source's. Also copies `createTimestamp`, `modifyTimestamp`, `creatorsName` and `modifiersName` at creation (`operational = false` to skip), so the clone looks like production | `ldap` (OpenLDAP) |
+| `marker` | `clone` writes `ldap-cronin:<source root>:<source identifier>` into an attribute of every object it creates or updates | `ad` (attribute `adminDisplayName`) |
+| `file` | `clone` records the pairs of identifiers in a local file (the fallback for servers that allow neither) | — |
+| `off` | No matching | — |
+
+`auto` resolves to `marker` when `attribute` is set, otherwise to the profile's default.
+
+**preserve (OpenLDAP).** The relax control needs `manage` access to the entries, or the rootdn. If the target refuses it, `clone` stops with the remedy instead of creating objects with new identifiers (a target that looks like production but is not). OpenLDAP does not advertise the control and does not refuse a duplicate `entryUUID`. `entryCSN` cannot be set and keeps the clone time; an entry modified after its creation (references applied later, the memberof overlay updating a member) gets the clone time as `modifyTimestamp`. The operational attributes are never compared. `memberOf` is not copied (the overlay derives it from `member`), nor password-policy state such as `pwdChangedTime` (the password is the fixed one).
+
+**marker (AD, Samba over LDAP).** AD and Samba refuse a client-set `objectGUID` over LDAP, so the source key goes into an attribute. The default `adminDisplayName` is allowed on every object class (`top`), single-valued, and used by no product we know of. Another attribute can be named with `attribute` (on a generic server with an extended schema too); before writing, `clone` refuses one that is in an allow list, masked or managed by the server, and on AD one that is not a single-valued string of at least 53 characters. It warns when the attribute is not indexed (`searchFlags` bit 1): every search for a moved object then reads the naming context. The lab image indexes `adminDisplayName`; on a real AD, consider setting it. Notes:
+- The marker names the source by its root identifier, so a marker from another source is ignored, and a dry-run LDIF loaded with `ldapmodify` carries markers too.
+- An object at the source DN without a marker is searched for once elsewhere; if the cloned one is found, the object at the DN is `ONLY_TARGET` and the original `RENAMED`, otherwise it is `UNMARKED`. Parents created by `clone` get a marker; ones that already existed on the target (`CN=Users`) are left untouched and matched by DN.
+- When a parent OU moved, a child is first looked for at the same RDN under the parent's new DN, so an OU move costs no searches.
+- Running `clone` again puts back a marker the program under test removed.
+- Not yet verified on a real AD: writing it with a delegated (non-admin) account, and interference by Exchange, Entra Connect or ADUC's "copy user".
+
+**file.**
 - **The mapping file** consists of **fixed-length records** (66 bytes each) sorted by source identifier. `diff` **binary-searches the file** instead of loading it (constant memory; about 20 reads for a million entries), and only for entries whose DN was not found on the target.
-- `clone` appends new pairs to a separate file and, at the end, rewrites the file after an external sort (sorting chunk by chunk and merging). The pairs from a `clone` that was interrupted are picked up by the next `clone`.
-- Only identifiers are stored, no DNs or names. The header records the format version, the identifier attribute and **the identifiers of the source and target naming-context roots** (plus `base_dn`), not the URL: it survives a host or port change (a lab restored on another port) but a different directory (a recreated target) is rejected, detection is off, and the reason goes to standard error. A file written by an earlier version of the tool is refused the same way; run `clone` again to record a new one.
-  It can be kept in a snapshot together with the data ([docs/lab.md](lab.md)).
-- The load of `clone` increases by exactly one read of the target identifier per newly created object (because the response to an add does not contain it).
-- Only `clone` records the mapping; `-dry-run` does not.
+- `clone` appends new pairs to a separate file and, at the end, rewrites the file after an external sort. The pairs from a `clone` that was interrupted are picked up by the next `clone`.
+- The header records the format version, the identifier attribute and **the identifiers of the source and target naming-context roots** (plus `base_dn`), not the URL; a different directory (a recreated target) is rejected, detection is off, and the reason goes to standard error.
+- `clone` reads the target identifier once per newly created object (the response to an add does not contain it). Only `clone` records the mapping; `-dry-run` does not. Lab snapshots do not include it.
+
 - **Re-running clone does not follow renames on the source side** (it only adds, and does not handle deletions). This feature exists so that `diff` can verify changes made on the target.

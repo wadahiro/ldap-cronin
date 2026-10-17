@@ -28,7 +28,6 @@ import (
 
 const (
 	metaFileName    = "snapshot.json"
-	mappingFileName = "mapping"
 	snapshotPrefix  = "snapshot-"
 	timestampLayout = "20060102-150405"
 )
@@ -63,9 +62,6 @@ type SnapshotMeta struct {
 	Image       string         `json:"image"`
 	ToolVersion string         `json:"tool_version"`
 	Files       []SnapshotFile `json:"files"`
-	// Mapping is a copy of the mapping between source and target (the [mapping] file that clone records).
-	// Keeping it together with the data lets diff's rename and move detection keep working after a restore.
-	Mapping *SnapshotFile `json:"mapping,omitempty"`
 }
 
 // Size is the total size of the snapshot's files.
@@ -90,8 +86,6 @@ type SnapshotOptions struct {
 	Name  string // if empty, named automatically from the date and time (never overwrites)
 	Note  string
 	Force bool // overwrite if the same name exists
-	// Mapping is the path of the mapping to include in the snapshot (the tool's [mapping] file). If empty, none is included.
-	Mapping string
 }
 
 func (l *Lab) snapshotDir(name string) string { return filepath.Join(l.Dirs.Snapshots, name) }
@@ -112,8 +106,8 @@ func wipeArgs(image, volume, mount string) []string {
 }
 
 // Snapshot stops the lab, writes the data to a tar, and returns it to its previous state (started if it was running).
-// Taking one right after a clone lets you return to that state at any time. The mapping ([mapping] file) stays usable as is
-// (objectGUIDs do not change on restore).
+// Taking one right after a clone lets you return to that state at any time. The markers clone wrote are part of the
+// data, so diff's rename and move detection keeps working after a restore, in this instance or another.
 func (l *Lab) Snapshot(ctx context.Context, o SnapshotOptions) (SnapshotMeta, error) {
 	var meta SnapshotMeta
 	if err := l.checkDocker(ctx); err != nil {
@@ -131,12 +125,6 @@ func (l *Lab) Snapshot(ctx context.Context, o SnapshotOptions) (SnapshotMeta, er
 		return meta, fmt.Errorf("snapshot %q already exists (use --force to overwrite)", name)
 	}
 
-	if o.Mapping != "" {
-		// Check that the mapping exists first, so we do not fail after stopping.
-		if _, err := os.Stat(o.Mapping); err != nil {
-			return meta, fmt.Errorf("mapping %s not found (it is created by running clone with a [mapping] file): %w", o.Mapping, err)
-		}
-	}
 	labels, exists, err := l.inspectLabels(ctx, l.container())
 	if err != nil {
 		return meta, err
@@ -203,14 +191,6 @@ func (l *Lab) Snapshot(ctx context.Context, o SnapshotOptions) (SnapshotMeta, er
 		Name: name, Note: o.Note, Created: l.Now().UTC(), Realm: labels[labelRealm], NetBIOS: labels[labelNB],
 		Hostname: dcHostname, Image: image, ToolVersion: l.Version, Files: files,
 	}
-	if o.Mapping != "" {
-		gm, err := copyWithHash(o.Mapping, filepath.Join(tmp, mappingFileName))
-		if err != nil {
-			return meta, fmt.Errorf("could not include the mapping in the snapshot: %w", err)
-		}
-		gm.Volume, gm.File = "mapping", mappingFileName
-		meta.Mapping = &gm
-	}
 	raw, err := json.MarshalIndent(meta, "", "  ")
 	if err != nil {
 		return meta, err
@@ -226,11 +206,7 @@ func (l *Lab) Snapshot(ctx context.Context, o SnapshotOptions) (SnapshotMeta, er
 	if err := os.Rename(tmp, final); err != nil {
 		return meta, err
 	}
-	withMap := ""
-	if meta.Mapping != nil {
-		withMap = ", with mapping"
-	}
-	l.logf("Snapshot taken: %s (%s%s, %s)", name, humanSize(meta.Size()), withMap, l.Now().Sub(start).Round(100*time.Millisecond))
+	l.logf("Snapshot taken: %s (%s, %s)", name, humanSize(meta.Size()), l.Now().Sub(start).Round(100*time.Millisecond))
 	return meta, nil
 }
 
@@ -347,15 +323,11 @@ func (l *Lab) choose() (string, error) {
 
 // snapshotHeader is the list's column header. Column widths match formatSnapshotLine (full-width characters misalign columns, so Latin letters are used).
 func snapshotHeader() string {
-	return fmt.Sprintf("%-24s %-19s  %-24s %8s  %-3s  %s", "NAME", "CREATED", "DOMAIN", "SIZE", "MAP", "NOTE")
+	return fmt.Sprintf("%-24s %-19s  %-24s %8s  %s", "NAME", "CREATED", "DOMAIN", "SIZE", "NOTE")
 }
 
 func formatSnapshotLine(m SnapshotMeta) string {
-	hasMap := "-"
-	if m.Mapping != nil {
-		hasMap = "yes" // includes the mapping
-	}
-	s := fmt.Sprintf("%-24s %s  %-24s %8s  %-3s", m.Name, m.Created.Local().Format("2006-01-02 15:04:05"), m.Realm, humanSize(m.Size()), hasMap)
+	s := fmt.Sprintf("%-24s %s  %-24s %8s", m.Name, m.Created.Local().Format("2006-01-02 15:04:05"), m.Realm, humanSize(m.Size()))
 	if m.Note != "" {
 		s += "  " + m.Note
 	}
@@ -380,8 +352,6 @@ type RestoreOptions struct {
 	LDAPPort      int // if omitted: the default lab uses .env or the default, and other instances pick a free port
 	LDAPSPort     int
 	AdminPassword string // if omitted: the SAMBA_ADMIN_PASSWORD environment variable, then .env
-	// Mapping is where the mapping included in the snapshot is written back (the tool's [mapping] file). If empty, it is not written back.
-	Mapping string
 }
 
 // Restore is RestoreWith without options.
@@ -461,9 +431,6 @@ func (l *Lab) RestoreWith(ctx context.Context, name string, o RestoreOptions) (S
 			return meta, err
 		}
 	}
-	if err := l.installMapping(meta, o.Mapping); err != nil {
-		return meta, err
-	}
 	l.logf("Restored: %s (%s)", name, l.Now().Sub(start).Round(100*time.Millisecond))
 	return meta, nil
 }
@@ -531,9 +498,6 @@ func (l *Lab) restoreIntoNew(ctx context.Context, meta SnapshotMeta, o RestoreOp
 		if err := WriteEnvFile(l.envPath(), s); err != nil {
 			return fmt.Errorf("cannot write .env: %w", err)
 		}
-	}
-	if err := l.installMapping(meta, o.Mapping); err != nil {
-		return err
 	}
 	base := BaseDN(s.Realm)
 	fmt.Fprintf(l.Out, "\nStarted (%s, %s).\n\n", l.container(), l.Now().Sub(start).Round(100*time.Millisecond))
@@ -618,69 +582,6 @@ func (l *Lab) verifySnapshot(m SnapshotMeta) error {
 		}
 		if got != f.SHA256 {
 			return fmt.Errorf("%s of snapshot %q is corrupted (checksum mismatch). The current data has not been touched", f.File, m.Name)
-		}
-	}
-	if m.Mapping != nil {
-		got, err := fileSHA256(filepath.Join(l.snapshotDir(m.Name), m.Mapping.File))
-		if err != nil || got != m.Mapping.SHA256 {
-			return fmt.Errorf("the mapping of snapshot %q is corrupted. The current data has not been touched", m.Name)
-		}
-	}
-	return nil
-}
-
-// copyWithHash copies a file with mode 600 and returns its size and SHA-256.
-func copyWithHash(src, dst string) (SnapshotFile, error) {
-	var sf SnapshotFile
-	in, err := os.Open(src)
-	if err != nil {
-		return sf, err
-	}
-	defer in.Close()
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if err != nil {
-		return sf, err
-	}
-	h := sha256.New()
-	cw := &countingWriter{w: io.MultiWriter(out, h)}
-	_, cerr := io.Copy(cw, in)
-	if err := out.Close(); cerr == nil {
-		cerr = err
-	}
-	if cerr != nil {
-		return sf, cerr
-	}
-	sf.Size, sf.SHA256 = cw.n, hex.EncodeToString(h.Sum(nil))
-	return sf, nil
-}
-
-// installMapping writes the mapping included in the snapshot back to dest (an existing file is moved aside to .bak).
-// If dest is empty, it does not write it back and explains how to extract it.
-func (l *Lab) installMapping(meta SnapshotMeta, dest string) error {
-	switch {
-	case meta.Mapping == nil && dest != "":
-		l.warnf("This snapshot does not include a mapping. Left %s as it was", dest)
-	case meta.Mapping != nil && dest == "":
-		l.logf("This snapshot includes a mapping (%s). To write it back, run restore with --config or --mapping",
-			filepath.Join(l.snapshotDir(meta.Name), meta.Mapping.File))
-	case meta.Mapping != nil:
-		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
-			return err
-		}
-		backup := ""
-		if _, err := os.Stat(dest); err == nil {
-			backup = dest + ".bak"
-			if err := os.Rename(dest, backup); err != nil {
-				return fmt.Errorf("cannot move the existing mapping aside: %w", err)
-			}
-		}
-		if _, err := copyWithHash(filepath.Join(l.snapshotDir(meta.Name), meta.Mapping.File), dest); err != nil {
-			return fmt.Errorf("could not write back the mapping: %w", err)
-		}
-		if backup != "" {
-			l.logf("mapping written back: %s (the original is %s)", dest, backup)
-		} else {
-			l.logf("mapping written back: %s", dest)
 		}
 	}
 	return nil

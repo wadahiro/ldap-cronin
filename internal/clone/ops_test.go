@@ -27,9 +27,9 @@ func (r *recorder) note(op, entryDN string) {
 		r.mu.Unlock()
 	}
 }
-func (r *recorder) Add(ctx context.Context, e directory.Entry) error {
+func (r *recorder) Add(ctx context.Context, e directory.Entry, c ...directory.Control) error {
 	r.note("Add", e.DN)
-	return r.Directory.Add(context.Background(), e)
+	return r.Directory.Add(context.Background(), e, c...)
 }
 func (r *recorder) Get(ctx context.Context, d string, a []string) (*directory.Entry, error) {
 	r.note("Get", d)

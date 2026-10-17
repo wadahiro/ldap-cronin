@@ -30,8 +30,9 @@ bind_dn = "cn=admin,dc=example,dc=org"
 [scope]
 base_dn = "ou=IDM,dc=example,dc=org"
 # root_dn = "o=acme"       # only when it cannot be derived (see below)
-[mapping]
-file = "mapping"       # records entryUUID pairs so that diff can detect renames and moves
+# [mapping]
+# mode = "preserve"        # the default here: keep the source's entryUUID with the relax control (OpenLDAP)
+# operational = true       # also copy createTimestamp, modifyTimestamp, creatorsName, modifiersName
 ```
 
 The **root** is the top of the naming context that holds `base_dn`. It must exist on the target and is never created or changed. It is taken from `root_dn`, otherwise from the longest `namingContexts` value above `base_dn`, otherwise from the trailing `dc=` components of `base_dn`.
@@ -43,7 +44,7 @@ The **root** is the top of the naming context that holds `base_dn`. It must exis
 - **References outside the cloned scope** are skipped with a warning, as for AD, unless the referenced entry already exists on the target.
 - **Comparison.** Values are compared exactly, except DN-valued attributes (case and escaping are normalized) and `objectClass` (case-insensitive). Case-insensitive attributes such as `mail` or `cn` that differ only in case are reported as differences.
 - **Operational attributes** (`entryUUID`, `entryCSN`, `createTimestamp`, `memberOf`, `pwd*`, ...) are never cloned or compared. Adding one to the allow list is an error.
-- **Rename and move detection** uses `entryUUID`, which the target assigns itself, so it needs the mapping file (`[mapping] file`) that `clone` records, exactly as for AD.
+- **Rename and move detection, and production-like metadata.** By default (`[mapping] mode = "preserve"`) every Add carries the source's `entryUUID` and the relax control, so the target object's identifier is the source's and `diff` matches objects by it; nothing is stored beside the target. The same Add copies `createTimestamp`, `modifyTimestamp`, `creatorsName` and `modifiersName`, so the clone looks like production (`operational = false` skips them); they are never compared. The relax control is OpenLDAP's (an expired Internet-Draft, not advertised in the root DSE) and needs `manage` access to the entries or the rootdn: without it `clone` stops with that remedy rather than create objects with new identifiers. Other servers (389-ds is not verified) can use a marker attribute of an extended schema (`mode = "marker"`, `attribute = "..."`) or a local file (`mode = "file"`). See [docs/diff.md](diff.md#how-rename-and-move-detection-works-and-its-configuration).
 
 ## Limitations
 

@@ -7,6 +7,8 @@ import (
 	"io"
 	"sort"
 	"strings"
+
+	"github.com/wadahiro/ldap-cronin/internal/directory"
 )
 
 // safe reports whether s is an RFC 2849 SAFE-STRING (anything else is base64-encoded).
@@ -65,8 +67,13 @@ func (w Writer) attrs(attrs map[string][]string) {
 	}
 }
 
-func (w Writer) Add(dn string, attrs map[string][]string) {
+// Add writes an add record. controls go on "control:" lines between dn and changetype (RFC 2849), which
+// ldapmodify sends with the request.
+func (w Writer) Add(dn string, attrs map[string][]string, controls ...directory.Control) {
 	fmt.Fprintln(w.W, Line("dn", dn))
+	for _, c := range controls {
+		fmt.Fprintf(w.W, "control: %s %t\n", c.OID, c.Critical)
+	}
 	fmt.Fprintln(w.W, "changetype: add")
 	w.attrs(attrs)
 	fmt.Fprintln(w.W)

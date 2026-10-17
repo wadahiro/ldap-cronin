@@ -15,12 +15,14 @@ import (
 type locator struct {
 	dst    directory.Directory
 	domain string
-	guids  identity.Lookup
-	scheme identity.Scheme // how objects are identified across renames (objectGUID, entryUUID)
+	res    identity.Resolver
+	scheme identity.Scheme // the source identifier (objectGUID, entryUUID)
 
 	mu       sync.Mutex
 	targetOf map[string]string // normalized source DN -> current DN on the target; only for those whose parent moved or was renamed
-	found    *plan.Scope       // target DNs found by GUID
+	found    *plan.Scope       // target DNs found by identifier or marker
+	// duplicates counts searches that found more than one object.
+	duplicates int
 	// renamedBack maps the target DN found by GUID (normalized) to the source DN. It is used to translate references pointing at a renamed or moved object
 	// back to the original DN.
 	renamedBack map[string]string
@@ -53,66 +55,108 @@ func (l *locator) translateBack(values []string) []string {
 // located is the result of locate.
 type located struct {
 	entry   *directory.Entry
-	viaGUID bool // found by GUID (it was at a place other than the source DN)
+	viaGUID bool // found by identifier or marker (it was at a place other than the source DN)
 	// replacedBy is the DN of a different object that sits at the source DN.
-	// It is set when the GUID in the mapping differs from the GUID of the object at that DN.
 	replacedBy string
 	// replacement is that different object at the DN (the one compared with the source attributes when REPLACED).
 	replacement *directory.Entry
+	// unmarked means the entry at the source DN carries no marker, so whether it is the cloned object cannot be told.
+	unmarked bool
 }
 
 // locate finds the target entry that corresponds to one source entry.
-// It first looks at the same DN and, if there is a mapping, checks by GUID that the entry there is the cloned object.
-// If it is a different object, it looks for the original by GUID (if found, it moved elsewhere).
-func (l *locator) locate(ctx context.Context, want directory.Entry, names []string) (located, error) {
-	lookup := names
-	if l.guids != nil {
-		lookup = append(append([]string(nil), names...), l.scheme.Attr())
+// It first looks at the same DN and, with a Resolver, checks that the entry there is the cloned object. If it is a
+// different object, or there is none, it looks for the cloned object elsewhere (if found, it moved).
+// An entry without a marker is a different object if the cloned one is found elsewhere; otherwise it is taken at its
+// DN and reported as unmarked. A create-only ancestor (ancestor) is simply taken at its DN: it may have existed on
+// the target before the clone (CN=Users), so it never got a marker.
+func (l *locator) locate(ctx context.Context, want directory.Entry, names []string, ancestor bool) (located, error) {
+	if l.res == nil {
+		got, err := l.dst.Get(ctx, want.DN, names)
+		return located{entry: got}, err
 	}
+	lookup := append(append([]string(nil), names...), l.res.Attrs()...)
 	got, err := l.dst.Get(ctx, want.DN, lookup)
 	if err != nil {
 		return located{}, err
-	}
-	if l.guids == nil {
-		return located{entry: got}, nil
 	}
 	source, err := identity.Of(l.scheme, want)
 	if err != nil {
 		return located{}, fmt.Errorf("%s on the source: %w", want.DN, err)
 	}
-	target, mapped := l.guids.Target(source)
+	if source.IsZero() {
+		return located{entry: got}, nil
+	}
 	if got != nil {
-		gotKey, err := identity.Of(l.scheme, *got)
+		same, known, err := l.res.Same(source, *got)
 		if err != nil {
-			return located{}, fmt.Errorf("%s on the target: %w", got.DN, err)
+			return located{}, err
 		}
-		if !mapped || gotKey.IsZero() || gotKey == target {
+		if !known {
+			if ancestor {
+				return located{entry: got}, nil
+			}
+			// One search per unmarked entry: they are the few objects the program under test recreated or added,
+			// and finding the cloned one elsewhere turns an ambiguous UNMARKED into a certain move.
+			orig, err := l.find(ctx, source, want.DN, lookup)
+			if err != nil {
+				return located{}, err
+			}
+			if orig != nil {
+				return located{entry: orig, viaGUID: true, replacedBy: got.DN, replacement: got}, nil
+			}
+			return located{entry: got, unmarked: true}, nil
+		}
+		if same {
 			return located{entry: got}, nil
 		}
 		res := located{replacedBy: got.DN, replacement: got}
-		orig, err := l.findByGUID(ctx, target, names)
+		orig, err := l.find(ctx, source, want.DN, lookup)
 		if err != nil {
 			return located{}, err
 		}
 		res.entry, res.viaGUID = orig, orig != nil
 		return res, nil
 	}
-	if !mapped {
-		return located{}, nil
-	}
-	orig, err := l.findByGUID(ctx, target, names)
+	orig, err := l.find(ctx, source, want.DN, lookup)
 	if err != nil {
 		return located{}, err
 	}
 	return located{entry: orig, viaGUID: orig != nil}, nil
 }
 
-// findByGUID looks for an object by GUID across the whole target domain,
-// because a move may have taken it outside the starting point. objectGUID is indexed, so this is fast. The DN found is recorded.
-func (l *locator) findByGUID(ctx context.Context, target identity.Key, names []string) (*directory.Entry, error) {
+// find looks for the object cloned from source somewhere other than its source DN. It first tries the expected DN:
+// the same RDN under the parent's current DN when the parent moved, which explains most moves without a search.
+// Otherwise it searches the whole naming context, because a move may have taken the object outside the starting
+// point. The DN found is recorded.
+func (l *locator) find(ctx context.Context, source identity.Key, sourceDN string, attrs []string) (*directory.Entry, error) {
+	l.mu.Lock()
+	parent, moved := l.targetOf[dn.Normalize(dn.Parent(sourceDN))]
+	l.mu.Unlock()
+	if moved {
+		expected := dn.Split(sourceDN)[0] + "," + parent
+		got, err := l.dst.Get(ctx, expected, attrs)
+		if err != nil {
+			return nil, err
+		}
+		if got != nil {
+			same, known, err := l.res.Same(source, *got)
+			if err != nil {
+				return nil, err
+			}
+			if same && known {
+				return l.record(got), nil
+			}
+		}
+	}
+	filter, ok := l.res.Filter(source)
+	if !ok {
+		return nil, nil
+	}
 	var got *directory.Entry
-	err := l.dst.Walk(ctx, l.domain, l.scheme.Filter(target), names, func(e directory.Entry) error {
-		if got == nil {
+	hits := 0
+	err := l.dst.Walk(ctx, l.domain, filter, attrs, func(e directory.Entry) error {
+		if hits++; got == nil {
 			c := e
 			got = &c
 		}
@@ -121,10 +165,21 @@ func (l *locator) findByGUID(ctx context.Context, target identity.Key, names []s
 	if err != nil || got == nil {
 		return nil, err
 	}
+	if hits > 1 {
+		// A marker copied onto a new object by the program under test (or a duplicate entryUUID, which OpenLDAP
+		// does not refuse). The first one wins.
+		l.mu.Lock()
+		l.duplicates++
+		l.mu.Unlock()
+	}
+	return l.record(got), nil
+}
+
+func (l *locator) record(e *directory.Entry) *directory.Entry {
 	l.mu.Lock()
-	l.found.Add(got.DN)
+	l.found.Add(e.DN)
 	l.mu.Unlock()
-	return got, nil
+	return e
 }
 
 // classify returns whether the difference between the source DN and the target DN is an RDN change (rename) or a parent change (move).

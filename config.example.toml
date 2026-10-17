@@ -27,8 +27,11 @@ objects = ["ou", "group", "user"]   # all of them if omitted
 [run]
 workers = 8                          # parallel connections to the target, for clone and diff (1 = sequential). Default 8
 
-[mapping]                            # optional. Source and target identifiers (objectGUID, or entryUUID on generic servers) in a local file
-# file = "mapping"                   # if set, clone records it and diff uses it to detect renames and moves on the target
+[mapping]                            # how diff tells which source object a target object was cloned from (renames, moves)
+# mode = "auto"                      # auto (default): marker on AD, preserve on generic LDAP | preserve | marker | file | off
+# attribute = "adminDisplayName"     # marker: the attribute clone writes it into (default: the profile's; required on generic LDAP)
+# operational = true                 # preserve: also copy createTimestamp, modifyTimestamp, creatorsName, modifiersName (default true)
+# file = "mapping"                   # file: a local file of identifier pairs, for servers that allow neither
 
 [attributes]
 # By default only the attributes Samba4 has out of the box are copied (see `ldap-cronin list-attrs`; add -profile ldap for generic servers).

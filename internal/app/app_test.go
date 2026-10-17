@@ -57,6 +57,7 @@ func (w *world) secrets() Secrets {
 	return Secrets{SourceBind: ask("source"), TargetBind: ask("target"), UserPassword: ask("user")}
 }
 
+// open opens a session; mapping is the body of the [mapping] section.
 func (w *world) open(t *testing.T, mapping string) *Session {
 	t.Helper()
 	cfg, err := config.Parse([]byte(`
@@ -70,7 +71,7 @@ bind_dn = "CN=a"
 profile = "ad"
 base_dn = "` + base + `"
 [mapping]
-file = "` + mapping + `"
+` + mapping + `
 `))
 	if err != nil {
 		t.Fatal(err)
@@ -84,8 +85,17 @@ file = "` + mapping + `"
 }
 
 func TestCloneThenDiffThroughTheSession(t *testing.T) {
+	for name, mapping := range map[string]string{
+		"marker (the default on AD)": ``,
+		"file":                       `mode = "file"` + "\n" + `file = "` + filepath.Join(t.TempDir(), "mapping") + `"`,
+	} {
+		t.Run(name, func(t *testing.T) { cloneThenDiff(t, mapping) })
+	}
+}
+
+func cloneThenDiff(t *testing.T, mapping string) {
 	w := newWorld()
-	s := w.open(t, filepath.Join(t.TempDir(), "mapping"))
+	s := w.open(t, mapping)
 	ctx := context.Background()
 	report, err := s.Clone(ctx, false, &bytes.Buffer{}, &bytes.Buffer{})
 	if err != nil || report.Added == 0 {
@@ -107,17 +117,21 @@ func TestCloneThenDiffThroughTheSession(t *testing.T) {
 		t.Fatalf("%d %v\n%s", code, err, out.String())
 	}
 	if !strings.Contains(out.String(), "RENAMED") || !strings.Contains(out.String(), "title:") {
-		t.Fatalf("the mapping recorded by clone must find the rename, and the change must show:\n%s", out.String())
+		t.Fatalf("what clone recorded must find the rename, and the change must show:\n%s", out.String())
 	}
 }
 
 // A dry-run reads only the source: it never dials the target and never asks for its password or the users'.
 func TestDryRunTouchesOnlyTheSource(t *testing.T) {
 	w := newWorld()
-	s := w.open(t, filepath.Join(t.TempDir(), "mapping"))
+	s := w.open(t, ``)
 	var out bytes.Buffer
 	if _, err := s.Clone(context.Background(), true, &out, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
+	}
+	// The marker is named after the source alone, so an LDIF loaded with ldapmodify carries it too.
+	if !strings.Contains(out.String(), "adminDisplayName: ldap-cronin:") {
+		t.Fatal(out.String())
 	}
 	if len(w.dialed) != 1 || !strings.Contains(w.dialed[0], "src") || strings.Join(w.asked, ",") != "source" {
 		t.Fatalf("dialed %v, asked %v", w.dialed, w.asked)
@@ -133,10 +147,34 @@ func TestDryRunTouchesOnlyTheSource(t *testing.T) {
 // A cancelled run stops and says so; cmd turns that into "interrupted" instead of a generic error.
 func TestCancelledCloneReportsTheCancellation(t *testing.T) {
 	w := newWorld()
-	s := w.open(t, filepath.Join(t.TempDir(), "mapping"))
+	s := w.open(t, ``)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if _, err := s.Clone(ctx, false, &bytes.Buffer{}, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "context canceled") {
 		t.Fatalf("want the cancellation, got %v", err)
+	}
+}
+
+// A marker attribute the tool also copies would be overwritten by the source value, or compared: refused up front.
+func TestAMarkerAttributeInTheAllowListIsRefused(t *testing.T) {
+	cfg, err := config.Parse([]byte(`
+[source]
+url = "ldaps://src:636"
+bind_dn = "CN=a"
+[target]
+url = "ldaps://dst:636"
+bind_dn = "CN=a"
+[scope]
+profile = "ad"
+base_dn = "` + base + `"
+[mapping]
+attribute = "info"
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := newWorld()
+	if _, err := Open(context.Background(), cfg, w.secrets(), w.dial, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "info") {
+		t.Fatalf("got %v", err)
 	}
 }

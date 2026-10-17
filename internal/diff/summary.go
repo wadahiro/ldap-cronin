@@ -20,23 +20,23 @@ func WriteSummary(w io.Writer, job plan.Job, sum Summary, excluded []string) {
 	if sum.CaseOnly > 0 {
 		fmt.Fprintf(w, "                    of which case only: %d\n", sum.CaseOnly)
 	}
-	if sum.Tracking {
+	if sum.Matching != "" {
 		fmt.Fprintf(w, "  RENAMED     : %d   (same object, but its DN differs on target: renamed/moved)\n", sum.Differences[Renamed])
 		if sum.Differences[Replaced] > 0 {
 			fmt.Fprintf(w, "  REPLACED    : %d   (same DN, but a different object than the one cloned)\n", sum.Differences[Replaced])
 		}
+		if sum.Differences[Unmarked] > 0 {
+			fmt.Fprintf(w, "  UNMARKED    : %d   (same DN, no marker: recreated, or added to the source after the clone)\n", sum.Differences[Unmarked])
+		}
 		if sum.Implied > 0 {
 			fmt.Fprintf(w, "                    not listed: %d entries moved along with a renamed/moved parent OU\n", sum.Implied)
 		}
-	}
-	switch {
-	case sum.Identity:
-		id := job.Profile.Identity.Attr()
-		fmt.Fprintf(w, "rename/move check: on (%s preserved: the target holds the same %s as the source, no mapping file needed)\n", id, id)
-	case sum.Tracking:
-		fmt.Fprintf(w, "rename/move check: on (%d %s pairs in the mapping file)\n", sum.TrackedPairs, job.Profile.Identity.Attr())
-	default:
-		fmt.Fprintln(w, "rename/move check: off (set [mapping] file in the config; clone records the mapping)")
+		if sum.Duplicates > 0 {
+			fmt.Fprintf(w, "                    %d objects were found more than once (a copied marker or identifier); the first was used\n", sum.Duplicates)
+		}
+		fmt.Fprintf(w, "rename/move check: on (%s)\n", sum.Matching)
+	} else {
+		fmt.Fprintln(w, "rename/move check: off ([mapping] mode is off, or nothing to match by)")
 	}
 	fmt.Fprintln(w, "compared attributes:")
 	var masked []string

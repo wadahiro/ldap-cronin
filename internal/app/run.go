@@ -8,6 +8,7 @@ import (
 	"os"
 
 	"github.com/wadahiro/ldap-cronin/internal/clone"
+	"github.com/wadahiro/ldap-cronin/internal/config"
 	"github.com/wadahiro/ldap-cronin/internal/diff"
 	"github.com/wadahiro/ldap-cronin/internal/directory"
 	"github.com/wadahiro/ldap-cronin/internal/dryrun"
@@ -25,6 +26,22 @@ const (
 // Progress goes to log (standard error for a dry-run, so its standard output can be passed to ldapmodify).
 func (s *Session) Clone(ctx context.Context, dryRun bool, out, log io.Writer) (*clone.Report, error) {
 	opt := clone.Options{UserPassword: "<fixed-password>", Workers: s.Cfg.Run.Workers}
+	mode, attr, err := s.Cfg.MappingFor(s.Job.Profile)
+	if err != nil {
+		return nil, err
+	}
+	switch mode {
+	case config.MappingPreserve:
+		opt.Preserve, opt.Operational = true, s.Cfg.Mapping.Operational()
+	case config.MappingMarker:
+		// The marker names the source by its root key, read from the source: a dry-run writes markers too, so an
+		// LDIF loaded with ldapmodify gives diff the same view as a clone.
+		m, err := s.marker(ctx, attr)
+		if err != nil {
+			return nil, err
+		}
+		opt.Marker = &m
+	}
 	var dst directory.Directory = dryrun.New(out, s.Job.Profile.PasswordAttrs)
 	if !dryRun {
 		var err error
@@ -37,7 +54,16 @@ func (s *Session) Clone(ctx context.Context, dryRun bool, out, log io.Writer) (*
 		}
 		defer closeTarget()
 		dst = target
-		if s.Cfg.Mapping.File != "" {
+		if opt.Marker != nil && s.Job.Profile.MarkerCheck != nil {
+			warning, err := s.Job.Profile.MarkerCheck.CheckMarker(ctx, dst, attr, identity.MarkerLen)
+			if err != nil {
+				return nil, err
+			}
+			if warning != "" {
+				fmt.Fprintf(s.Warn, "warning: %s\n", warning)
+			}
+		}
+		if mode == config.MappingFile {
 			header, err := s.mappingHeader(ctx, dst)
 			if err != nil {
 				return nil, err
@@ -67,23 +93,12 @@ func (s *Session) Diff(ctx context.Context, maxValues int, out io.Writer) (int, 
 	}
 	defer closeTarget()
 
-	mapping, err := s.loadMapping(ctx, dst)
+	res, closeRes, err := s.resolver(ctx, dst)
 	if err != nil {
 		return 0, err
 	}
-	var fromFile identity.Lookup // a nil *Map must stay a nil interface, or diff would think tracking is on
-	if mapping != nil {
-		defer mapping.Close()
-		fromFile = mapping
-	}
-	lookup, why, err := diff.ChooseLookup(ctx, s.Src, dst, s.Job, fromFile)
-	if err != nil {
-		return 0, err
-	}
-	if lookup == nil && why != "" {
-		fmt.Fprintf(s.Warn, "note: cannot say the %ss are identical (%s)\n", s.Job.Profile.Identity.Attr(), why)
-	}
-	sum, err := diff.Run(ctx, s.Src, dst, s.Job, diff.Options{Workers: s.Cfg.Run.Workers, Lookup: lookup},
+	defer closeRes()
+	sum, err := diff.Run(ctx, s.Src, dst, s.Job, diff.Options{Workers: s.Cfg.Run.Workers, Resolver: res},
 		func(d diff.Difference) { diff.Format(out, d, maxValues) })
 	if err != nil {
 		return 0, err
@@ -97,6 +112,58 @@ func (s *Session) Diff(ctx context.Context, maxValues int, out io.Writer) (int, 
 		return ExitSame, nil
 	}
 	return ExitDiff, nil
+}
+
+// resolver decides how diff matches target objects to source objects. Whatever the mode, identifiers shown to be
+// the source's (a native import, a preserving clone) are matched directly; otherwise the marker or the mapping file
+// of the mode is used. Only mode = "off" turns matching off altogether.
+// The returned func releases the mapping file.
+func (s *Session) resolver(ctx context.Context, dst directory.Directory) (identity.Resolver, func(), error) {
+	release := func() {}
+	mode, attr, err := s.Cfg.MappingFor(s.Job.Profile)
+	if err != nil || mode == config.MappingOff {
+		return nil, release, err
+	}
+	var fallback identity.Resolver // a nil *Map must stay a nil interface, or diff would think matching is on
+	switch mode {
+	case config.MappingMarker:
+		m, err := s.marker(ctx, attr)
+		if err != nil {
+			return nil, release, err
+		}
+		fallback = identity.ByMarker(m)
+	case config.MappingFile:
+		m, err := s.loadMapping(ctx, dst)
+		if err != nil {
+			return nil, release, err
+		}
+		if m != nil {
+			release = func() { m.Close() }
+			fallback = identity.ByMap(m, s.Job.Profile.Identity)
+		}
+	}
+	res, why, err := diff.ChooseResolver(ctx, s.Src, dst, s.Job, fallback)
+	if err != nil {
+		release()
+		return nil, func() {}, err
+	}
+	if mode == config.MappingPreserve && why != "" {
+		fmt.Fprintf(s.Warn, "note: cannot say the %ss are the source's (%s); rename/move detection is off\n", s.Job.Profile.Identity.Attr(), why)
+	}
+	return res, release, nil
+}
+
+// marker is the marker of objects cloned from this source.
+func (s *Session) marker(ctx context.Context, attr string) (identity.Marker, error) {
+	root, err := plan.Root(ctx, s.Src, s.Job)
+	if err != nil {
+		return identity.Marker{}, err
+	}
+	key, err := identity.RootKey(ctx, s.Src, root, s.Job.Profile.Identity)
+	if err != nil {
+		return identity.Marker{}, fmt.Errorf("source: %w", err)
+	}
+	return identity.NewMarker(attr, key), nil
 }
 
 // mappingHeader identifies the source/target pair by the identifiers of their naming-context roots.
@@ -134,7 +201,7 @@ func (s *Session) loadMapping(ctx context.Context, dst directory.Directory) (*id
 	case err == nil:
 		return m, nil
 	case errors.Is(err, os.ErrNotExist):
-		fmt.Fprintf(s.Warn, "note: %s not found; rename/move detection is off (run clone with [mapping] file to record it)\n", file)
+		fmt.Fprintf(s.Warn, "note: %s not found; rename/move detection is off (clone records it with [mapping] mode = \"file\")\n", file)
 		return nil, nil
 	case errors.Is(err, identity.ErrOldFormat):
 		fmt.Fprintf(s.Warn, "note: %v; rename/move detection is off\n", err)

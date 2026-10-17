@@ -14,6 +14,19 @@ var ErrExists = errors.New("entry already exists")
 // (object class violation). Generic LDAP groups such as groupOfNames must have a member at creation.
 var ErrSchemaViolation = errors.New("object class violation")
 
+// ErrInsufficientAccess is returned when the server refuses an operation for lack of rights (result 50). With the
+// relax control it means the bind may write the entry but not the attributes the control unlocks.
+var ErrInsufficientAccess = errors.New("insufficient access")
+
+// ErrControlUnsupported is returned when the server does not know a control sent as critical (result 12).
+var ErrControlUnsupported = errors.New("critical control not supported")
+
+// Control is a request control sent with an operation, independent of the LDAP library.
+type Control struct {
+	OID      string
+	Critical bool
+}
+
 // The Attrs keys of an Entry use the requested attribute name (canonical case).
 type Entry struct {
 	DN    string
@@ -44,8 +57,9 @@ type Directory interface {
 	Walk(ctx context.Context, base, filter string, attrs []string, fn func(Entry) error) error
 	// Get fetches one entry by dn. If it does not exist, it returns nil, nil.
 	Get(ctx context.Context, dn string, attrs []string) (*Entry, error)
-	// Add may return ErrExists.
-	Add(ctx context.Context, e Entry) error
+	// Add may return ErrExists, ErrSchemaViolation, ErrInsufficientAccess or ErrControlUnsupported.
+	// controls are sent with the request.
+	Add(ctx context.Context, e Entry, controls ...Control) error
 	Replace(ctx context.Context, dn string, attrs map[string][]string) error
 	AddValues(ctx context.Context, dn, attr string, values []string) error
 }

@@ -127,3 +127,64 @@ func TestJobFollowsTheProfileOrderAndAddsTheSystemFilter(t *testing.T) {
 		t.Fatalf("filter %q", f)
 	}
 }
+
+func TestMappingAutoResolvesPerProfile(t *testing.T) {
+	cases := []struct {
+		mapping, mode, attr string
+	}{
+		{"", MappingMarker, "adminDisplayName"},
+		{`attribute = "extensionAttribute15"`, MappingMarker, "extensionAttribute15"},
+		{`mode = "off"`, MappingOff, ""},
+		{`mode = "file"`, MappingFile, ""},
+	}
+	for _, c := range cases {
+		cfg, err := Parse([]byte(valid + "[mapping]\n" + c.mapping + "\n"))
+		if err != nil {
+			t.Fatalf("%q: %v", c.mapping, err)
+		}
+		mode, attr, err := cfg.MappingFor(profile.AD)
+		if err != nil || mode != c.mode || attr != c.attr {
+			t.Fatalf("%q: %s %s %v", c.mapping, mode, attr, err)
+		}
+	}
+	cfg, _ := Parse([]byte(valid))
+	if mode, _, err := cfg.MappingFor(profile.LDAP); err != nil || mode != MappingPreserve {
+		t.Fatalf("a generic server preserves entryUUID by default: %s %v", mode, err)
+	}
+	if !cfg.Mapping.Operational() {
+		t.Fatal("operational attributes are copied by default")
+	}
+	if cfg, _ := Parse([]byte(valid + "[mapping]\nmode = \"file\"\n")); cfg.Mapping.File != defaultMappingFile {
+		t.Fatalf("file defaults to %q: %q", defaultMappingFile, cfg.Mapping.File)
+	}
+}
+
+func TestMappingRejectsKeysOfAnotherModeAndUnusableAttributes(t *testing.T) {
+	for mapping, want := range map[string]string{
+		`mode = "guess"`:                         "mode must be",
+		`file = "m"`:                             "only with mode = \"file\"",
+		"mode = \"off\"\nattribute = \"info\"":   "only with mode = \"marker\"",
+		"mode = \"marker\"\noperational = false": "only with mode = \"preserve\"",
+		`attribute = "description"`:              "in the attributes of",
+		`attribute = "mail"`:                     "masked",
+		`attribute = "objectGUID"`:               "managed by the server",
+		`attribute = "whenChanged"`:              "managed by the server",
+	} {
+		_, err := Parse([]byte(withProfile("ad") + "[mapping]\n" + mapping + "\n"))
+		if err == nil {
+			cfg, _ := Parse([]byte(withProfile("ad") + "[mapping]\n" + mapping + "\n"))
+			_, err = cfg.JobFor(profile.AD)
+		}
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%q: want %q, got %v", mapping, want, err)
+		}
+	}
+	cfg, _ := Parse([]byte(valid + "[mapping]\nmode = \"marker\"\n"))
+	if _, _, err := cfg.MappingFor(profile.LDAP); err == nil || !strings.Contains(err.Error(), "needs an attribute") {
+		t.Fatalf("marker on a generic server needs an attribute: %v", err)
+	}
+	cfg, _ = Parse([]byte(valid + "[mapping]\nmode = \"preserve\"\n"))
+	if _, _, err := cfg.MappingFor(profile.AD); err == nil {
+		t.Fatal("AD cannot preserve identifiers over LDAP")
+	}
+}

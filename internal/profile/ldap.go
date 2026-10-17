@@ -50,10 +50,22 @@ var LDAP = Profile{
 	},
 	// No Ranged: OpenLDAP does not implement the range option and would return member empty.
 	Identity: identity.EntryUUID,
-	Refs:     subschema{},
-	Root:     namingContextRoot{},
-	Account:  ldapAccount{},
+	// The relax control (an expired Internet-Draft that OpenLDAP implements) lets an Add set entryUUID and the
+	// creation and modification metadata. It is not advertised in the root DSE, so support shows on the first Add.
+	// entryCSN cannot be set even with it.
+	Preserve: &Preserver{
+		Control:     directory.Control{OID: RelaxOID, Critical: true},
+		Operational: []string{"createTimestamp", "modifyTimestamp", "creatorsName", "modifiersName"},
+		Remedy: "the relax control needs manage access to the entries (or the rootdn) on OpenLDAP; " +
+			"grant it, or set [mapping] mode = \"marker\" with an attribute, \"file\" or \"off\"",
+	},
+	Refs:    subschema{},
+	Root:    namingContextRoot{},
+	Account: ldapAccount{},
 }
+
+// RelaxOID is the relax control (draft-zeilenga-ldap-relax).
+const RelaxOID = "1.3.6.1.4.1.4203.666.5.12"
 
 // namingContextRoot is the longest namingContexts value above base_dn, falling back to the trailing DC= run; a
 // base_dn without either needs [scope] root_dn.

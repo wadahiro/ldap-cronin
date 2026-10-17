@@ -19,7 +19,6 @@ import (
 	"github.com/wadahiro/ldap-cronin/internal/clone"
 	"github.com/wadahiro/ldap-cronin/internal/diff"
 	"github.com/wadahiro/ldap-cronin/internal/directory"
-	"github.com/wadahiro/ldap-cronin/internal/dn"
 	"github.com/wadahiro/ldap-cronin/internal/identity"
 	"github.com/wadahiro/ldap-cronin/internal/lab"
 	"github.com/wadahiro/ldap-cronin/internal/ldapdir"
@@ -262,10 +261,9 @@ func TestLabSnapshotAndRestoreWithRealDocker(t *testing.T) {
 	}
 }
 
-// The intended usage: clone into a lab -> snapshot with the mapping -> restore into an instance on a different port ->
-// another program renames there -> diff detects the rename using the mapping.
-// The mapping header is the domain's identifier, not the URL (port), so it works for an instance on a different port.
-func TestLabSnapshotCarriesTheMappingToAnotherInstanceOnAnotherPort(t *testing.T) {
+// The intended usage: clone into a lab -> snapshot -> restore into an instance on a different port -> another program
+// renames there -> diff detects the rename. The markers are part of the data, so nothing travels beside the snapshot.
+func TestLabSnapshotCarriesTheMarkersToAnotherInstanceOnAnotherPort(t *testing.T) {
 	image := os.Getenv("E2E_LAB_IMAGE")
 	if image == "" {
 		t.Skip("E2E_LAB_IMAGE is not set (tests/e2e.sh sets it)")
@@ -309,31 +307,17 @@ func TestLabSnapshotCarriesTheMappingToAnotherInstanceOnAnotherPort(t *testing.T
 	src, target := dial(srcLDAPS), dial(mainLDAPS)
 	defer src.Close()
 
-	// clone (records the mapping)
-	srcDomain, err := identity.RootKey(context.Background(), src, dn.DomainRoot(cloneBase), identity.ObjectGUID)
-	must(err)
-	targetDomain, err := identity.RootKey(context.Background(), target, dn.DomainRoot(cloneBase), identity.ObjectGUID)
-	must(err)
-	if srcDomain == targetDomain {
-		t.Fatal("two separately provisioned domains must have different identities")
-	}
-	mapPath := dir + "/guid-map.tsv"
-	gm, err := identity.Open(mapPath, identity.Header{Scheme: "objectGUID", SourceRoot: srcDomain, TargetRoot: targetDomain, BaseDN: cloneBase})
-	must(err)
+	// clone, writing the markers
+	m := markerOf(t, src, target, cloneBase)
 	opt := planOptionsFor(t, cloneBase)
-	if _, err := clone.Run(context.Background(), src, target, opt, clone.Options{UserPassword: "Fixed-Passw0rd!", Workers: 4, Mapping: gm}, &bytes.Buffer{}); err != nil {
+	if _, err := clone.Run(context.Background(), src, target, opt, clone.Options{UserPassword: "Fixed-Passw0rd!", Workers: 4, Marker: &m}, &bytes.Buffer{}); err != nil {
 		t.Fatalf("clone: %v", err)
 	}
-	must(gm.Close())
 	target.Close()
 
-	// Take a snapshot with the mapping, and restore it, mapping included, into an instance on a different port.
-	meta, err := l.Snapshot(context.Background(), lab.SnapshotOptions{Name: "cloned", Mapping: mapPath})
+	// Take a snapshot and restore it into an instance on a different port.
+	_, err := l.Snapshot(context.Background(), lab.SnapshotOptions{Name: "cloned"})
 	must(err)
-	if meta.Mapping == nil {
-		t.Fatal("the snapshot must include the GUID map")
-	}
-	dev2Map := dir + "/guid-map-dev2.tsv"
 	dev2 := *l
 	dev2.Instance = "dev2"
 	t.Cleanup(func() { _ = dev2.Reset(context.Background(), lab.ResetOptions{Yes: true}) })
@@ -341,7 +325,7 @@ func TestLabSnapshotCarriesTheMappingToAnotherInstanceOnAnotherPort(t *testing.T
 		t.Helper()
 		must(err)
 	}
-	must2(dev2.RestoreWith(context.Background(), "cloned", lab.RestoreOptions{Mapping: dev2Map}))
+	must2(dev2.RestoreWith(context.Background(), "cloned", lab.RestoreOptions{}))
 	instances, err := l.Instances(context.Background())
 	must(err)
 	dev2Port := 0
@@ -362,22 +346,12 @@ func TestLabSnapshotCarriesTheMappingToAnotherInstanceOnAnotherPort(t *testing.T
 	alice := "CN=Alice Admin,OU=Tokyo,OU=Users," + cloneBase
 	must(conn.ModifyDN(ldap.NewModifyDNRequest(alice, "CN=Alice Smith", true, "")))
 
-	// dev2 is on a different port from the original lab, but the domain identifier is the same, so the restored mapping can be used as is.
+	// dev2 is on a different port from the original lab; the markers came with the data, and the index with them.
 	d2 := dial(dev2Port)
 	defer d2.Close()
-	d2Domain, err := identity.RootKey(context.Background(), d2, dn.DomainRoot(cloneBase), identity.ObjectGUID)
-	must(err)
-	if d2Domain != targetDomain {
-		t.Fatalf("a restored instance must have the same domain identity as the original: %s vs %s", d2Domain, targetDomain)
-	}
-	guids, err := identity.Load(dev2Map, identity.Header{Scheme: "objectGUID", SourceRoot: srcDomain, TargetRoot: d2Domain, BaseDN: cloneBase})
-	if err != nil {
-		t.Fatalf("the map written back to dev2 must be usable even though the port differs: %v", err)
-	}
-	defer guids.Close()
-
+	markerOf(t, src, d2, cloneBase)
 	var diffs []diff.Difference
-	sum, err := diff.Run(context.Background(), src, d2, opt, diff.Options{Workers: 4, Lookup: guids}, func(d diff.Difference) { diffs = append(diffs, d) })
+	sum, err := diff.Run(context.Background(), src, d2, opt, diff.Options{Workers: 4, Resolver: identity.ByMarker(m)}, func(d diff.Difference) { diffs = append(diffs, d) })
 	must(err)
 	if sum.Differences[diff.Renamed] != 1 || len(diffs) != 1 || diffs[0].Kind != diff.Renamed ||
 		!strings.EqualFold(diffs[0].TargetDN, "CN=Alice Smith,OU=Tokyo,OU=Users,"+cloneBase) {

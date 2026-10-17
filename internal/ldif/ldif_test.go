@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+
+	"github.com/wadahiro/ldap-cronin/internal/directory"
 )
 
 func TestLineEncodesUnsafeValues(t *testing.T) {
@@ -29,5 +31,15 @@ func TestPasswordIsNeverPrinted(t *testing.T) {
 	w.Add("cn=b", map[string][]string{"cn": {"b"}, "USERPASSWORD": {"plain"}})
 	if out := b.String(); strings.Contains(out, "secret") || strings.Contains(out, "plain") || !strings.Contains(out, "<redacted>") {
 		t.Fatal(out)
+	}
+}
+
+// ldapmodify sends a control line with the request; RFC 2849 puts it between dn and changetype.
+func TestAddWritesControlsBeforeChangetype(t *testing.T) {
+	var b bytes.Buffer
+	Writer{W: &b}.Add("ou=x,dc=example", map[string][]string{"ou": {"x"}}, directory.Control{OID: "1.3.6.1.4.1.4203.666.5.12", Critical: true})
+	want := "dn: ou=x,dc=example\ncontrol: 1.3.6.1.4.1.4203.666.5.12 true\nchangetype: add\nou: x\n\n"
+	if b.String() != want {
+		t.Fatalf("got\n%s", b.String())
 	}
 }

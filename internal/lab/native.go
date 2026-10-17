@@ -250,7 +250,8 @@ func (n *Native) Walk(ctx context.Context, base, filter string, attrs []string, 
 	return nil
 }
 
-func (n *Native) Add(ctx context.Context, e directory.Entry) error {
+// Add ignores controls: the native API writes below the LDAP layer, where no control is needed to keep identifiers.
+func (n *Native) Add(ctx context.Context, e directory.Entry, _ ...directory.Control) error {
 	_, err := n.call(ctx, map[string]any{"op": "add", "dn": e.DN, "attrs": encodeAttrs(e.Attrs)})
 	return mapExists(err)
 }

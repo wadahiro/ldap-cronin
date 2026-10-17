@@ -1,5 +1,6 @@
 // Package identity is the one place that knows how a directory identifies an object across renames and moves
-// (objectGUID on AD, entryUUID elsewhere), and the local mapping between source and target identifiers.
+// (objectGUID on AD, entryUUID elsewhere), and how a target object tells which source object it was cloned from:
+// by carrying the source identifier itself, by a marker attribute, or, as a fallback, through a local mapping file.
 //
 // Both identifiers are 16 bytes. AD returns objectGUID as raw bytes, generic servers return entryUUID as text;
 // each Scheme parses only its own form into a Key, so the mapping file and the matching logic never guess.
@@ -102,22 +103,6 @@ func (uuidScheme) Filter(k Key) string {
 }
 
 func (uuidScheme) CarryOver() []string { return nil }
-
-// Lookup maps a source key to the target key of the same object.
-type Lookup interface {
-	Target(source Key) (Key, bool)
-	// Len is the number of known pairs (0 for Identity, which needs none).
-	Len() int
-	// Preserved is true when target objects carry the source identifiers (a native import), so no mapping is used.
-	Preserved() bool
-}
-
-// Identity is the mapping "the target key equals the source key", for a native import that kept objectGUID.
-type Identity struct{}
-
-func (Identity) Target(source Key) (Key, bool) { return source, !source.IsZero() }
-func (Identity) Len() int                      { return 0 }
-func (Identity) Preserved() bool               { return true }
 
 // Of returns the key of an entry read with s.Attr(). An entry without the attribute gives the zero Key.
 func Of(s Scheme, e directory.Entry) (Key, error) {

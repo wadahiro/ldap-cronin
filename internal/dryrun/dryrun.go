@@ -23,11 +23,11 @@ func (d Dir) Get(ctx context.Context, _ string, _ []string) (*directory.Entry, e
 	return nil, ctx.Err()
 }
 
-func (d Dir) Add(ctx context.Context, e directory.Entry) error {
+func (d Dir) Add(ctx context.Context, e directory.Entry, controls ...directory.Control) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	d.w.Add(e.DN, e.Attrs)
+	d.w.Add(e.DN, e.Attrs, controls...)
 	return nil
 }
 

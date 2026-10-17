@@ -58,10 +58,14 @@ func (j Job) Kind(name string) (*Kind, bool) {
 
 // Read says which source attributes a run needs beyond the allow lists.
 type Read struct {
-	// Identity reads the identifier (to record or look up the mapping, or to check a native import).
+	// Identity reads the identifier (to write a marker, preserve it, record or look up the mapping, or check a
+	// native import).
 	Identity bool
 	// CarryOver also reads the attributes a native import keeps (objectGUID, objectSid) and passes them on.
 	CarryOver bool
+	// Extra are further source attributes outside the allow lists, such as the operational attributes a preserving
+	// Add copies.
+	Extra []string
 }
 
 // Root returns the top of the naming context that contains base_dn.
@@ -203,6 +207,7 @@ func (p *Plan) withRead(names []string) []string {
 	if p.read.CarryOver {
 		extra = append(extra, scheme.CarryOver()...)
 	}
+	extra = append(extra, p.read.Extra...)
 	out := names
 	for _, x := range extra {
 		found := false

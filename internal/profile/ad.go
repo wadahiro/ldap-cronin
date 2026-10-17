@@ -69,10 +69,16 @@ var AD = Profile{
 		},
 	},
 	Identity: identity.ObjectGUID,
-	Refs:     adSchema{},
-	Root:     adRoot{},
-	Account:  adAccount{},
-	Native:   adNative{},
+	// adminDisplayName is in top's systemMayContain, so every object class allows it, and no product the tool knows
+	// of uses it: adminDescription is Entra Connect's default filter, mS-DS-ConsistencyGuid its sourceAnchor,
+	// extensionAttributeN need the Exchange schema and are what IdM products use most, and employeeID, info and
+	// description are in the allow lists.
+	Marker:      "adminDisplayName",
+	MarkerCheck: adSchema{},
+	Refs:        adSchema{},
+	Root:        adRoot{},
+	Account:     adAccount{},
+	Native:      adNative{},
 }
 
 const (
@@ -134,6 +140,51 @@ func (adSchema) Discover(ctx context.Context, src directory.Directory) (Schema, 
 		return Schema{}, false, fmt.Errorf("read schema: %w", err)
 	}
 	return s, true, nil
+}
+
+// Unicode, case-insensitive and printable string syntaxes: the ones a marker can be stored and searched in.
+var markerSyntaxes = map[string]bool{"2.5.5.12": true, "2.5.5.4": true, "2.5.5.5": true}
+
+const searchFlagIndexed = 1
+
+func (adSchema) CheckMarker(ctx context.Context, dst directory.Directory, attr string, minLen int) (string, error) {
+	root, err := dst.Get(ctx, "", []string{"schemaNamingContext"})
+	if err != nil {
+		return "", fmt.Errorf("read the target's root DSE: %w", err)
+	}
+	if root == nil || first(root.Values("schemaNamingContext")) == "" {
+		return "", nil // test directories without a schema
+	}
+	var found *directory.Entry
+	err = dst.Walk(ctx, first(root.Values("schemaNamingContext")), "(&(objectClass=attributeSchema)(lDAPDisplayName="+attr+"))",
+		[]string{"lDAPDisplayName", "attributeSyntax", "isSingleValued", "rangeUpper", "searchFlags"}, func(e directory.Entry) error {
+			if strings.EqualFold(first(e.Values("lDAPDisplayName")), attr) {
+				c := e
+				found = &c
+			}
+			return nil
+		})
+	if err != nil {
+		return "", fmt.Errorf("read the target schema: %w", err)
+	}
+	if found == nil {
+		return "", fmt.Errorf("[mapping] attribute %q is not in the target schema", attr)
+	}
+	if !markerSyntaxes[first(found.Values("attributeSyntax"))] {
+		return "", fmt.Errorf("[mapping] attribute %q does not hold strings (attributeSyntax %s)", attr, first(found.Values("attributeSyntax")))
+	}
+	if !strings.EqualFold(first(found.Values("isSingleValued")), "TRUE") {
+		return "", fmt.Errorf("[mapping] attribute %q is multi-valued; a marker needs a single-valued attribute", attr)
+	}
+	if v := first(found.Values("rangeUpper")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n < minLen {
+			return "", fmt.Errorf("[mapping] attribute %q holds at most %d characters; a marker has %d", attr, n, minLen)
+		}
+	}
+	if flags, _ := strconv.Atoi(first(found.Values("searchFlags"))); flags&searchFlagIndexed == 0 {
+		return fmt.Sprintf("[mapping] attribute %s is not indexed on the target, so finding a renamed or moved object reads the whole naming context (set searchFlags bit 1 in its attributeSchema)", attr), nil
+	}
+	return "", nil
 }
 
 // adRoot is the run of trailing DC= components: an AD naming context is always a domain.

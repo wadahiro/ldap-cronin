@@ -24,7 +24,7 @@ func TestIdentityDiffDetectsARenameWithoutAMappingFile(t *testing.T) {
 	dst.Put(moved, withAttr(old, "cn", "Alice Smith"))
 
 	var got []diff.Difference
-	sum, err := diff.Run(context.Background(), src, dst, identityJob(t), diff.Options{Workers: 1, Lookup: identity.Identity{}}, func(d diff.Difference) { got = append(got, d) })
+	sum, err := diff.Run(context.Background(), src, dst, identityJob(t), diff.Options{Workers: 1, Resolver: identity.ByIdentity(identity.ObjectGUID)}, func(d diff.Difference) { got = append(got, d) })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +40,7 @@ func TestIdentityDiffDetectsARenameWithoutAMappingFile(t *testing.T) {
 	if renamed == nil || renamed.TargetDN != moved {
 		t.Fatalf("Alice must be RENAMED to %s: %+v", moved, got)
 	}
-	if !sum.Identity {
+	if !strings.Contains(sum.Matching, "preserved") {
 		t.Fatal("the summary must say that objectGUID is preserved")
 	}
 	var out strings.Builder
@@ -57,7 +57,7 @@ func TestIdentityDiffReportsAReplacedObjectWithTheSameDN(t *testing.T) {
 	}
 	dst.Put(alice, withAttr(dst.Lookup(alice).Attrs, "objectGUID", strings.Repeat("\xee", 16)))
 	var got []diff.Difference
-	if _, err := diff.Run(context.Background(), src, dst, identityJob(t), diff.Options{Workers: 1, Lookup: identity.Identity{}}, func(d diff.Difference) { got = append(got, d) }); err != nil {
+	if _, err := diff.Run(context.Background(), src, dst, identityJob(t), diff.Options{Workers: 1, Resolver: identity.ByIdentity(identity.ObjectGUID)}, func(d diff.Difference) { got = append(got, d) }); err != nil {
 		t.Fatal(err)
 	}
 	for _, d := range got {

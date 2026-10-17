@@ -3,7 +3,6 @@ package clone
 import (
 	"bytes"
 	"context"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -13,35 +12,23 @@ import (
 	"github.com/wadahiro/ldap-cronin/internal/identity"
 )
 
-var mapHeader = identity.Header{Scheme: "objectGUID", SourceRoot: identity.Key{1}, TargetRoot: identity.Key{2}, BaseDN: base}
+// marker is the marker of a clone from a source whose root key is {1}.
+var marker = identity.NewMarker("adminDisplayName", identity.Key{1})
 
-// clonedWithMapping clones the source to the target, records the GUID mapping and returns it reopened.
-func clonedWithMapping(t *testing.T) (src, dst *fakedir.Dir, guids *identity.Map) {
+// clonedWithMarkers clones the source to the target writing markers, and returns the resolver diff uses.
+func clonedWithMarkers(t *testing.T) (src, dst *fakedir.Dir, res identity.Resolver) {
 	t.Helper()
 	return clonedFrom(t, seedSource())
 }
 
-func clonedFrom(t *testing.T, src *fakedir.Dir) (_, dst *fakedir.Dir, guids *identity.Map) {
+func clonedFrom(t *testing.T, src *fakedir.Dir) (_, dst *fakedir.Dir, res identity.Resolver) {
 	t.Helper()
 	dst = fakedir.New(domain)
-	path := filepath.Join(t.TempDir(), "guid-map.tsv")
-	m, err := identity.Open(path, mapHeader)
-	if err != nil {
-		t.Fatal(err)
-	}
 	opt := options(t, allKinds()...)
-	if _, err := Run(context.Background(), src, dst, opt, Options{Workers: 4, Mapping: m}, &bytes.Buffer{}); err != nil {
+	if _, err := Run(context.Background(), src, dst, opt, Options{Workers: 4, Marker: &marker}, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.Close(); err != nil {
-		t.Fatal(err)
-	}
-	guids, err = identity.Load(path, mapHeader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { guids.Close() })
-	return src, dst, guids
+	return src, dst, identity.ByMarker(marker)
 }
 
 // moveEntry reproduces another program changing a DN on the target. objectGUID does not change, and
@@ -67,14 +54,10 @@ func userAt(src *fakedir.Dir, entryDN, sam string) {
 	})
 }
 
-func diffWith(t *testing.T, src, dst *fakedir.Dir, guids *identity.Map) ([]diff.Difference, diff.Summary) {
+func diffWith(t *testing.T, src, dst *fakedir.Dir, res identity.Resolver) ([]diff.Difference, diff.Summary) {
 	t.Helper()
 	var diffs []diff.Difference
-	var lookup identity.Lookup // a nil *Map must stay a nil interface, or diff would think tracking is on
-	if guids != nil {
-		lookup = guids
-	}
-	sum, err := diff.Run(context.Background(), src, dst, options(t, allKinds()...), diff.Options{Workers: 4, Lookup: lookup}, func(d diff.Difference) { diffs = append(diffs, d) })
+	sum, err := diff.Run(context.Background(), src, dst, options(t, allKinds()...), diff.Options{Workers: 4, Resolver: res}, func(d diff.Difference) { diffs = append(diffs, d) })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,15 +72,43 @@ func kindsOf(diffs []diff.Difference) string {
 	return strings.Join(k, ",")
 }
 
-func TestCloneRecordsAGUIDPairForEveryObjectIncludingParents(t *testing.T) {
-	_, _, guids := clonedWithMapping(t)
-	if guids.Len() != 8 { // 4 OUs (IDM, Users, Groups, Tokyo) + container Staff + 2 users + 1 group
-		t.Fatalf("pairs=%d", guids.Len())
+func TestCloneMarksEveryObjectIncludingParents(t *testing.T) {
+	src, dst, _ := clonedWithMarkers(t)
+	marked := 0
+	for _, e := range dst.Entries {
+		v := e.Values("adminDisplayName")
+		if len(v) == 0 {
+			continue
+		}
+		marked++
+		k, err := marker.Decode(v[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		want, _ := identity.Of(identity.ObjectGUID, *src.Lookup(e.DN))
+		if k != want {
+			t.Fatalf("%s carries %v, the source has %v", e.DN, k, want)
+		}
+	}
+	if marked != 8 { // 4 OUs (IDM, Users, Groups, Tokyo) + container Staff + 2 users + 1 group
+		t.Fatalf("marked=%d", marked)
+	}
+}
+
+// Running clone again on an object whose marker was removed puts it back.
+func TestCloneRestoresARemovedMarker(t *testing.T) {
+	src, dst, _ := clonedWithMarkers(t)
+	delete(dst.Lookup(alice).Attrs, "adminDisplayName")
+	if _, err := Run(context.Background(), src, dst, options(t, allKinds()...), Options{Workers: 1, Marker: &marker}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if v := dst.Lookup(alice).Values("adminDisplayName"); len(v) != 1 || !strings.HasPrefix(v[0], "ldap-cronin:") {
+		t.Fatalf("%v", v)
 	}
 }
 
 func TestRenamedObjectIsReportedAsRenamedNotAsAddedPlusRemoved(t *testing.T) {
-	src, dst, guids := clonedWithMapping(t)
+	src, dst, guids := clonedWithMarkers(t)
 	renamed := "CN=Alice Smith,OU=Tokyo,OU=Users," + base
 	moveEntry(dst, alice, renamed)
 
@@ -115,7 +126,7 @@ func TestRenamedObjectIsReportedAsRenamedNotAsAddedPlusRemoved(t *testing.T) {
 }
 
 func TestMovedObjectEvenOutsideTheBaseDN(t *testing.T) {
-	src, dst, guids := clonedWithMapping(t)
+	src, dst, guids := clonedWithMarkers(t)
 	moved := `CN=Doe\, Bob,CN=Users,` + domain // moved outside the starting point (same RDN)
 	moveEntry(dst, bob, moved)
 
@@ -127,7 +138,7 @@ func TestMovedObjectEvenOutsideTheBaseDN(t *testing.T) {
 
 // Requirement: even when a rename or move is detected, attribute differences are still reported, at the current DN on the target.
 func TestAttributeDifferencesAreStillReportedForARenamedObject(t *testing.T) {
-	src, dst, guids := clonedWithMapping(t)
+	src, dst, guids := clonedWithMarkers(t)
 	renamed := "CN=Alice Smith,OU=Tokyo,OU=Users," + base
 	moveEntry(dst, alice, renamed)
 	dst.Lookup(renamed).Attrs["title"] = []string{"Hacked"}
@@ -194,7 +205,7 @@ func TestChildMovedAwayFromARenamedParentIsStillReported(t *testing.T) {
 }
 
 func TestWithoutAMappingARenameLooksLikeOnlySourcePlusOnlyTarget(t *testing.T) {
-	src, dst, _ := clonedWithMapping(t)
+	src, dst, _ := clonedWithMarkers(t)
 	moveEntry(dst, alice, "CN=Alice Smith,OU=Tokyo,OU=Users,"+base)
 
 	diffs, _ := diffWith(t, src, dst, nil)
@@ -203,12 +214,13 @@ func TestWithoutAMappingARenameLooksLikeOnlySourcePlusOnlyTarget(t *testing.T) {
 	}
 }
 
-// If the target was rebuilt and GUIDs changed (stale mapping), entries are simply not found and nothing is falsely detected.
-func TestStaleMappingFallsBackWithoutFalseRenames(t *testing.T) {
-	src, dst, guids := clonedWithMapping(t)
+// A marker written by a clone from another source does not name an object of this one: nothing is falsely detected.
+func TestAForeignMarkerIsNotTakenForTheClonedObject(t *testing.T) {
+	src, dst, guids := clonedWithMarkers(t)
 	renamed := "CN=Alice Smith,OU=Tokyo,OU=Users," + base
 	moveEntry(dst, alice, renamed)
-	dst.Lookup(renamed).Attrs["objectGUID"] = []string{strings.Repeat("\xee", 16)} // a different GUID
+	source, _ := identity.Of(identity.ObjectGUID, *src.Lookup(alice))
+	dst.Lookup(renamed).Attrs["adminDisplayName"] = []string{identity.NewMarker("adminDisplayName", identity.Key{9}).Encode(source)}
 
 	diffs, sum := diffWith(t, src, dst, guids)
 	if sum.Differences[diff.Renamed] != 0 || len(diffs) != 2 {
@@ -217,13 +229,13 @@ func TestStaleMappingFallsBackWithoutFalseRenames(t *testing.T) {
 }
 
 func TestSummaryStatesWhetherRenameDetectionWasOn(t *testing.T) {
-	src, dst, guids := clonedWithMapping(t)
+	src, dst, guids := clonedWithMarkers(t)
 	var on, off bytes.Buffer
 	_, sumOn := diffWith(t, src, dst, guids)
 	_, sumOff := diffWith(t, src, dst, nil)
 	diff.WriteSummary(&on, options(t, allKinds()...), sumOn, nil)
 	diff.WriteSummary(&off, options(t, allKinds()...), sumOff, nil)
-	if !strings.Contains(on.String(), "rename/move check: on (8 objectGUID pairs") || !strings.Contains(on.String(), "RENAMED") {
+	if !strings.Contains(on.String(), "rename/move check: on (markers in adminDisplayName)") || !strings.Contains(on.String(), "RENAMED") {
 		t.Fatal(on.String())
 	}
 	if !strings.Contains(off.String(), "rename/move check: off") || strings.Contains(off.String(), "RENAMED     :") {
@@ -242,7 +254,7 @@ func TestFormatRenamed(t *testing.T) {
 
 // Even for children "explained" by an OU move, attribute differences are reported at the current DN on the target.
 func TestChildMovedWithItsParentStillShowsAttributeDifferences(t *testing.T) {
-	src, dst, guids := clonedWithMapping(t)
+	src, dst, guids := clonedWithMarkers(t)
 	oldOU, newOU := "OU=Tokyo,OU=Users,"+base, "OU=Osaka,OU=Users,"+base
 	moveEntry(dst, oldOU, newOU)
 	moved := "CN=Alice," + newOU
@@ -272,7 +284,7 @@ func TestChildMovedWithItsParentStillShowsAttributeDifferences(t *testing.T) {
 
 // A child that moved with its parent OU and was also renamed (RDN) is reported as a rename (not as a move).
 func TestChildRenamedInsideAMovedParentIsReportedAsRenamedOnly(t *testing.T) {
-	src, dst, guids := clonedWithMapping(t)
+	src, dst, guids := clonedWithMarkers(t)
 	oldOU, newOU := "OU=Tokyo,OU=Users,"+base, "OU=Osaka,OU=Users,"+base
 	moveEntry(dst, oldOU, newOU)
 	moveEntry(dst, alice, "CN=Alice Smith,"+newOU)
@@ -315,7 +327,7 @@ func TestChildDeletedAfterItsOUWasMovedIsStillReported(t *testing.T) {
 
 // A user newly created on the target under a moved OU is reported as ONLY_TARGET.
 func TestChildCreatedInsideAMovedOUIsReportedAsOnlyTarget(t *testing.T) {
-	src, dst, guids := clonedWithMapping(t)
+	src, dst, guids := clonedWithMarkers(t)
 	oldOU, newOU := "OU=Tokyo,OU=Users,"+base, "OU=Osaka,OU=Users,"+base
 	moveEntry(dst, oldOU, newOU)
 	moveEntry(dst, alice, "CN=Alice,"+newOU)
@@ -352,7 +364,7 @@ type outcome struct {
 	implied int
 }
 
-func outcomeOf(t *testing.T, src, dst *fakedir.Dir, guids *identity.Map) outcome {
+func outcomeOf(t *testing.T, src, dst *fakedir.Dir, guids identity.Resolver) outcome {
 	t.Helper()
 	diffs, sum := diffWith(t, src, dst, guids)
 	o := outcome{renamed: map[string]diff.Difference{}, implied: sum.Implied}
@@ -512,22 +524,23 @@ func TestNewOUCreatedAtTheOldDNAfterTheMove(t *testing.T) {
 	}
 }
 
-// A user was deleted and a different user (different GUID) was created at the same DN. Same DN, but a different object.
-// Even for a different object, differences from the source attributes are reported.
-func TestUserDeletedAndRecreatedAtTheSameDNIsReportedAsReplacedWithItsAttributeDifferences(t *testing.T) {
-	src, dst, guids := clonedWithMapping(t)
+// A user was deleted and recreated at the same DN by another program: the new object has no marker, and the cloned
+// one is nowhere, so it is UNMARKED. Its differences from the source attributes are still reported.
+func TestUserDeletedAndRecreatedAtTheSameDNIsReportedAsUnmarkedWithItsAttributeDifferences(t *testing.T) {
+	src, dst, guids := clonedWithMarkers(t)
 	attrs := map[string][]string{}
 	for k, v := range dst.Lookup(alice).Attrs {
 		attrs[k] = append([]string(nil), v...)
 	}
 	delete(attrs, "objectGUID") // recreated, so a new GUID is assigned
+	delete(attrs, "adminDisplayName")
 	attrs["title"] = []string{"Recreated by another program"}
 	dst.Delete(alice)
 	dst.Put(alice, attrs)
 
 	diffs, sum := diffWith(t, src, dst, guids)
-	if len(diffs) != 2 || sum.Differences[diff.Replaced] != 1 || sum.Differences[diff.Differ] != 1 {
-		t.Fatalf("want REPLACED + DIFF(title), got %s: %+v", kindsOf(diffs), diffs)
+	if len(diffs) != 2 || sum.Differences[diff.Unmarked] != 1 || sum.Differences[diff.Differ] != 1 {
+		t.Fatalf("want UNMARKED + DIFF(title), got %s: %+v", kindsOf(diffs), diffs)
 	}
 	for _, d := range diffs {
 		if !dn.Equal(d.DN, alice) || (d.Kind == diff.Differ && d.Attr != "title") {
@@ -536,14 +549,16 @@ func TestUserDeletedAndRecreatedAtTheSameDNIsReportedAsReplacedWithItsAttributeD
 	}
 }
 
-// If it was recreated with identical attributes, only REPLACED is reported (it is still a different object).
+// An object at the source DN whose marker names another object (copied by the program under test) is a different
+// object: REPLACED, and nothing else when its attributes are identical.
 func TestReplacedObjectWithIdenticalAttributesShowsOnlyReplaced(t *testing.T) {
-	src, dst, guids := clonedWithMapping(t)
+	src, dst, guids := clonedWithMarkers(t)
 	attrs := map[string][]string{}
 	for k, v := range dst.Lookup(alice).Attrs {
 		attrs[k] = append([]string(nil), v...)
 	}
 	delete(attrs, "objectGUID")
+	attrs["adminDisplayName"] = dst.Lookup(bob).Values("adminDisplayName")
 	dst.Delete(alice)
 	dst.Put(alice, attrs)
 
@@ -569,7 +584,7 @@ func followRename(dst *fakedir.Dir, oldDN, newDN string) {
 }
 
 func TestReferencesToARenamedObjectAreNotReportedAsDifferences(t *testing.T) {
-	src, dst, guids := clonedWithMapping(t)
+	src, dst, guids := clonedWithMarkers(t)
 	renamed := `CN=Doe\, Robert,CN=Staff,OU=Users,` + base // changed the RDN of bob
 	moveEntry(dst, bob, renamed)
 	followRename(dst, bob, renamed) // alice manager and the member of group eng now point at the new DN
@@ -581,7 +596,7 @@ func TestReferencesToARenamedObjectAreNotReportedAsDifferences(t *testing.T) {
 }
 
 func TestARealReferenceDifferenceIsStillReportedNextToARename(t *testing.T) {
-	src, dst, guids := clonedWithMapping(t)
+	src, dst, guids := clonedWithMarkers(t)
 	renamed := `CN=Doe\, Robert,CN=Staff,OU=Users,` + base
 	moveEntry(dst, bob, renamed)
 	followRename(dst, bob, renamed)
@@ -614,7 +629,7 @@ func TestARealReferenceDifferenceIsStillReportedNextToARename(t *testing.T) {
 }
 
 func TestReferencesToAnObjectMovedWithItsOUAreFollowedToo(t *testing.T) {
-	src, dst, guids := clonedWithMapping(t)
+	src, dst, guids := clonedWithMarkers(t)
 	oldOU, newOU := "OU=Tokyo,OU=Users,"+base, "OU=Osaka,OU=Users,"+base
 	moveEntry(dst, oldOU, newOU)
 	movedAlice := "CN=Alice," + newOU
@@ -629,7 +644,7 @@ func TestReferencesToAnObjectMovedWithItsOUAreFollowedToo(t *testing.T) {
 
 func TestWithoutAMappingReferencesToARenamedObjectLookDifferent(t *testing.T) {
 	// Without a mapping there is no way to know about the rename. Same behavior as before (the reference is reported as different).
-	src, dst, _ := clonedWithMapping(t)
+	src, dst, _ := clonedWithMarkers(t)
 	renamed := `CN=Doe\, Robert,CN=Staff,OU=Users,` + base
 	moveEntry(dst, bob, renamed)
 	followRename(dst, bob, renamed)

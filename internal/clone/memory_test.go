@@ -49,9 +49,9 @@ func (g genSource) user(i int, dnOnly bool) directory.Entry {
 func (g genSource) Get(ctx context.Context, dn string, _ []string) (*directory.Entry, error) {
 	return &directory.Entry{DN: dn, Attrs: map[string][]string{"objectClass": {"top", "organizationalUnit"}, "ou": {"IDM"}}}, nil
 }
-func (genSource) Add(context.Context, directory.Entry) error                 { return nil }
-func (genSource) Replace(context.Context, string, map[string][]string) error { return nil }
-func (genSource) AddValues(context.Context, string, string, []string) error  { return nil }
+func (genSource) Add(context.Context, directory.Entry, ...directory.Control) error { return nil }
+func (genSource) Replace(context.Context, string, map[string][]string) error       { return nil }
+func (genSource) AddValues(context.Context, string, string, []string) error        { return nil }
 
 // emptyTarget discards writes and behaves as a target where nothing exists.
 type emptyTarget struct{}
@@ -59,10 +59,10 @@ type emptyTarget struct{}
 func (emptyTarget) Walk(context.Context, string, string, []string, func(directory.Entry) error) error {
 	return nil
 }
-func (emptyTarget) Get(context.Context, string, []string) (*directory.Entry, error) { return nil, nil }
-func (emptyTarget) Add(context.Context, directory.Entry) error                      { return nil }
-func (emptyTarget) Replace(context.Context, string, map[string][]string) error      { return nil }
-func (emptyTarget) AddValues(context.Context, string, string, []string) error       { return nil }
+func (emptyTarget) Get(context.Context, string, []string) (*directory.Entry, error)  { return nil, nil }
+func (emptyTarget) Add(context.Context, directory.Entry, ...directory.Control) error { return nil }
+func (emptyTarget) Replace(context.Context, string, map[string][]string) error       { return nil }
+func (emptyTarget) AddValues(context.Context, string, string, []string) error        { return nil }
 
 // peakHeapGrowthMB returns the maximum increase in heap usage (MB) while f runs.
 func peakHeapGrowthMB(f func()) float64 {

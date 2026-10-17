@@ -202,13 +202,17 @@ func (c *Client) Get(ctx context.Context, dn string, attrs []string) (*directory
 	return &entry, nil
 }
 
-func (c *Client) Add(ctx context.Context, e directory.Entry) error {
+func (c *Client) Add(ctx context.Context, e directory.Entry, controls ...directory.Control) error {
 	conn, err := c.acquire(ctx)
 	if err != nil {
 		return err
 	}
 	defer c.release(conn)
-	req := ldap.NewAddRequest(e.DN, nil)
+	var ctrls []ldap.Control
+	for _, ct := range controls {
+		ctrls = append(ctrls, ldap.NewControlString(ct.OID, ct.Critical, ""))
+	}
+	req := ldap.NewAddRequest(e.DN, ctrls)
 	for _, name := range sortedKeys(e.Attrs) {
 		req.Attribute(name, e.Attrs[name])
 	}
@@ -216,8 +220,14 @@ func (c *Client) Add(ctx context.Context, e directory.Entry) error {
 		if ldap.IsErrorWithCode(err, ldap.LDAPResultEntryAlreadyExists) {
 			return directory.ErrExists
 		}
-		if ldap.IsErrorWithCode(err, ldap.LDAPResultObjectClassViolation) {
-			return fmt.Errorf("add %s: %w (%v)", e.DN, directory.ErrSchemaViolation, err)
+		for code, sentinel := range map[uint16]error{
+			ldap.LDAPResultObjectClassViolation:         directory.ErrSchemaViolation,
+			ldap.LDAPResultInsufficientAccessRights:     directory.ErrInsufficientAccess,
+			ldap.LDAPResultUnavailableCriticalExtension: directory.ErrControlUnsupported,
+		} {
+			if ldap.IsErrorWithCode(err, code) {
+				return fmt.Errorf("add %s: %w (%v)", e.DN, sentinel, err)
+			}
 		}
 		return fmt.Errorf("add %s: %w", e.DN, err)
 	}

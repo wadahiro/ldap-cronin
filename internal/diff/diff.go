@@ -24,12 +24,17 @@ const (
 	OnlySource Kind = "ONLY_SOURCE" // only on the source, not on the target (not cloned yet)
 	OnlyTarget Kind = "ONLY_TARGET" // only on the target, not on the source
 	Differ     Kind = "DIFF"        // on both sides, but attribute values differ
-	// Renamed means the mapping (GUID) shows that the object at the source DN lives at a different DN on the target.
-	// It appears when another program renamed or moved it on the target.
+	// Renamed means the identifier or marker shows that the object at the source DN lives at a different DN on the
+	// target. It appears when another program renamed or moved it on the target.
 	Renamed Kind = "RENAMED"
-	// Replaced means the source DN holds a different object from the one that was cloned (recorded in the mapping),
-	// and the original object exists nowhere. It appears when the object was deleted and recreated at the same DN.
+	// Replaced means the source DN holds a different object from the one that was cloned (its identifier or
+	// marker names another object), and the original object exists nowhere. It appears when the object was deleted
+	// and recreated at the same DN with the identifier of another, or a copied marker.
 	Replaced Kind = "REPLACED"
+	// Unmarked means the entry at the source DN carries no marker. It may have been deleted and recreated, had its
+	// marker removed, or been added to the source after the clone; a marker cannot tell these apart. Its attributes
+	// are still compared.
+	Unmarked Kind = "UNMARKED"
 )
 
 type Difference struct {
@@ -61,18 +66,18 @@ type Summary struct {
 	Differences map[Kind]int
 	CaseOnly    int // number of DIFF entries that differ only in case
 
-	Tracking     bool // whether renames and moves were detected using the mapping
-	Identity     bool // whether entries were matched on the assumption that objectGUID is identical, instead of using the mapping
-	TrackedPairs int  // number of entries in the mapping
-	Implied      int  // number not reported as RENAMED because a parent OU move or rename explains them
+	// Matching says how renames and moves were detected (the Resolver's Describe); empty when they were not.
+	Matching   string
+	Implied    int // number not reported as RENAMED because a parent OU move or rename explains them
+	Duplicates int // number of objects found more than once by identifier or marker (the first was used)
 }
 
 // Options are the run-time settings of a comparison.
 type Options struct {
 	Workers int
-	// Lookup finds the target object of a source object by identifier, so renames and moves made on the target are
-	// reported as RENAMED. A mapping file (identity.Map) or, after a native import, identity.Identity. nil: off.
-	Lookup identity.Lookup
+	// Resolver finds the target object of a source object by identifier or marker, so renames and moves made on
+	// the target are reported as RENAMED. nil: off.
+	Resolver identity.Resolver
 }
 
 // Run reports each difference to emit one at a time. emit is not called from multiple goroutines.
@@ -83,16 +88,15 @@ type Options struct {
 // RENAMED if found at a different DN. This verifies changes made by another program that renamed or moved objects on the target.
 func Run(ctx context.Context, src, dst directory.Directory, job plan.Job, o Options, emit func(Difference)) (Summary, error) {
 	r := &runner{job: job, emit: emit, sum: Summary{Compared: map[string]int{}, Differences: map[Kind]int{}}}
-	if o.Lookup != nil {
-		r.sum.Identity = o.Lookup.Preserved()
-		r.sum.Tracking, r.sum.TrackedPairs = true, o.Lookup.Len()
+	if o.Resolver != nil {
+		r.sum.Matching = o.Resolver.Describe()
 	}
-	p, err := plan.Build(ctx, src, job, plan.Read{Identity: o.Lookup != nil})
+	p, err := plan.Build(ctx, src, job, plan.Read{Identity: o.Resolver != nil})
 	if err != nil {
 		return r.sum, err
 	}
 	r.p = p
-	r.loc = &locator{scheme: job.Profile.Identity, dst: dst, domain: p.Root, guids: o.Lookup,
+	r.loc = &locator{scheme: job.Profile.Identity, dst: dst, domain: p.Root, res: o.Resolver,
 		targetOf: map[string]string{}, found: plan.NewScope(), renamedBack: map[string]string{}}
 	// Containers go shallowest first: to know the expected parent DN of a child, where its parent lives on the
 	// target (whether it moved) must already be known.
@@ -113,6 +117,7 @@ func Run(ctx context.Context, src, dst directory.Directory, job plan.Job, o Opti
 		return r.sum, err
 	}
 	r.resolveRefs()
+	r.sum.Duplicates = r.loc.duplicates
 
 	for _, k := range job.Kinds {
 		err := dst.Walk(ctx, job.BaseDN, k.Filter, []string{directory.NoAttrs}, func(e directory.Entry) error {
@@ -169,9 +174,12 @@ func (r *runner) implied() {
 // An entry without a kind (a create-only ancestor) is checked only for existence, rename and move.
 // structural entries also record where they live on the target, for the expected parent of their children.
 func (r *runner) check(ctx context.Context, want directory.Entry, names []string, kind *plan.Kind, structural bool) error {
-	res, err := r.loc.locate(ctx, want, names)
+	res, err := r.loc.locate(ctx, want, names, kind == nil)
 	if err != nil {
 		return err
+	}
+	if res.unmarked {
+		r.report(Difference{Kind: Unmarked, DN: want.DN})
 	}
 	if res.replacedBy != "" {
 		if res.entry == nil { // the original object is gone and a different object sits at the same DN
