@@ -1,20 +1,6 @@
 # Generic LDAP servers (OpenLDAP, 389 Directory Server, ...)
 
-ldap-cronin clones and compares any RFC 4510 directory, not only Active Directory. Two **profiles** hold the differences:
-
-| | `ad` (Active Directory, Samba AD) | `ldap` (generic) |
-|---|---|---|
-| Detection | root DSE `supportedCapabilities` contains `1.2.840.113556.1.4.800` | everything else |
-| Users | `(&(objectCategory=person)(objectClass=user))` | `(objectClass=inetOrgPerson)` |
-| Groups | `(objectClass=group)` | `groupOfNames`, `groupOfUniqueNames` or `posixGroup` |
-| OUs | `organizationalUnit` | `organizationalUnit` |
-| System objects | excluded (`isCriticalSystemObject=TRUE`) | none (there is no such marker) |
-| Fixed password | add (disabled), `unicodePwd` modify over LDAPS, then `userAccountControl` | `userPassword` sent with the plain value in the add (the server hashes it) |
-| DN-valued attributes | schema `attributeSyntax=2.5.5.1` | subschema `attributeTypes`, syntax DN / Name and Optional UID, following `SUP` |
-| Object identity (renames) | `objectGUID` | `entryUUID` |
-| Large `member` values | `member;range=0-N` | plain read |
-| `lab` | yes (Samba lab) | yes (OpenLDAP lab, `--profile ldap`) |
-| `clone -native` | yes (Samba lab) | no (the relax control keeps `entryUUID` over LDAP) |
+ldap-cronin clones and compares any RFC 4510 directory, not only Active Directory. The `ldap` profile is chosen for every server that is not an AD; how it differs from the `ad` profile is in the [table in the README](../README.md#server-types-profiles).
 
 The profile is `auto` by default. Set `[scope] profile = "ldap"` (or `"ad"`) to override the detection. With `auto` the target is checked too, and a source and target of different types are refused.
 `ldap-cronin list-attrs -profile ldap` prints the default attributes.

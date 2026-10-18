@@ -1,0 +1,51 @@
+# Active Directory (a real AD, Samba AD)
+
+The `ad` profile clones and compares Active Directory and Samba4 AD. It is chosen when the root DSE's `supportedCapabilities` contains `1.2.840.113556.1.4.800`; how it differs from the generic profile is in the [table in the README](../README.md#server-types-profiles).
+`ldap-cronin list-attrs -profile ad` prints the default attributes (the ones Samba4 has out of the box).
+
+## Configuration
+
+```toml
+[source]
+url = "ldaps://src-ad.example.com:636"
+bind_dn = "CN=Administrator,CN=Users,DC=ad,DC=example,DC=com"
+# ca_file = "ca.pem"                # the CA of a self-signed or internal certificate
+[target]
+url = "ldaps://dst-ad.example.com:636"   # LDAPS: required to set passwords
+bind_dn = "CN=Administrator,CN=Users,DC=ad,DC=example,DC=com"
+[scope]
+base_dn = "OU=IDM,DC=ad,DC=example,DC=com"   # not the domain root: it would reach the built-in accounts
+# [mapping]
+# mode = "marker"                   # the default here: clone writes a marker of the source object
+# attribute = "adminDisplayName"    # the attribute that holds it
+```
+
+[`config.example.toml`](../config.example.toml) has every key. A source and target must both be AD; cloning between an AD and a generic server is not supported.
+
+## How it behaves
+
+- **Users are created in three steps**: add (disabled), set `unicodePwd` with a modify, then set `userAccountControl` to the source's value (without the bits the server manages). A real AD accepts `unicodePwd` only in a modify, never in the add ([KB 269190](https://learn.microsoft.com/en-us/troubleshoot/windows-server/active-directory/change-windows-active-directory-user-password)), and `userAccountControl` comes last because a disabled or never-expires flag changes the preconditions of setting the password. A re-run sets the password only for a user whose creation stopped before it (`pwdLastSet=0`), so it never rolls back a password the program under test changed.
+- **Built-in objects are never touched**: everything with `isCriticalSystemObject=TRUE` (Administrator, krbtgt, ...) is excluded, even when `base_dn` is `CN=Users`.
+- **Users** are `(&(objectCategory=person)(objectClass=user))`, which leaves computers out; **groups** are `(objectClass=group)`.
+- **Never cloned**: identifiers and server-managed attributes (`objectGUID`, `objectSid`, `sIDHistory`, `whenCreated`, `uSNChanged`, `memberOf`, `pwdLastSet`, the password hashes, ...). Listing one in `[attributes]` is an error.
+- **DN-valued attributes** are found in the source schema (`attributeSyntax=2.5.5.1`), so an attribute added with `extra_include` is handled too. `member` is always read in explicit ranges, as AD splits large groups ([operations.md](operations.md#large-data-sets)).
+- **Comparison** normalizes `userAccountControl` (server-managed bits) and `accountExpires` (`0` and `9223372036854775807` both mean "never"); see [diff.md](diff.md#what-is-compared).
+- **Rename and move detection.** AD refuses a client-set `objectGUID` over LDAP, so `clone` writes a marker of the source object into `adminDisplayName` (`ldap-cronin:<source root>:<source key>`); how `diff` uses it is in [diff.md](diff.md#how-rename-and-move-detection-works-and-its-configuration). `clone -native` keeps the `objectGUID` itself, but only into the Samba lab ([lab.md](lab.md#importing-with-the-same-objectguid-and-objectsid-clone--native-samba-only)).
+
+## When the target is a real AD
+
+- Setting a user's password (`unicodePwd`) **requires LDAPS**. Over `ldap://` the password change is rejected (Samba does the same).
+- The fixed password must satisfy the target domain's password policy (complexity and so on). Otherwise setting the password after creating the user fails, and the user stays disabled.
+- The LDAP signing policy may reject a simple bind over `ldap://`. Use LDAPS or `start_tls`.
+- For a self-signed or internal certificate, pass the CA with `ca_file`. For testing only, `insecure_skip_verify` is also available.
+- **Index the marker attribute** before the first `clone`: set bit 1 in the `searchFlags` of its `attributeSchema` entry (`CN=Admin-Display-Name,CN=Schema,CN=Configuration,...` for `adminDisplayName`). Without it `clone` warns, and every search for a moved object reads the whole naming context. The lab image does this by itself.
+- Writes are replicated to the other DCs. Run against a test domain, outside business hours; the load per user is in [operations.md](operations.md#load-on-the-target-ad-clone).
+
+## Limitations
+
+- Only users, groups and OUs are cloned. Other object classes are reachable only through custom per-kind `[scope.filters]` and `[attributes]`.
+- Not yet verified on a real AD:
+  - writing the marker with a delegated (non-admin) account;
+  - interference with the marker attribute by Exchange, Entra Connect or ADUC's "copy user";
+  - the effect of `workers` on a real AD (measured on Samba only, see [operations.md](operations.md#performance-figures-measured-with-samba4-as-the-target)).
+- `clone -native` (the same `objectGUID` and `objectSid`) works only into the Samba lab: Windows AD does not let a client choose an `objectGUID`.

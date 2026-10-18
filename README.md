@@ -15,7 +15,8 @@ The name is a pun on "clone" and "ronin", a masterless samurai: cRONIN is a **c*
 
 | File | Contents |
 |---|---|
-| [docs/generic-ldap.md](docs/generic-ldap.md) | Using a generic LDAP server (OpenLDAP and others): profiles, what differs from AD, limitations |
+| [docs/active-directory.md](docs/active-directory.md) | Active Directory and Samba AD: how users are created, preparing a real AD as the target, limitations |
+| [docs/generic-ldap.md](docs/generic-ldap.md) | Generic LDAP servers (OpenLDAP and others): passwords, preserved `entryUUID`, limitations |
 | [docs/diff.md](docs/diff.md) | `diff` output and comparison rules (every pattern), rename and move detection |
 | [docs/lab.md](docs/lab.md) | The test lab (`lab`): usage, **taking and restoring snapshots**, using the offline package |
 | [docs/operations.md](docs/operations.md) | Large data sets, load on the source and target AD, memory, performance figures |
@@ -55,14 +56,29 @@ Ctrl-C stops a run at its next LDAP operation and still finishes its cleanup (a 
 
 `[scope] profile` is `auto` by default: the source's root DSE decides between `ad` (Active Directory, Samba AD) and `ldap` (any other RFC 4510 server).
 The target must be of the same type. The profile selects the default filters and attribute lists, how a user's fixed password is set, how DN-valued attributes are discovered and which attribute identifies an object across renames (`objectGUID` or `entryUUID`).
-The rest of this README describes AD; for a generic server see [docs/generic-ldap.md](docs/generic-ldap.md).
+
+| | `ad` (Active Directory, Samba AD) | `ldap` (generic) |
+|---|---|---|
+| Detection | root DSE `supportedCapabilities` contains `1.2.840.113556.1.4.800` | everything else |
+| Users | `(&(objectCategory=person)(objectClass=user))` | `(objectClass=inetOrgPerson)` |
+| Groups | `(objectClass=group)` | `groupOfNames`, `groupOfUniqueNames` or `posixGroup` |
+| OUs | `organizationalUnit` | `organizationalUnit` |
+| System objects | excluded (`isCriticalSystemObject=TRUE`) | none (there is no such marker) |
+| Fixed password | add (disabled), `unicodePwd` modify over LDAPS, then `userAccountControl` | `userPassword` sent with the plain value in the add (the server hashes it) |
+| DN-valued attributes | schema `attributeSyntax=2.5.5.1` | subschema `attributeTypes`, syntax DN / Name and Optional UID, following `SUP` |
+| Object identity (renames) | `objectGUID` | `entryUUID` |
+| Large `member` values | `member;range=0-N` | plain read |
+| `lab` | yes (Samba lab) | yes (OpenLDAP lab, `--profile ldap`) |
+| `clone -native` | yes (Samba lab) | no (the relax control keeps `entryUUID` over LDAP) |
+
+Details per server type: [docs/active-directory.md](docs/active-directory.md) and [docs/generic-ldap.md](docs/generic-ldap.md).
 
 ## How attributes are handled
 
 - **Allow-list based.** Only the listed attributes are copied. Adjust the defaults with `extra_include` (add), `exclude` (remove) and `include.<type>` (replace) in `[attributes]`.
 - Attributes that cannot be migrated (`objectGUID`, `objectSid`, `unicodePwd`, ...) are an error if you list them.
 - **Masking**: attributes in `[mask] attributes` are replaced with a fixed string on the target, and `diff` does not compare them. Identity, unique, DN-valued and non-string attributes cannot be masked.
-- AD users are created in three steps: add (disabled), set `unicodePwd` with a modify, then set `userAccountControl` to the source value. A real AD only accepts `unicodePwd` in a modify ([KB 269190](https://learn.microsoft.com/en-us/troubleshoot/windows-server/active-directory/change-windows-active-directory-user-password)).
+- **Passwords** are never copied. Cloned users get the fixed password you enter, set when they are created and never reset by a re-run; how it is set depends on the server type (see the server docs).
 - **DN-valued attributes** (`member`, `manager`, `managedBy`, and anything you add such as `seeAlso`) are detected from the source schema, not from a fixed list.
   They are applied after all objects exist, because a reference to a missing object fails. References to objects outside the cloned scope that do not exist on the target are skipped with a warning.
 - Back links (`memberOf`, `directReports`, ...) and DN+binary / DN+string attributes are an error in the allow list.
@@ -92,13 +108,6 @@ RENAMED     source: CN=Cid,OU=Users,OU=IDM,DC=example,DC=com
 | `UNMARKED` | The object at the same DN has no marker (AD): recreated, or added to the source after the clone |
 
 Rename, move and recreation detection needs no setup: on AD, `clone` writes a marker of the source object into `adminDisplayName`; on OpenLDAP it keeps the source's `entryUUID` (and creation timestamps) with the relax control. See `[mapping]` in [docs/diff.md](docs/diff.md#how-rename-and-move-detection-works-and-its-configuration). All output patterns and comparison rules are in [docs/diff.md](docs/diff.md).
-
-## When the target is a real AD
-
-- Setting a user's password (`unicodePwd`) **requires LDAPS**. Over `ldap://` the password change is rejected (Samba does the same).
-- The fixed password must satisfy the target domain's password policy (complexity and so on). Otherwise setting the password after creating the user fails.
-- The LDAP signing policy may reject a simple bind over `ldap://`. Use LDAPS or `start_tls`.
-- For a self-signed certificate, pass the CA with `ca_file`. For testing only, `insecure_skip_verify` is also available.
 
 ## The test lab and snapshots (`lab`)
 
