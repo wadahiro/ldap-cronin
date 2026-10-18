@@ -172,6 +172,7 @@ About 7 seconds each to take and to restore with about 44 MB of data (Samba's in
 ### Rename detection after a restore
 
 `clone` writes a marker of the source object into `adminDisplayName` of every object it creates ([docs/diff.md](diff.md#how-rename-and-move-detection-works-and-its-configuration)). The markers are part of the data, so **a restore, into this lab or another instance on another port, keeps `diff`'s rename and move detection working** with nothing to carry beside the snapshot.
+With `[mapping] mode = "preserve"` (the OpenLDAP lab) the identifiers are the source's, which is part of the data too. With `mode = "file"` the local file is a ledger of every object `clone` created from each source object, so it serves every snapshot and instance as it is.
 
 The lab image indexes `adminDisplayName` when the domain is created, before any data exists (Samba does not index values written before the index existed until a reindex), and on every start of an older lab. If you configure another marker attribute (`[mapping] attribute`), index it before the first `clone`: set bit 1 in the `searchFlags` of its `attributeSchema` entry over LDAP; for a lab that already holds markers in it, run `samba-tool dbcheck --reindex` in the container once afterwards.
 

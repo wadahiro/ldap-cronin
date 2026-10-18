@@ -1,14 +1,19 @@
-// The mapping file keeps the source and target identifiers of each cloned object in a local file.
+// The mapping file keeps the source and target identifiers of each cloned object in a local file
+// ([mapping] mode = "file", for servers on which clone can neither keep the identifier nor write a marker).
 //
-// Nothing is written to the target objects (borrowing an attribute would collide with how the target uses its attributes).
 // A DN change on the target does not change the identifier, so with the mapping diff can detect that
 // "the object at this DN on the source lives at a different DN on the target".
 //
-// The table is a file of fixed-length records sorted by source key. Reading does a binary search
-// on the file instead of loading everything, so memory stays constant regardless of the entry count. clone appends new mappings to a separate file and,
-// on exit, merges them with the existing table via an external sort (sort per chunk, then merge) and rewrites it.
+// The file is a ledger, not a state: it holds every (source key, target key) pair clone ever recorded, and a source
+// key may have several target keys. A target can be rewound (a lab restore, or another instance restored from the
+// same snapshot) to the keys of an earlier clone; servers never reuse an identifier, so a key once recorded for a
+// source object can only reappear as that object. Restores, sibling instances and recreated targets therefore need
+// nothing, and one file serves every target cloned from one source.
 //
-// A stale mapping (e.g. the target was rebuilt) only means lookups miss; it never causes a false detection.
+// The table is a file of fixed-length records, one pair each, sorted by (source, target). Reading does a binary
+// search on the file instead of loading everything, so memory stays constant regardless of the entry count. clone
+// appends new pairs to a separate file and, on exit, merges them with the existing table via an external sort (sort
+// per chunk, then merge) and rewrites it. A lock file keeps two clones from rewriting the table at once.
 package identity
 
 import (
@@ -19,54 +24,61 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 const (
 	guidHexLen = 32               // hex notation of a 16-byte key
 	recordLen  = guidHexLen*2 + 2 // "source\ttarget\n"; fixed length lets us compute a record position
 	deltaSufix = ".delta"
+	lockSuffix = ".lock"
 )
 
 // chunkRecords is the number of records held in memory at once by the external sort. Tests make it small.
 var chunkRecords = 200_000
 
 // formatVersion is written into every header. A file of another version is refused rather than misread.
-const formatVersion = 4
+const formatVersion = 5
 
 // headerPrefix starts every header line, of this version and of older ones, so an old file is recognized as such.
 const headerPrefix = "# ldap-cronin "
 
-// Header says which source/target pair the table belongs to. It is checked so a table for another pair is never read.
+// Header says which source the table belongs to. It is checked so a table of another source is never read.
 //
-// The pair is identified by the keys of the naming-context roots (RootKey), not by connection URLs: the URL changes
-// when the lab is rebuilt or started from a snapshot on another port, while the data, and the mapping, stay valid.
-// The scheme is recorded too, so keys recorded as objectGUID are never looked up as entryUUID.
+// The source is identified by the key of its naming-context root (RootKey), not by its URL. The target is not
+// recorded: keys are globally unique, so pairs of another target (or base_dn) simply never match, and one file
+// serves every target cloned from the source. The scheme is recorded too, so keys recorded as objectGUID are never
+// looked up as entryUUID.
 type Header struct {
 	Scheme     string // Scheme.Attr()
 	SourceRoot Key
-	TargetRoot Key
-	BaseDN     string
 }
 
 func (h Header) line() string {
-	return fmt.Sprintf("%smapping v%d scheme=%s source-root=%s target-root=%s base_dn=%s",
-		headerPrefix, formatVersion, h.Scheme, h.SourceRoot, h.TargetRoot, h.BaseDN)
+	return fmt.Sprintf("%smapping v%d scheme=%s source-root=%s", headerPrefix, formatVersion, h.Scheme, h.SourceRoot)
 }
 
-// ErrHeaderMismatch means the table belongs to a different source/target pair.
-var ErrHeaderMismatch = errors.New("mapping file belongs to a different source/target/base_dn")
+// ErrHeaderMismatch means the table belongs to another source (or scheme).
+var ErrHeaderMismatch = errors.New("mapping file belongs to another source")
+
+// ErrInUse means another clone holds the file's lock.
+var ErrInUse = errors.New("mapping file is in use by another clone")
 
 // ErrOldFormat means the file was written by another version of the tool. There is no converter: clone again.
 var ErrOldFormat = errors.New("mapping file was written in another format; run clone again to record a new one")
 
 type record struct{ key, val string }
 
+func (r record) less(o record) bool { return r.key < o.key || r.key == o.key && r.val < o.val }
+
 type Map struct {
-	path string
-	hdr  Header
+	path   string
+	hdr    Header
+	locked bool // Open took the lock file; Close removes it
 
 	main    *os.File // sorted table; nil if it does not exist yet
 	dataOff int64
@@ -89,25 +101,69 @@ func Load(path string, h Header) (*Map, error) {
 	return m, nil
 }
 
-// Open is for clone. It opens the existing table so new mappings can be appended.
-// If a table for a different source/target pair exists, it returns ErrHeaderMismatch rather than overwrite it.
-// If a previous clone ended midway and left an append file, that is merged into the table first.
+// Open is for clone. It takes the lock file and opens the existing table so new pairs can be appended.
+// If a table of another source exists, it returns ErrHeaderMismatch rather than overwrite it; if another clone holds
+// the lock, ErrInUse. If a previous clone ended midway and left an append file, that is merged into the table first.
 func Open(path string, h Header) (*Map, error) {
 	m := &Map{path: path, hdr: h}
-	if err := m.openMain(); err != nil {
+	if err := m.lock(); err != nil {
 		return nil, err
 	}
-	if st, err := os.Stat(path + deltaSufix); err == nil && st.Size() > 0 {
+	m.locked = true
+	if err := m.open(); err != nil {
+		if m.main != nil {
+			m.main.Close()
+		}
+		m.unlock()
+		return nil, err
+	}
+	return m, nil
+}
+
+func (m *Map) open() error {
+	if err := m.openMain(); err != nil {
+		return err
+	}
+	if st, err := os.Stat(m.path + deltaSufix); err == nil && st.Size() > 0 {
 		if err := m.compact(); err != nil {
-			return nil, fmt.Errorf("merge leftover %s: %w", path+deltaSufix, err)
+			return fmt.Errorf("merge leftover %s: %w", m.path+deltaSufix, err)
 		}
 	}
-	f, err := os.OpenFile(path+deltaSufix, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	f, err := os.OpenFile(m.path+deltaSufix, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	m.delta, m.deltaOut = f, bufio.NewWriter(f)
-	return m, nil
+	return nil
+}
+
+// lock creates the lock file exclusively (O_EXCL works on every platform). It records who holds it, so a lock left
+// by a killed clone can be told from a running one.
+func (m *Map) lock() error {
+	f, err := os.OpenFile(m.path+lockSuffix, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if errors.Is(err, os.ErrExist) {
+		held, _ := os.ReadFile(m.path + lockSuffix)
+		return fmt.Errorf("%w (%s: %s); if no clone is running, delete it", ErrInUse, m.path+lockSuffix, strings.TrimSpace(string(held)))
+	}
+	if err != nil {
+		return err
+	}
+	host, _ := os.Hostname()
+	_, err = fmt.Fprintf(f, "pid %d on %s since %s\n", os.Getpid(), host, time.Now().Format(time.RFC3339))
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		os.Remove(m.path + lockSuffix)
+	}
+	return err
+}
+
+func (m *Map) unlock() {
+	if m.locked {
+		os.Remove(m.path + lockSuffix)
+		m.locked = false
+	}
 }
 
 // openMain opens the sorted table and checks its header and size. If it does not exist, main stays nil.
@@ -152,19 +208,25 @@ func (m *Map) openMain() error {
 	return nil
 }
 
-// Target returns the target key for a source key by binary search on the file. It is safe to call from multiple goroutines.
-func (m *Map) Target(source Key) (Key, bool) {
-	t, ok := m.target(source.String())
-	if !ok {
-		return Key{}, false
+// Targets returns every target key recorded for a source key, by binary search on the file. It is safe to call from
+// multiple goroutines.
+func (m *Map) Targets(source Key) []Key {
+	var keys []Key
+	for _, t := range m.targets(source.String()) {
+		if k, err := ParseHex(t); err == nil {
+			keys = append(keys, k)
+		}
 	}
-	k, err := ParseHex(t)
-	return k, err == nil
+	return keys
 }
 
-func (m *Map) target(source string) (string, bool) {
+// scanRecords is how many records are read at once after the binary search: a source with one target key (nearly
+// every one) is answered by one read that also shows the next record is another source's.
+const scanRecords = 2
+
+func (m *Map) targets(source string) []string {
 	if m.main == nil || len(source) != guidHexLen {
-		return "", false
+		return nil
 	}
 	buf := make([]byte, recordLen)
 	i := sort.Search(int(m.count), func(i int) bool {
@@ -173,28 +235,34 @@ func (m *Map) target(source string) (string, bool) {
 		}
 		return string(buf[:guidHexLen]) >= source
 	})
-	if i >= int(m.count) {
-		return "", false
+	var found []string
+	buf = make([]byte, recordLen*scanRecords)
+	for ; i < int(m.count); i += scanRecords {
+		n := min(scanRecords, int(m.count)-i)
+		if _, err := m.main.ReadAt(buf[:n*recordLen], m.dataOff+int64(i)*recordLen); err != nil {
+			return found
+		}
+		for r := 0; r < n; r++ {
+			rec := buf[r*recordLen : (r+1)*recordLen]
+			if string(rec[:guidHexLen]) != source {
+				return found
+			}
+			found = append(found, string(rec[guidHexLen+1:guidHexLen*2+1]))
+		}
 	}
-	if _, err := m.main.ReadAt(buf, m.dataOff+int64(i)*recordLen); err != nil {
-		return "", false
-	}
-	if string(buf[:guidHexLen]) != source {
-		return "", false
-	}
-	return string(buf[guidHexLen+1 : guidHexLen*2+1]), true
+	return found
 }
 
-// Len is the number of records in the sorted table (entries appended during clone are not counted until it finishes).
+// Len is the number of pairs in the sorted table (pairs appended during clone are not counted until it finishes).
 func (m *Map) Len() int { return int(m.count) }
 
-// Record appends only a new or changed mapping, so re-runs do not make the table grow. A zero key on either side
-// (an object without an identifier) is not recorded.
+// Record appends only a new pair, so re-runs do not make the table grow; a pair is never replaced. A zero key on
+// either side (an object without an identifier) is not recorded.
 func (m *Map) Record(source, target Key) error {
 	if source.IsZero() || target.IsZero() {
 		return nil
 	}
-	if cur, ok := m.Target(source); ok && cur == target {
+	if slices.Contains(m.Targets(source), target) {
 		return nil
 	}
 	m.mu.Lock()
@@ -203,7 +271,8 @@ func (m *Map) Record(source, target Key) error {
 	return err
 }
 
-// Close sorts the appended entries, merges them into the table and rewrites it. For a table opened read-only it only closes.
+// Close sorts the appended pairs, merges them into the table, rewrites it and releases the lock. For a table opened
+// read-only it only closes.
 func (m *Map) Close() error {
 	if m.delta == nil {
 		if m.main != nil {
@@ -211,22 +280,25 @@ func (m *Map) Close() error {
 		}
 		return nil
 	}
-	if err := m.deltaOut.Flush(); err != nil {
-		return err
+	defer m.unlock()
+	err := m.deltaOut.Flush()
+	if cerr := m.delta.Close(); err == nil {
+		err = cerr
 	}
-	if err := m.delta.Close(); err != nil {
-		return err
-	}
-	if err := m.compact(); err != nil {
-		return err
+	if err == nil {
+		// On failure (on Windows the rename fails while a diff holds the table open) the pairs stay in the append
+		// file, and the next Open merges them.
+		err = m.compact()
 	}
 	if m.main != nil {
-		return m.main.Close()
+		if cerr := m.main.Close(); err == nil {
+			err = cerr
+		}
 	}
-	return nil
+	return err
 }
 
-// compact externally sorts the append file, merges it with the existing table and rewrites it (for the same key the newer one wins).
+// compact externally sorts the append file, merges it with the existing table and rewrites it (identical pairs once).
 func (m *Map) compact() error {
 	runs, err := m.sortDeltaIntoRuns()
 	if err != nil {
@@ -288,6 +360,7 @@ func (m *Map) compact() error {
 		m.main = nil
 	}
 	if err := os.Rename(tmp, m.path); err != nil {
+		os.Remove(tmp)
 		return err
 	}
 	os.Remove(m.path + deltaSufix)
@@ -295,7 +368,7 @@ func (m *Map) compact() error {
 }
 
 // sortDeltaIntoRuns sorts the append file chunkRecords records at a time and writes each chunk to a sorted temporary file.
-// The returned order is creation order; later runs are newer.
+// Within a chunk identical pairs are written once.
 func (m *Map) sortDeltaIntoRuns() ([]string, error) {
 	f, err := os.Open(m.path + deltaSufix)
 	if errors.Is(err, os.ErrNotExist) {
@@ -329,7 +402,7 @@ func (m *Map) sortDeltaIntoRuns() ([]string, error) {
 		if len(chunk) == 0 {
 			return runs, nil
 		}
-		sort.SliceStable(chunk, func(i, j int) bool { return chunk[i].key < chunk[j].key })
+		sort.Slice(chunk, func(i, j int) bool { return chunk[i].less(chunk[j]) })
 		run, err := os.CreateTemp(filepath.Dir(m.path), filepath.Base(m.path)+".run*")
 		if err != nil {
 			return fail(err)
@@ -337,8 +410,8 @@ func (m *Map) sortDeltaIntoRuns() ([]string, error) {
 		runs = append(runs, run.Name())
 		w := bufio.NewWriter(run)
 		for i, rec := range chunk {
-			if i+1 < len(chunk) && chunk[i+1].key == rec.key {
-				continue // for the same key keep only the later (newer) append
+			if i > 0 && chunk[i-1] == rec {
+				continue
 			}
 			fmt.Fprintf(w, "%s\t%s\n", rec.key, rec.val)
 		}
@@ -378,20 +451,15 @@ func (r *recordReader) next() (record, bool, error) {
 
 type item struct {
 	rec record
-	src int // larger means newer
+	src int
 }
 
 type mergeHeap []item
 
-func (h mergeHeap) Len() int { return len(h) }
-func (h mergeHeap) Less(i, j int) bool {
-	if h[i].rec.key != h[j].rec.key {
-		return h[i].rec.key < h[j].rec.key
-	}
-	return h[i].src > h[j].src
-}
-func (h mergeHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
-func (h *mergeHeap) Push(x any)   { *h = append(*h, x.(item)) }
+func (h mergeHeap) Len() int           { return len(h) }
+func (h mergeHeap) Less(i, j int) bool { return h[i].rec.less(h[j].rec) }
+func (h mergeHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *mergeHeap) Push(x any)        { *h = append(*h, x.(item)) }
 func (h *mergeHeap) Pop() any {
 	old := *h
 	it := old[len(old)-1]
@@ -399,7 +467,7 @@ func (h *mergeHeap) Pop() any {
 	return it
 }
 
-// merge merges several sorted inputs into one in key order. For the same key, the one with the larger src (newer) is kept.
+// merge merges several sorted inputs into one in (source, target) order, writing identical pairs once.
 func merge(sources []*recordReader, w io.Writer) error {
 	h := &mergeHeap{}
 	push := func(i int) error {
@@ -417,20 +485,20 @@ func merge(sources []*recordReader, w io.Writer) error {
 			return err
 		}
 	}
-	last := ""
+	var last record
 	wrote := false
 	for h.Len() > 0 {
 		it := heap.Pop(h).(item)
 		if err := push(it.src); err != nil {
 			return err
 		}
-		if wrote && it.rec.key == last {
-			continue // the newer one was written first, so drop the older entry with the same key
+		if wrote && it.rec == last {
+			continue
 		}
 		if _, err := fmt.Fprintf(w, "%s\t%s\n", it.rec.key, it.rec.val); err != nil {
 			return err
 		}
-		last, wrote = it.rec.key, true
+		last, wrote = it.rec, true
 	}
 	return nil
 }

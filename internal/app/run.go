@@ -64,7 +64,7 @@ func (s *Session) Clone(ctx context.Context, dryRun bool, out, log io.Writer) (*
 			}
 		}
 		if mode == config.MappingFile {
-			header, err := s.mappingHeader(ctx, dst)
+			header, err := s.mappingHeader(ctx)
 			if err != nil {
 				return nil, err
 			}
@@ -166,8 +166,9 @@ func (s *Session) marker(ctx context.Context, attr string) (identity.Marker, err
 	return identity.NewMarker(attr, key), nil
 }
 
-// mappingHeader identifies the source/target pair by the identifiers of their naming-context roots.
-func (s *Session) mappingHeader(ctx context.Context, dst directory.Directory) (identity.Header, error) {
+// mappingHeader identifies the source by the identifier of its naming-context root. The target is not part of it: one
+// mapping file serves every target cloned from the source.
+func (s *Session) mappingHeader(ctx context.Context) (identity.Header, error) {
 	root, err := plan.Root(ctx, s.Src, s.Job)
 	if err != nil {
 		return identity.Header{}, err
@@ -177,23 +178,19 @@ func (s *Session) mappingHeader(ctx context.Context, dst directory.Directory) (i
 	if err != nil {
 		return identity.Header{}, fmt.Errorf("source: %w", err)
 	}
-	dstKey, err := identity.RootKey(ctx, dst, root, scheme)
-	if err != nil {
-		return identity.Header{}, fmt.Errorf("target: %w", err)
-	}
-	return identity.Header{Scheme: scheme.Attr(), SourceRoot: srcKey, TargetRoot: dstKey, BaseDN: s.Job.BaseDN}, nil
+	return identity.Header{Scheme: scheme.Attr(), SourceRoot: srcKey}, nil
 }
 
-// loadMapping opens the mapping for diff. If it is not configured, missing, of another format or of another pair,
+// loadMapping opens the mapping for diff. If it is not configured, missing, of another format or of another source,
 // diff runs without rename and move detection and the reason goes to Warn.
 func (s *Session) loadMapping(ctx context.Context, dst directory.Directory) (*identity.Map, error) {
 	file := s.Cfg.Mapping.File
 	if file == "" {
 		return nil, nil
 	}
-	header, err := s.mappingHeader(ctx, dst)
+	header, err := s.mappingHeader(ctx)
 	if err != nil {
-		fmt.Fprintf(s.Warn, "note: cannot identify the directories, so rename and move detection is not used: %v\n", err)
+		fmt.Fprintf(s.Warn, "note: cannot identify the source, so rename and move detection is not used: %v\n", err)
 		return nil, nil
 	}
 	m, err := identity.Load(file, header)
@@ -207,7 +204,7 @@ func (s *Session) loadMapping(ctx context.Context, dst directory.Directory) (*id
 		fmt.Fprintf(s.Warn, "note: %v; rename/move detection is off\n", err)
 		return nil, nil
 	case errors.Is(err, identity.ErrHeaderMismatch):
-		fmt.Fprintf(s.Warn, "note: %s belongs to a different source/target or base_dn; rename/move detection is off\n", file)
+		fmt.Fprintf(s.Warn, "note: %s belongs to another source; rename/move detection is off\n", file)
 		return nil, nil
 	}
 	return nil, err

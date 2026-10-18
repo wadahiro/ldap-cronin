@@ -362,3 +362,111 @@ func TestLabSnapshotCarriesTheMarkersToAnotherInstanceOnAnotherPort(t *testing.T
 		t.Fatalf("want exactly one RENAMED (Alice), got:\n%s", b.String())
 	}
 }
+
+// [mapping] mode = "file" with a lab: clone -> snapshot -> a user deleted, clone again (recreated with a new
+// objectGUID) -> restore (the earlier objectGUID is back) -> diff finds nothing, then a rename. The file is a ledger
+// of every pair, so the restore needs nothing beside the snapshot.
+func TestLabRestoreWithTheMappingFileAfterAnotherClone(t *testing.T) {
+	image := os.Getenv("E2E_LAB_IMAGE")
+	if image == "" {
+		t.Skip("E2E_LAB_IMAGE is not set (tests/e2e.sh sets it)")
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker is not available")
+	}
+	ctx := context.Background()
+	host := env("E2E_LAB_HOST", "localhost")
+	const realm, password = "lab-e2e.test", "Adm1n-Passw0rd!"
+	base := lab.BaseDN(realm)
+	admin := "CN=Administrator,CN=Users," + base
+	cloneBase := "OU=IDM," + base
+	dir := t.TempDir()
+	var out, errw bytes.Buffer
+	l := &lab.Lab{
+		D: lab.ExecDocker{}, Out: &out, Err: &errw, Prompt: noPrompt{}, Version: "e2e",
+		Prefix: fmt.Sprintf("labfile%d", time.Now().UnixNano()%1_000_000),
+		Dirs:   lab.Dirs{State: dir, Snapshots: dir + "/snapshots"}, Sleep: time.Sleep, Now: time.Now,
+		Getenv:   func(string) string { return "" },
+		FreePort: func() (int, error) { return freePort(t), nil },
+	}
+	t.Cleanup(func() { _ = l.Reset(context.Background(), lab.ResetOptions{Yes: true, Snapshots: true}) })
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("%v\n%s", err, errw.String())
+		}
+	}
+	ldaps, srcLDAPS := freePort(t), freePort(t)
+	must(l.Up(ctx, lab.UpOptions{
+		Image: image, WithSource: true, SourceLDAP: freePort(t), SourceLDAPS: srcLDAPS,
+		Flags: lab.Settings{Domain: realm, AdminPassword: password, LDAPPort: freePort(t), LDAPSPort: ldaps},
+	}))
+	dial := func(port int) *ldapdir.Client {
+		c, err := ldapdir.Dial(ldapdir.ConnConfig{URL: fmt.Sprintf("ldaps://%s:%d", host, port), BindDN: admin, Password: password, InsecureSkipVerify: true}, 4)
+		must(err)
+		t.Cleanup(c.Close)
+		return c
+	}
+	conn := func() *ldap.Conn {
+		c, err := ldap.DialURL(fmt.Sprintf("ldaps://%s:%d", host, ldaps), ldap.DialWithTLSConfig(&tls.Config{InsecureSkipVerify: true}))
+		must(err)
+		t.Cleanup(func() { c.Close() })
+		must(c.Bind(admin, password))
+		return c
+	}
+	src := dial(srcLDAPS)
+	opt := planOptionsFor(t, cloneBase)
+	root, err := identity.RootKey(ctx, src, base, identity.ObjectGUID)
+	must(err)
+	header := identity.Header{Scheme: identity.ObjectGUID.Attr(), SourceRoot: root}
+	path := dir + "/mapping"
+	cloneWithFile := func() {
+		t.Helper()
+		target := dial(ldaps)
+		defer target.Close()
+		m, err := identity.Open(path, header)
+		must(err)
+		_, err = clone.Run(ctx, src, target, opt, clone.Options{UserPassword: "Fixed-Passw0rd!", Workers: 4, Mapping: m}, &bytes.Buffer{})
+		if cerr := m.Close(); err == nil {
+			err = cerr
+		}
+		must(err)
+	}
+	diffWithFile := func() []diff.Difference {
+		t.Helper()
+		target := dial(ldaps)
+		defer target.Close()
+		m, err := identity.Load(path, header)
+		must(err)
+		defer m.Close()
+		var diffs []diff.Difference
+		_, err = diff.Run(ctx, src, target, opt, diff.Options{Workers: 4, Resolver: identity.ByMap(m, identity.ObjectGUID)}, func(d diff.Difference) { diffs = append(diffs, d) })
+		must(err)
+		return diffs
+	}
+	show := func(diffs []diff.Difference) string {
+		var b bytes.Buffer
+		for _, d := range diffs {
+			diff.Format(&b, d, 10)
+		}
+		return b.String()
+	}
+
+	alice := "CN=Alice Admin,OU=Tokyo,OU=Users," + cloneBase
+	cloneWithFile()
+	_, err = l.Snapshot(ctx, lab.SnapshotOptions{Name: "cloned"})
+	must(err)
+	must(conn().Del(ldap.NewDelRequest(alice, nil)))
+	cloneWithFile() // alice is created again, with a new objectGUID
+	_, err = l.Restore(ctx, "cloned")
+	must(err)
+	if diffs := diffWithFile(); len(diffs) != 0 {
+		t.Fatalf("the restored clone must have no differences:\n%s", show(diffs))
+	}
+
+	must(conn().ModifyDN(ldap.NewModifyDNRequest(alice, "CN=Alice Smith", true, "")))
+	diffs := diffWithFile()
+	if len(diffs) != 1 || diffs[0].Kind != diff.Renamed || !strings.EqualFold(diffs[0].TargetDN, "CN=Alice Smith,OU=Tokyo,OU=Users,"+cloneBase) {
+		t.Fatalf("want exactly one RENAMED (Alice), got:\n%s", show(diffs))
+	}
+}

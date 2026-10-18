@@ -201,10 +201,10 @@ The summary shows `rename/move check: on (objectGUID preserved ...)`.
 
 ### 6. When matching is off
 
-With `[mapping] mode = "off"`, or `mode = "file"` with a missing file or one of another source or target, `RENAMED` / `REPLACED` / `UNMARKED` are not reported.
+With `[mapping] mode = "off"`, or `mode = "file"` with a missing file or one of another source, `RENAMED` / `REPLACED` / `UNMARKED` are not reported.
 A renamed or moved object looks like two entries: `ONLY_SOURCE` (the old DN) and `ONLY_TARGET` (the new DN).
 The summary says `rename/move check: on / off` (with a mapping file that cannot be used, the reason goes to standard error).
-Markers of another source and a stale mapping (target recreated, identifiers changed) match nothing, so **no false detections are produced**.
+Markers of another source and mapping pairs of another target (a recreated lab) match nothing, so **no false detections are produced**.
 
 ## Quick reference: what happened on the target -> diff output
 
@@ -295,9 +295,11 @@ AD rewrites references to a renamed or moved object (`member`, `manager`, `manag
 - Not yet verified on a real AD: writing it with a delegated (non-admin) account, and interference by Exchange, Entra Connect or ADUC's "copy user".
 
 **file.**
-- **The mapping file** consists of **fixed-length records** (66 bytes each) sorted by source identifier. `diff` **binary-searches the file** instead of loading it (constant memory; about 20 reads for a million entries), and only for entries whose DN was not found on the target.
-- `clone` appends new pairs to a separate file and, at the end, rewrites the file after an external sort. The pairs from a `clone` that was interrupted are picked up by the next `clone`.
-- The header records the format version, the identifier attribute and **the identifiers of the source and target naming-context roots** (plus `base_dn`), not the URL; a different directory (a recreated target) is rejected, detection is off, and the reason goes to standard error.
-- `clone` reads the target identifier once per newly created object (the response to an add does not contain it). Only `clone` records the mapping; `-dry-run` does not. Lab snapshots do not include it.
+- **The mapping file is a ledger**: it holds every pair of identifiers `clone` ever recorded, and a source object cloned again (because the program under test deleted it, or into another target) gets a second pair instead of replacing the first. A target object is the source's when its identifier is any recorded one. Identifiers are never reused, so this is exact: a restore, or another instance restored from the same snapshot, brings back an identifier recorded earlier, while an object recreated by the program under test has one never recorded and is still `REPLACED`. **Restores, other instances and a recreated lab need nothing**; one file serves every target cloned from one source.
+- It consists of **fixed-length records** (66 bytes, one pair each) sorted by source then target identifier. `diff` **binary-searches the file** instead of loading it (constant memory; about 20 reads for a million entries), so an object with one pair costs one lookup; each further pair is the next record.
+- `clone` appends new pairs to a separate file and, at the end, rewrites the file after an external sort. A pair already recorded is not added again, so re-runs do not grow the file. The pairs from a `clone` that was interrupted are picked up by the next `clone`.
+- **One `clone` at a time**: `clone` holds `<file>.lock` while it runs, and a second one (into another instance) stops with the holder's PID. A lock left by a killed process is deleted by hand. `diff` only reads and takes no lock.
+- The header records the format version, the identifier attribute and **the identifier of the source's naming-context root**, not the URL; a file of another source is rejected, detection is off, and the reason goes to standard error.
+- `clone` reads the target identifier once per newly created object (the response to an add does not contain it). Only `clone` records the mapping; `-dry-run` does not. A moved object cloned more than once is searched for with one OR filter.
 
 - **Re-running clone does not follow renames on the source side** (it only adds, and does not handle deletions). This feature exists so that `diff` can verify changes made on the target.

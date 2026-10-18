@@ -3,6 +3,7 @@ package identity
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/wadahiro/ldap-cronin/internal/directory"
@@ -118,8 +119,9 @@ func (r byMarker) Filter(source Key) (string, bool) { return r.m.Filter(source),
 
 func (r byMarker) Describe() string { return "markers in " + r.m.Attr }
 
-// ByMap matches objects through a mapping file. A source object the file does not know (added after the clone) is
-// trusted at its DN, as is a target entry without an identifier.
+// ByMap matches objects through a mapping file: a target object is the source's when its key is any of the ones
+// recorded for it (a restore or another instance holds an earlier clone's). A source object the file does not know
+// (added after the clone) is trusted at its DN, as is a target entry without an identifier.
 func ByMap(m *Map, s Scheme) Resolver { return byMap{m, s} }
 
 type byMap struct {
@@ -130,23 +132,33 @@ type byMap struct {
 func (r byMap) Attrs() []string { return []string{r.s.Attr()} }
 
 func (r byMap) Same(source Key, e directory.Entry) (bool, bool, error) {
-	target, mapped := r.m.Target(source)
-	if !mapped {
+	targets := r.m.Targets(source)
+	if len(targets) == 0 {
 		return true, true, nil
 	}
 	k, err := Of(r.s, e)
 	if err != nil {
 		return false, false, fmt.Errorf("%s on the target: %w", e.DN, err)
 	}
-	return k.IsZero() || k == target, true, nil
+	return k.IsZero() || slices.Contains(targets, k), true, nil
 }
 
+// Filter finds any target object recorded for the source: one filter, or an OR of them when it was cloned again.
 func (r byMap) Filter(source Key) (string, bool) {
-	target, mapped := r.m.Target(source)
-	if !mapped {
+	targets := r.m.Targets(source)
+	if len(targets) == 0 {
 		return "", false
 	}
-	return r.s.Filter(target), true
+	if len(targets) == 1 {
+		return r.s.Filter(targets[0]), true
+	}
+	var b strings.Builder
+	b.WriteString("(|")
+	for _, k := range targets {
+		b.WriteString(r.s.Filter(k))
+	}
+	b.WriteString(")")
+	return b.String(), true
 }
 
 func (r byMap) Describe() string {

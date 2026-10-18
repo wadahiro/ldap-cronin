@@ -28,7 +28,10 @@ type Dir struct {
 	Relax string
 	// RelaxDenied refuses the Relax control for lack of rights (OpenLDAP without manage access).
 	RelaxDenied bool
-	nextGUID    uint64
+	// IDPrefix is the first byte of the identifiers this fake assigns, so two fakes standing for two servers never
+	// hand out the same one (real identifiers are globally unique).
+	IDPrefix byte
+	nextGUID uint64
 }
 
 // Operational are the attributes an Add may set only with the Relax control.
@@ -54,6 +57,7 @@ func (d *Dir) assignGUID(attrs map[string][]string) {
 		for i := 0; i < 8; i++ {
 			b[15-i] = byte(d.nextGUID >> (8 * i))
 		}
+		b[0] = d.IDPrefix
 	}
 	for n := range attrs {
 		if strings.EqualFold(n, "objectGUID") || strings.EqualFold(n, "entryUUID") {
@@ -105,6 +109,28 @@ func (d *Dir) Delete(dnStr string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	delete(d.Entries, dn.Normalize(dnStr))
+}
+
+// Snapshot copies the entries, like a lab snapshot.
+func (d *Dir) Snapshot() map[string]*directory.Entry {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := make(map[string]*directory.Entry, len(d.Entries))
+	for k, e := range d.Entries {
+		out[k] = &directory.Entry{DN: e.DN, Attrs: clone(e.Attrs)}
+	}
+	return out
+}
+
+// Restore puts back the entries of a Snapshot. Identifiers assigned since are never handed out again, as on a real
+// server, whose identifiers are unique whatever its data was rewound to.
+func (d *Dir) Restore(entries map[string]*directory.Entry) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.Entries = make(map[string]*directory.Entry, len(entries))
+	for k, e := range entries {
+		d.Entries[k] = &directory.Entry{DN: e.DN, Attrs: clone(e.Attrs)}
+	}
 }
 
 func (d *Dir) Lookup(dnStr string) *directory.Entry {
@@ -278,6 +304,14 @@ func matches(e directory.Entry, filter string) bool {
 	classes := strings.ToLower(strings.Join(e.Values("objectClass"), ","))
 	lower := strings.ToLower(filter)
 	switch {
+	case strings.HasPrefix(filter, "(|(") && !strings.Contains(lower, "objectclass=") && !strings.Contains(lower, "objectcategory="):
+		// An OR of equality filters, as a mapping file builds for an object cloned more than once.
+		for _, f := range strings.SplitAfter(strings.TrimSuffix(strings.TrimPrefix(filter, "(|"), ")"), ")") {
+			if f != "" && equalityMatches(e, f) {
+				return true
+			}
+		}
+		return false
 	case strings.Count(filter, "(") == 1 && !strings.HasPrefix(lower, "(objectclass=") && !strings.HasPrefix(lower, "(objectcategory="):
 		return equalityMatches(e, filter)
 	case strings.Contains(filter, "attributeSchema"):

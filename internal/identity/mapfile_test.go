@@ -8,6 +8,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -15,7 +16,7 @@ import (
 	"github.com/wadahiro/ldap-cronin/internal/fakedir"
 )
 
-var hdr = Header{Scheme: "objectGUID", SourceRoot: g(0xaa), TargetRoot: g(0xbb), BaseDN: "OU=IDM,DC=x"}
+var hdr = Header{Scheme: "objectGUID", SourceRoot: g(0xaa)}
 
 func g(n int) Key {
 	k, err := ParseHex(fmt.Sprintf("%032x", n))
@@ -41,10 +42,10 @@ func TestRecordPersistsAcrossRuns(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer loaded.Close()
-	if got, ok := loaded.Target(g(1)); !ok || got != g(101) || loaded.Len() != 2 {
-		t.Fatalf("got %s %v len=%d", got, ok, loaded.Len())
+	if got := loaded.Targets(g(1)); !slices.Equal(got, []Key{g(101)}) || loaded.Len() != 2 {
+		t.Fatalf("got %s len=%d", got, loaded.Len())
 	}
-	if _, ok := loaded.Target(g(3)); ok {
+	if got := loaded.Targets(g(3)); got != nil {
 		t.Fatal("unknown GUID must not be found")
 	}
 }
@@ -86,18 +87,53 @@ func TestRerunDoesNotGrowTheFile(t *testing.T) {
 	}
 }
 
-func TestChangedPairReplacesTheOldOne(t *testing.T) {
+// The file is a ledger: a source cloned again (the program recreated it, or another target) keeps every target key,
+// since a restore can bring an earlier one back.
+func TestRecloneKeepsEveryPair(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "map.tsv")
 	m, _ := Open(path, hdr)
 	m.Record(g(1), g(101))
+	m.Record(g(2), g(102))
 	m.Close()
 	m, _ = Open(path, hdr)
-	m.Record(g(1), g(999)) // the target was rebuilt and the GUID changed
+	m.Record(g(1), g(999))
+	m.Record(g(1), g(101)) // already recorded
 	m.Close()
 	loaded, _ := Load(path, hdr)
 	defer loaded.Close()
-	if got, _ := loaded.Target(g(1)); got != g(999) || loaded.Len() != 1 {
+	if got := loaded.Targets(g(1)); !slices.Equal(got, []Key{g(101), g(999)}) || loaded.Len() != 3 {
 		t.Fatalf("got %s len=%d", got, loaded.Len())
+	}
+	if got := loaded.Targets(g(2)); !slices.Equal(got, []Key{g(102)}) {
+		t.Fatalf("a neighbour's pairs must not leak: %s", got)
+	}
+}
+
+// Lookups end exactly at a source's last pair, at the first and last record and across the two-record reads.
+func TestTargetsFindEveryPairOfASourceAndNoneOfItsNeighbours(t *testing.T) {
+	old := chunkRecords
+	chunkRecords = 3
+	defer func() { chunkRecords = old }()
+	path := filepath.Join(t.TempDir(), "map.tsv")
+	want := map[int][]Key{1: {g(11)}, 2: {g(21), g(22), g(23)}, 3: {g(31), g(32)}, 4: {g(41)}}
+	m, _ := Open(path, hdr)
+	for _, n := range []int{4, 2, 3, 1} {
+		for i := len(want[n]) - 1; i >= 0; i-- { // reverse, across chunks: the merge must still sort
+			m.Record(g(n), want[n][i])
+		}
+	}
+	m.Close()
+	loaded, _ := Load(path, hdr)
+	defer loaded.Close()
+	for n, keys := range want {
+		if got := loaded.Targets(g(n)); !slices.Equal(got, keys) {
+			t.Errorf("source %d: got %s, want %s", n, got, keys)
+		}
+	}
+	for _, n := range []int{0x10, 5} {
+		if got := loaded.Targets(g(n)); got != nil {
+			t.Errorf("source %d is not recorded: %s", n, got)
+		}
 	}
 }
 
@@ -121,21 +157,21 @@ func TestExternalSortMergesManyRunsAndExistingTable(t *testing.T) {
 	for _, i := range order[n/2:] { // second run: the other half (merged with the existing table)
 		m.Record(g(i+1), g(i+100000))
 	}
-	m.Record(g(order[0]+1), g(777777)) // overwrite an existing entry
+	m.Record(g(order[0]+1), g(777777)) // a second target key for an existing source
 	m.Close()
 
 	loaded, _ := Load(path, hdr)
 	defer loaded.Close()
-	if loaded.Len() != n {
-		t.Fatalf("len=%d, want %d", loaded.Len(), n)
+	if loaded.Len() != n+1 {
+		t.Fatalf("len=%d, want %d", loaded.Len(), n+1)
 	}
 	for i := 0; i < n; i++ {
-		want := g(i + 100000)
+		want := []Key{g(i + 100000)}
 		if i == order[0] {
-			want = g(777777)
+			want = append(want, g(777777))
 		}
-		if got, ok := loaded.Target(g(i + 1)); !ok || got != want {
-			t.Fatalf("lookup %d: got %s %v, want %s", i, got, ok, want)
+		if got := loaded.Targets(g(i + 1)); !slices.Equal(got, want) {
+			t.Fatalf("lookup %d: got %s, want %s", i, got, want)
 		}
 	}
 	if leftovers, _ := filepath.Glob(path + ".*"); len(leftovers) != 0 {
@@ -147,8 +183,9 @@ func TestLeftoverFromAnInterruptedRunIsMergedNextTime(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "map.tsv")
 	m, _ := Open(path, hdr)
 	m.Record(g(1), g(101))
-	m.deltaOut.Flush() // simulate ending without Close (crash midway)
+	m.deltaOut.Flush() // simulate ending without Close (crash midway; the lock of a killed process is removed by hand)
 	m.delta.Close()
+	m.unlock()
 
 	m2, err := Open(path, hdr)
 	if err != nil {
@@ -157,23 +194,55 @@ func TestLeftoverFromAnInterruptedRunIsMergedNextTime(t *testing.T) {
 	m2.Close()
 	loaded, _ := Load(path, hdr)
 	defer loaded.Close()
-	if got, ok := loaded.Target(g(1)); !ok || got != g(101) {
-		t.Fatalf("pair recorded by the interrupted run was lost: %s %v", got, ok)
+	if got := loaded.Targets(g(1)); !slices.Equal(got, []Key{g(101)}) {
+		t.Fatalf("pair recorded by the interrupted run was lost: %s", got)
 	}
 }
 
-func TestMapOfAnotherSourceTargetPairIsRejected(t *testing.T) {
+func TestMapOfAnotherSourceIsRejected(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "map.tsv")
 	m, _ := Open(path, hdr)
 	m.Record(g(1), g(2))
 	m.Close()
 	other := hdr
-	other.TargetRoot = g(0xcc) // a different directory
+	other.SourceRoot = g(0xcc) // a different source directory
 	if _, err := Load(path, other); !errors.Is(err, ErrHeaderMismatch) {
 		t.Fatalf("Load: %v", err)
 	}
 	if _, err := Open(path, other); !errors.Is(err, ErrHeaderMismatch) {
-		t.Fatalf("Open must not overwrite another pair's map: %v", err)
+		t.Fatalf("Open must not overwrite another source's map: %v", err)
+	}
+	if _, err := os.Stat(path + lockSuffix); !os.IsNotExist(err) {
+		t.Fatalf("a refused Open must not leave its lock behind: %v", err)
+	}
+}
+
+// Two clones (into two instances) must not rewrite the table at once; the second one is refused, and can run after.
+func TestASecondCloneIsRefusedWhileTheFirstHoldsTheLock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "map.tsv")
+	first, err := Open(path, hdr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(path, hdr); !errors.Is(err, ErrInUse) || !strings.Contains(err.Error(), fmt.Sprintf("pid %d", os.Getpid())) {
+		t.Fatalf("a second clone must be refused, naming the holder: %v", err)
+	}
+	first.Record(g(1), g(101))
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	second, err := Open(path, hdr)
+	if err != nil {
+		t.Fatalf("Close must release the lock: %v", err)
+	}
+	second.Close()
+	reader, err := Load(path, hdr) // diff takes no lock
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader.Close()
+	if _, err := os.Stat(path + lockSuffix); !os.IsNotExist(err) {
+		t.Fatalf("lock left behind: %v", err)
 	}
 }
 
@@ -211,9 +280,14 @@ func TestZeroKeysAreNotRecorded(t *testing.T) {
 // A file of an older version, or for another scheme, is refused instead of being misread.
 func TestOldFormatAndOtherSchemeAreRefused(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "map.tsv")
-	os.WriteFile(path, []byte("# ldap-cronin guid-map v3 source-domain=aa target-domain=bb base_dn=x\n"), 0o600)
-	if _, err := Load(path, hdr); !errors.Is(err, ErrOldFormat) {
-		t.Fatalf("an old file must be reported as such: %v", err)
+	for _, old := range []string{
+		"# ldap-cronin guid-map v3 source-domain=aa target-domain=bb base_dn=x\n",
+		"# ldap-cronin mapping v4 scheme=objectGUID source-root=aa target-root=bb base_dn=x\n",
+	} {
+		os.WriteFile(path, []byte(old), 0o600)
+		if _, err := Load(path, hdr); !errors.Is(err, ErrOldFormat) {
+			t.Fatalf("an old file must be reported as such: %q %v", old, err)
+		}
 	}
 	if _, err := Open(path, hdr); !errors.Is(err, ErrOldFormat) {
 		t.Fatalf("clone must not overwrite an old file silently: %v", err)

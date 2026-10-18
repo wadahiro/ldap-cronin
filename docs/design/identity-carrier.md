@@ -232,5 +232,7 @@ func ByMap(m *Map, s Scheme) Resolver
   docs/lab.md gives the two steps. A `lab` command for it was left out until someone needs it.
 - **OpenLDAP `modifyTimestamp`** is the source's only for entries not modified after creation: references applied
   later and the memberof overlay (which rewrites members' `memberOf` when a group is added) update it.
+- **The mapping file became a ledger** (design/mapping-ledger.md): every pair is kept, so a restore after another
+  clone, sibling instances and a recreated lab need nothing; the header names only the source.
 - Verified by `make e2e`: markers on Samba over LDAP (rename, move, recreation, snapshot to another instance, the
   image's index) and preserving on OpenLDAP 2.4 (`osixia/openldap:1.5.0`, rootdn bind).

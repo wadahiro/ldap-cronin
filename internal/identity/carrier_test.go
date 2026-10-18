@@ -2,6 +2,7 @@ package identity
 
 import (
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -53,5 +54,49 @@ func TestByMarkerSaysWhenAnEntryCarriesNothing(t *testing.T) {
 		if err != nil || same != c.same || known != c.known {
 			t.Errorf("%s: same=%v known=%v %v", name, same, known, err)
 		}
+	}
+}
+
+// A mapping file may record several target keys for one source; any of them is the source's object.
+func TestByMapAcceptsAnyRecordedKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "map.tsv")
+	m, _ := Open(path, hdr)
+	m.Record(g(1), g(101))
+	m.Record(g(1), g(102))
+	m.Record(g(2), g(201))
+	m.Close()
+	loaded, err := Load(path, hdr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer loaded.Close()
+	r := ByMap(loaded, ObjectGUID)
+	entry := func(k Key) directory.Entry {
+		return directory.Entry{DN: "CN=x", Attrs: map[string][]string{"objectGUID": {string(k[:])}}}
+	}
+	for name, c := range map[string]struct {
+		source Key
+		e      directory.Entry
+		same   bool
+	}{
+		"first key":     {g(1), entry(g(101)), true},
+		"second key":    {g(1), entry(g(102)), true},
+		"unrecorded":    {g(1), entry(g(999)), false},
+		"another's key": {g(1), entry(g(201)), false},
+		"unknown":       {g(3), entry(g(999)), true},
+	} {
+		same, known, err := r.Same(c.source, c.e)
+		if err != nil || same != c.same || !known {
+			t.Errorf("%s: same=%v known=%v %v", name, same, known, err)
+		}
+	}
+	if f, ok := r.Filter(g(1)); !ok || f != "(|"+ObjectGUID.Filter(g(101))+ObjectGUID.Filter(g(102))+")" {
+		t.Errorf("two keys: %q", f)
+	}
+	if f, ok := r.Filter(g(2)); !ok || f != ObjectGUID.Filter(g(201)) {
+		t.Errorf("one key: %q", f)
+	}
+	if _, ok := r.Filter(g(3)); ok {
+		t.Error("an unknown source has no filter")
 	}
 }
