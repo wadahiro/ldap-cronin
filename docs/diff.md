@@ -39,7 +39,7 @@ It is read-only.
 | `REPLACED` | A different object than the cloned one exists at the same DN (its identifier or marker names another object), and the original is nowhere to be found | Yes |
 | `UNMARKED` | The object at the source DN has no marker (marker mode only): recreated, marker removed, or added to the source after the clone | Yes |
 
-Object matching tells which source object a target object was cloned from; it is on by default ([how it works](#how-rename-and-move-detection-works-and-its-configuration)). Without it, see [when matching is off](#6-when-matching-is-off). `RENAMED`, `REPLACED` and `UNMARKED` do not change the exit code.
+Object matching tells which source object a target object was cloned from; it is on by default ([how it works](#how-rename-and-move-detection-works-and-its-configuration)). Without it, see [when matching is off](#6-when-matching-is-off). Every kind, `RENAMED`, `REPLACED` and `UNMARKED` included, makes the exit code 1: a rename alone is a change made on the target.
 
 ## Patterns: what happened on the target and how it appears
 

@@ -1,0 +1,181 @@
+package clone
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/base64"
+	"fmt"
+	"strings"
+	"testing"
+
+	"github.com/wadahiro/ldap-cronin/internal/diff"
+	"github.com/wadahiro/ldap-cronin/internal/directory"
+	"github.com/wadahiro/ldap-cronin/internal/dryrun"
+	"github.com/wadahiro/ldap-cronin/internal/fakedir"
+	"github.com/wadahiro/ldap-cronin/internal/identity"
+	"github.com/wadahiro/ldap-cronin/internal/plan"
+	"github.com/wadahiro/ldap-cronin/internal/profile"
+)
+
+// ldapmodify applies LDIF change records to d as ldapmodify does without -c: in order, stopping at the first
+// failure. It reads what the dry-run writes (RFC 2849): base64 values, control lines, add and modify records with
+// replace (no values removes the attribute) and add, and comments.
+func ldapmodify(d *fakedir.Dir, text string) error {
+	ctx := context.Background()
+	for i, record := range strings.Split(strings.TrimSpace(text), "\n\n") {
+		var lines []string
+		sc := bufio.NewScanner(strings.NewReader(record))
+		for sc.Scan() {
+			l := sc.Text()
+			switch {
+			case strings.HasPrefix(l, "#"):
+			case strings.HasPrefix(l, " ") && len(lines) > 0:
+				lines[len(lines)-1] += l[1:] // folded line
+			default:
+				lines = append(lines, l)
+			}
+		}
+		if len(lines) == 0 {
+			continue
+		}
+		field := func(l string) (string, string, error) {
+			name, rest, ok := strings.Cut(l, ":")
+			if !ok {
+				return "", "", fmt.Errorf("record %d: not an LDIF line: %q", i+1, l)
+			}
+			if strings.HasPrefix(rest, ":") {
+				b, err := base64.StdEncoding.DecodeString(strings.TrimSpace(rest[1:]))
+				return name, string(b), err
+			}
+			return name, strings.TrimPrefix(rest, " "), nil
+		}
+		name, entryDN, err := field(lines[0])
+		if err != nil || name != "dn" {
+			return fmt.Errorf("record %d: must start with dn: %q %v", i+1, lines[0], err)
+		}
+		var controls []directory.Control
+		rest := lines[1:]
+		for len(rest) > 0 && strings.HasPrefix(rest[0], "control: ") {
+			f := strings.Fields(strings.TrimPrefix(rest[0], "control: "))
+			controls = append(controls, directory.Control{OID: f[0], Critical: len(f) > 1 && f[1] == "true"})
+			rest = rest[1:]
+		}
+		if len(rest) == 0 {
+			return fmt.Errorf("record %d: no changetype", i+1)
+		}
+		switch rest[0] {
+		case "changetype: add":
+			attrs := map[string][]string{}
+			for _, l := range rest[1:] {
+				n, v, err := field(l)
+				if err != nil {
+					return err
+				}
+				attrs[n] = append(attrs[n], v)
+			}
+			if err := d.Add(ctx, directory.Entry{DN: entryDN, Attrs: attrs}, controls...); err != nil {
+				return fmt.Errorf("record %d: %w", i+1, err)
+			}
+		case "changetype: modify":
+			for _, op := range strings.Split(strings.Join(rest[1:], "\n"), "\n-\n") {
+				opLines := strings.Split(op, "\n")
+				kind, attr, err := field(opLines[0])
+				if err != nil {
+					return err
+				}
+				var values []string
+				for _, l := range opLines[1:] {
+					_, v, err := field(l)
+					if err != nil {
+						return err
+					}
+					values = append(values, v)
+				}
+				switch kind {
+				case "replace":
+					if len(values) == 0 {
+						// A replace without values deletes the attribute; AD refuses that for unicodePwd.
+						return fmt.Errorf("record %d: replace of %s on %s has no value", i+1, attr, entryDN)
+					}
+					err = d.Replace(ctx, entryDN, map[string][]string{attr: values})
+				case "add":
+					err = d.AddValues(ctx, entryDN, attr, values)
+				default:
+					err = fmt.Errorf("unsupported modify operation %q", kind)
+				}
+				if err != nil {
+					return fmt.Errorf("record %d: %w", i+1, err)
+				}
+			}
+		default:
+			return fmt.Errorf("record %d: unsupported %q", i+1, rest[0])
+		}
+	}
+	return nil
+}
+
+// The dry-run LDIF loads with ldapmodify into an empty target. On a generic server that gives what clone gives:
+// diff finds nothing, through the preserved identifiers the LDIF carries. On AD the LDIF has no password, so the
+// users are disabled accounts without one; clone run against the loaded target completes them, and then diff
+// finds nothing, through the markers the LDIF carries.
+func TestDryRunLDIFLoadedWithLdapmodifyEqualsAClone(t *testing.T) {
+	t.Run("ad", func(t *testing.T) {
+		for seed := int64(1); seed <= 20; seed++ {
+			src := randomTree(newRand(seed))
+			dst := fakedir.New(domain)
+			dryRunEqualsClone(t, src, dst, options(t, allKinds()...), false)
+			for d, e := range dst.Entries {
+				if strings.HasPrefix(d, "cn=") && e.Values("sAMAccountName") != nil && strings.HasPrefix(e.Values("sAMAccountName")[0], "u") && e.Values("unicodePwd") == nil {
+					t.Fatalf("seed %d: %s has no password after clone", seed, e.DN)
+				}
+			}
+		}
+	})
+	t.Run("ldap", func(t *testing.T) {
+		dst := fakedir.New(gRoot)
+		dst.Relax = profile.RelaxOID
+		dst.RequireAttr = map[string]string{"groupofnames": "member"}
+		dryRunEqualsClone(t, genericSource(), dst, genericOptions(t), true)
+	})
+}
+
+// dryRunEqualsClone loads the dry-run LDIF into dst, runs clone against it unless the profile preserves identifiers
+// (and so writes the password in the Add), and expects diff to find nothing.
+func dryRunEqualsClone(t *testing.T, src, dst *fakedir.Dir, job plan.Job, preserve bool) {
+	t.Helper()
+	dst.IDPrefix = 0xd1
+	opt := Options{UserPassword: "Fixed1!", Workers: 1, Preserve: preserve, Operational: preserve}
+	var res identity.Resolver = identity.ByIdentity(job.Profile.Identity)
+	if !preserve {
+		root, err := identity.RootKey(context.Background(), src, job.BaseDN, job.Profile.Identity)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m := identity.NewMarker(job.Profile.Marker, root)
+		opt.Marker, res = &m, identity.ByMarker(m)
+	}
+	var out bytes.Buffer
+	if _, err := Run(context.Background(), src, dryrun.New(&out, job.Profile), job, opt, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), "Fixed1!") {
+		t.Fatal("the LDIF must not carry the password")
+	}
+	if err := ldapmodify(dst, out.String()); err != nil {
+		t.Fatalf("ldapmodify refuses the dry-run LDIF: %v\n%s", err, out.String())
+	}
+	if !preserve {
+		if _, err := Run(context.Background(), src, dst, job, opt, &bytes.Buffer{}); err != nil {
+			t.Fatalf("clone after loading the LDIF: %v", err)
+		}
+	}
+	var diffs []string
+	if _, err := diff.Run(context.Background(), src, dst, job, diff.Options{Workers: 1, Resolver: res},
+		func(d diff.Difference) { diffs = append(diffs, fmt.Sprintf("%s %s %s", d.Kind, d.DN, d.Attr)) }); err != nil {
+		t.Fatal(err)
+	}
+	if len(diffs) != 0 {
+		t.Fatalf("the loaded LDIF must give what clone gives:\n%s", strings.Join(diffs, "\n"))
+	}
+}

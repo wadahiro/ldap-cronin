@@ -42,7 +42,7 @@ func (s *Session) Clone(ctx context.Context, dryRun bool, out, log io.Writer) (*
 		}
 		opt.Marker = &m
 	}
-	var dst directory.Directory = dryrun.New(out, s.Job.Profile.PasswordAttrs)
+	var dst directory.Directory = dryrun.New(out, s.Job.Profile)
 	if !dryRun {
 		var err error
 		if opt.UserPassword, err = s.secrets.UserPassword(); err != nil {
@@ -103,7 +103,12 @@ func (s *Session) Diff(ctx context.Context, maxValues int, out io.Writer) (int, 
 	if err != nil {
 		return 0, err
 	}
-	total := sum.Differences[diff.OnlySource] + sum.Differences[diff.OnlyTarget] + sum.Differences[diff.Differ]
+	// Every kind counts: a rename alone is a change made on the target, and turning detection on must not hide it
+	// from a script (without detection it shows as ONLY_SOURCE + ONLY_TARGET).
+	total := 0
+	for _, n := range sum.Differences {
+		total += n
+	}
 	if total == 0 {
 		fmt.Fprintln(out, "no differences")
 	}

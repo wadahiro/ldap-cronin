@@ -48,6 +48,8 @@ make build                           # produces bin/ldap-cronin (requires Go)
 ./bin/ldap-cronin diff
 ```
 
+The dry-run LDIF loads with `ldapmodify` into an empty target. It never carries a password: on a generic server the users are created without one (and `clone` never adds one to an existing user); on AD the password and the `userAccountControl` that follows it are written as comments, and `clone` run against the loaded target sets them.
+
 Passwords are never kept in the configuration file; they are prompted for at run time. For non-interactive use set the environment variables `LDAP_CRONIN_SOURCE_PASSWORD` / `LDAP_CRONIN_TARGET_PASSWORD` / `LDAP_CRONIN_USER_PASSWORD`.
 
 Ctrl-C stops a run at its next LDAP operation and still finishes its cleanup (a mapping file is written, a lab stopped for an import is resumed); a re-run of `clone` continues from there. See [docs/operations.md](docs/operations.md#stopping-a-run-and-hung-servers).

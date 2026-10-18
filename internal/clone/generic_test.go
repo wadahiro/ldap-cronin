@@ -3,6 +3,7 @@ package clone
 import (
 	"bytes"
 	"context"
+	"errors"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -272,7 +273,7 @@ func TestGenericPasswordIsSetAtCreationAndNeverReset(t *testing.T) {
 
 func TestGenericDryRunNeverPrintsPassword(t *testing.T) {
 	var out bytes.Buffer
-	dst := dryrun.New(&out, profile.LDAP.PasswordAttrs)
+	dst := dryrun.New(&out, profile.LDAP)
 	if _, err := Run(context.Background(), genericSource(), dst, genericOptions(t), Options{UserPassword: "TopSecret!"}, &out); err != nil {
 		t.Fatal(err)
 	}
@@ -335,5 +336,44 @@ func TestGenericPreserveStopsWhenTheTargetRefusesTheControl(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "manage") || len(dst.Entries) != 1 {
 			t.Fatalf("%s: %v (%d entries)", name, err, len(dst.Entries))
 		}
+	}
+}
+
+// A groupOfNames whose members are all outside the scope cannot be created (the schema needs a member, and none
+// is cloned). Like a reference outside the scope, it is skipped with a warning, and the rest is cloned.
+func TestAGroupWhoseMembersAreAllOutsideIsSkippedWithAWarning(t *testing.T) {
+	src, dst := genericSource(), fakedir.New(gRoot)
+	dst.RequireAttr = map[string]string{"groupofnames": "member"}
+	far := "cn=Far,ou=Groups," + gBase
+	src.Put(far, map[string][]string{"objectClass": {"top", "groupOfNames"}, "cn": {"Far"}, "member": {"uid=outsider,ou=Elsewhere," + gRoot}})
+	rep, err := Run(context.Background(), src, dst, genericOptions(t), Options{UserPassword: "x", Workers: 2}, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("the rest must be cloned: %v", err)
+	}
+	if dst.Lookup(far) != nil || dst.Lookup(gEng) == nil {
+		t.Fatal("Far must be skipped and Eng created")
+	}
+	found := false
+	for _, w := range rep.Warnings {
+		found = found || strings.Contains(w, "skip "+far)
+	}
+	if !found {
+		t.Fatalf("the skip must be a warning: %v", rep.Warnings)
+	}
+	var kinds []string
+	for _, d := range runDiff(t, src, dst, genericOptions(t)) {
+		kinds = append(kinds, string(d.Kind)+" "+d.DN)
+	}
+	if !slices.Equal(kinds, []string{"ONLY_SOURCE " + far}) {
+		t.Fatalf("diff shows the skipped group as not cloned: %v", kinds)
+	}
+}
+
+// A schema violation that is not about references (here a required attribute the source lacks) still stops the run.
+func TestASchemaViolationOfAnEntryWithoutReferencesStopsTheRun(t *testing.T) {
+	src, dst := genericSource(), fakedir.New(gRoot)
+	dst.RequireAttr = map[string]string{"inetorgperson": "employeeNumber"}
+	if _, err := Run(context.Background(), src, dst, genericOptions(t), Options{UserPassword: "x", Workers: 1}, &bytes.Buffer{}); !errors.Is(err, directory.ErrSchemaViolation) {
+		t.Fatalf("got %v", err)
 	}
 }

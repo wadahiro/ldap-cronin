@@ -97,6 +97,22 @@ func (w Writer) Replace(dn string, attrs map[string][]string) {
 	fmt.Fprintln(w.W)
 }
 
+// Deferred writes a modify record as comments, with why it is not applied: the record shows what clone would do,
+// and ldapmodify skips it.
+func (w Writer) Deferred(dn string, attrs map[string][]string, why string) {
+	fmt.Fprintf(w.W, "# %s\n", why)
+	var b strings.Builder
+	Writer{W: &b, Secret: w.Secret}.Replace(dn, attrs)
+	for _, l := range strings.Split(strings.TrimRight(b.String(), "\n"), "\n") {
+		if strings.HasPrefix(l, "#") {
+			fmt.Fprintln(w.W, l)
+		} else {
+			fmt.Fprintln(w.W, "# "+l)
+		}
+	}
+	fmt.Fprintln(w.W)
+}
+
 func (w Writer) AddValues(dn, attr string, values []string) {
 	fmt.Fprintln(w.W, Line("dn", dn))
 	fmt.Fprintln(w.W, "changetype: modify")

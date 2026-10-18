@@ -209,6 +209,10 @@ func (d *Dir) Add(ctx context.Context, e directory.Entry, controls ...directory.
 	}
 	added := &directory.Entry{DN: e.DN, Attrs: clone(e.Attrs)}
 	d.assignGUID(added.Attrs)
+	if isADUser(*added) {
+		// AD creates a user without a password with pwdLastSet=0; setting unicodePwd makes it nonzero.
+		added.Attrs["pwdLastSet"] = []string{"0"}
+	}
 	d.Entries[key] = added
 	d.Ops = append(d.Ops, "add "+e.DN)
 	return nil
@@ -230,8 +234,21 @@ func (d *Dir) Replace(ctx context.Context, dnStr string, attrs map[string][]stri
 	for n, v := range attrs {
 		e.Attrs[n] = append([]string(nil), v...)
 		d.Ops = append(d.Ops, "replace "+n+" "+dnStr)
+		if strings.EqualFold(n, "unicodePwd") && isADUser(*e) {
+			e.Attrs["pwdLastSet"] = []string{"133000000000000000"}
+		}
 	}
 	return nil
+}
+
+// isADUser reports whether e is an AD user account (objectClass user), whose password state the fake keeps as AD does.
+func isADUser(e directory.Entry) bool {
+	for _, c := range e.Values("objectClass") {
+		if strings.EqualFold(c, "user") {
+			return true
+		}
+	}
+	return false
 }
 
 func (d *Dir) AddValues(ctx context.Context, dnStr, attr string, values []string) error {
@@ -246,6 +263,17 @@ func (d *Dir) AddValues(ctx context.Context, dnStr, attr string, values []string
 	}
 	if err := d.checkRefs(dnStr, map[string][]string{attr: values}); err != nil {
 		return err
+	}
+	// A real server refuses to add a value that is already there (attributeOrValueExists).
+	have := map[string]bool{}
+	for _, v := range e.Values(attr) {
+		have[dn.Normalize(v)] = true
+	}
+	for _, v := range values {
+		if have[dn.Normalize(v)] {
+			return fmt.Errorf("modify %s: %s value %s already exists", dnStr, attr, v)
+		}
+		have[dn.Normalize(v)] = true
 	}
 	e.Attrs[attr] = append(e.Attrs[attr], values...)
 	d.Ops = append(d.Ops, "addvalues "+attr+" "+dnStr)

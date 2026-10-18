@@ -4,6 +4,7 @@
 package dn
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/go-ldap/ldap/v3"
@@ -49,7 +50,8 @@ func Parent(dn string) string {
 	return strings.Join(rdns[1:], ",")
 }
 
-// Normalize returns a map key that absorbs case and escaping differences.
+// Normalize returns a map key that absorbs case and escaping differences. Values are escaped again in one form, so
+// a value holding a comma (`CN=x\,OU=Users`) never reads as two RDNs.
 func Normalize(dn string) string {
 	parsed, err := ldap.ParseDN(dn)
 	if err != nil {
@@ -59,7 +61,7 @@ func Normalize(dn string) string {
 	for _, rdn := range parsed.RDNs {
 		attrs := make([]string, 0, len(rdn.Attributes))
 		for _, a := range rdn.Attributes {
-			attrs = append(attrs, strings.ToLower(a.Type)+"="+strings.ToLower(a.Value))
+			attrs = append(attrs, strings.ToLower(strings.TrimSpace(a.Type))+"="+ldap.EscapeDN(strings.ToLower(a.Value)))
 		}
 		rdns = append(rdns, strings.Join(attrs, "+"))
 	}
@@ -68,10 +70,14 @@ func Normalize(dn string) string {
 
 func Equal(a, b string) bool { return Normalize(a) == Normalize(b) }
 
-// IsDescendant reports whether dn is a strict descendant of ancestor.
+// IsDescendant reports whether dn is a strict descendant of ancestor. RDNs are compared, not string suffixes: a
+// value ending in an escaped comma and an RDN (`CN=x\,OU=Users,DC=ad`) is not below OU=Users.
 func IsDescendant(dn, ancestor string) bool {
-	d, a := Normalize(dn), Normalize(ancestor)
-	return len(d) > len(a) && strings.HasSuffix(d, ","+a)
+	d, a := Split(Normalize(dn)), Split(Normalize(ancestor))
+	if len(a) == 0 || len(d) <= len(a) {
+		return false
+	}
+	return slices.Equal(d[len(d)-len(a):], a)
 }
 
 // DomainRoot returns the trailing run of DC= components of a DN (the domain root).

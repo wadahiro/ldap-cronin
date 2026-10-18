@@ -8,4 +8,4 @@ import (
 	"github.com/wadahiro/ldap-cronin/internal/profile"
 )
 
-func dryRun(w io.Writer) directory.Directory { return dryrun.New(w, profile.AD.PasswordAttrs) }
+func dryRun(w io.Writer) directory.Directory { return dryrun.New(w, profile.AD) }

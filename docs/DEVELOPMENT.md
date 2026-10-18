@@ -20,7 +20,7 @@ internal/
   dryrun/            Directory that prints writes as LDIF
   lab/               test labs on docker (Samba4 AD, OpenLDAP; what differs is lab.Server), snapshots and restore (needs only the docker command)
   ad/                AD-only helpers: binary objectGUID / objectSid, the domain identity
-  fakedir/           in-memory Directory for tests (rejects adds without a parent and references to missing objects, like a real server)
+  fakedir/           in-memory Directory for tests (behaves like a real server where clone depends on it; see below)
   dn/ ldif/ mask/ prompt/ workpool/
 docker/ad/           the Samba4 image (Dockerfile, entrypoint.sh, ad-init.sh, seed.sh, extended schema)
 docker/ldap/         the OpenLDAP image (Dockerfile, entrypoint.sh builds cn=config, ldap-init.sh, seed.ldif, schema.d/)
@@ -30,7 +30,21 @@ docs/                documents referenced from the README
 ```
 
 Dependencies point one way: `directory <- identity <- profile <- plan <- clone, diff <- app <- cmd`.
-`clone`, `diff` and `app` go through `Directory`, so unit tests run on `fakedir` without a real server, `app` included (with a fake `Dialer`).
+`clone`, `diff` and `app` go through `Directory`, so unit tests run on `fakedir` without a real server, `app` and `cmd` included (with a fake `Dialer`).
+
+What the unit tests hold `clone` to, beyond the per-feature tests:
+
+| Test | Property |
+|---|---|
+| `clone/fault_test.go` | A target failure at any step (each kind of add, the password, `userAccountControl`, reference reads and writes) stops the run with that error, and a re-run ends where an unfailed run would |
+| `clone/random_test.go` | For random trees (escaped and non-ASCII names, nested and self-referencing groups, references outside the scope): clone, then diff finds nothing, and a re-run writes nothing |
+| `clone/limits_test.go` | `member` is added 500 values per modify; a reference outside the scope is read once; warnings are capped |
+| `clone/ops_test.go` | Operations per user on the target |
+| `clone/ldifapply_test.go` | The dry-run LDIF loads with an `ldapmodify` stand-in into an empty target (groups that require a member included) and, after `clone` on AD, diffs clean |
+| `cmd/ldap-cronin/main_test.go` | Exit codes, a dry-run's standard output holds only LDIF, passwords come from the environment and are never printed |
+| `dn` fuzz test | `go test ./internal/dn -fuzz FuzzDNOperationsAgree`: normalizing, splitting and the descendant check agree |
+
+`fakedir` behaves like a real server where clone depends on it: it rejects an add without a parent, a duplicate value and a missing required attribute, gives an AD user `pwdLastSet=0` until `unicodePwd` is set, and with `IDPrefix` two fakes never hand out the same identifier (give each target its own, or diff takes the target for a native import).
 
 ## Build and test
 

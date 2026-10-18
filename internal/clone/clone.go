@@ -59,9 +59,13 @@ type runner struct {
 	plan *plan.Plan
 	prof profile.Profile
 
-	mu     sync.Mutex // guards report and out
-	report Report
+	mu      sync.Mutex // guards report, out and skipped
+	report  Report
+	skipped map[string]bool // normalized DNs not created (see upsert); the reference pass leaves them alone
 }
+
+// errSkipped means an entry was not created and a warning says why; the run goes on.
+var errSkipped = errors.New("skipped")
 
 func Run(ctx context.Context, src, dst directory.Directory, job plan.Job, opt Options, out io.Writer) (*Report, error) {
 	read := plan.Read{Identity: opt.Marker != nil || opt.Preserve || opt.Mapping != nil || opt.Native, CarryOver: opt.Native}
@@ -77,7 +81,7 @@ func Run(ctx context.Context, src, dst directory.Directory, job plan.Job, opt Op
 	if err != nil {
 		return nil, err
 	}
-	r := &runner{dst: dst, opt: opt, out: out, prof: job.Profile}
+	r := &runner{dst: dst, opt: opt, out: out, prof: job.Profile, skipped: map[string]bool{}}
 	if err := r.run(ctx, p); err != nil {
 		return &r.report, err
 	}
@@ -101,6 +105,9 @@ func (r *runner) leaf(ctx context.Context, k *plan.Kind, e directory.Entry) erro
 		account = r.prof.Account
 	}
 	created, cur, err := r.upsert(ctx, e, account)
+	if errors.Is(err, errSkipped) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
@@ -175,7 +182,17 @@ func (r *runner) upsert(ctx context.Context, e directory.Entry, account profile.
 	if errors.Is(err, directory.ErrSchemaViolation) {
 		// A group class such as groupOfNames requires a member at creation, which the deferred reference pass cannot give.
 		// Retrying with the in-scope references keeps the common case (AD, where nothing is required) on the cheaper path.
-		if withRefs := r.withScopedRefs(e, add); len(withRefs.Attrs) > len(add.Attrs) {
+		withRefs := r.withScopedRefs(e, add)
+		if len(withRefs.Attrs) == len(add.Attrs) && r.hasRefs(e) {
+			// None of its references is cloned, so the schema's required member cannot be given: like a reference
+			// to an object outside the scope, it is skipped with a warning instead of stopping the run.
+			r.warn("skip %s: the target requires a reference to create it, and none of its references is cloned (%v)", e.DN, err)
+			r.mu.Lock()
+			r.skipped[dn.Normalize(e.DN)] = true
+			r.mu.Unlock()
+			return false, nil, errSkipped
+		}
+		if len(withRefs.Attrs) > len(add.Attrs) {
 			err = r.add(ctx, withRefs)
 		}
 	}
@@ -223,6 +240,17 @@ func (r *runner) upsert(ctx context.Context, e directory.Entry, account profile.
 	r.count(func(rep *Report) { rep.Updated++ })
 	r.logf("update %s\n", e.DN)
 	return false, cur, nil
+}
+
+// hasRefs reports whether e holds any DN reference value. A schema violation of an entry without one is not about
+// its references, so it is an error, not a skip.
+func (r *runner) hasRefs(e directory.Entry) bool {
+	for n, v := range e.Attrs {
+		if r.plan.IsRef(n) && len(v) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // withScopedRefs returns desired plus the DN reference values of e that point into the plan's scope.
@@ -336,9 +364,14 @@ const existsCacheLimit = 100_000
 // references re-reads only the DN reference attributes from the source and applies them once all objects exist.
 // Reads increase by the amount re-fetched, but memory does not, because creation does not keep and carry every entry.
 func (r *runner) references(ctx context.Context, p *plan.Plan) error {
+	type check struct {
+		once sync.Once
+		ok   bool
+		err  error
+	}
 	var (
 		cacheMu sync.Mutex
-		exists  = map[string]bool{}
+		exists  = map[string]*check{}
 	)
 	resolvable := func(v string) (bool, error) {
 		if p.Scope.Has(v) {
@@ -346,21 +379,21 @@ func (r *runner) references(ctx context.Context, p *plan.Plan) error {
 		}
 		key := dn.Normalize(v)
 		cacheMu.Lock()
-		ok, seen := exists[key]
-		cacheMu.Unlock()
-		if seen {
-			return ok, nil
-		}
-		cur, err := r.dst.Get(ctx, v, []string{"objectClass"})
-		if err != nil {
-			return false, err
-		}
-		cacheMu.Lock()
-		if len(exists) < existsCacheLimit {
-			exists[key] = cur != nil
+		c, seen := exists[key]
+		if !seen {
+			c = &check{}
+			if len(exists) < existsCacheLimit {
+				exists[key] = c
+			}
 		}
 		cacheMu.Unlock()
-		return cur != nil, nil
+		// Workers asking for the same DN at once wait for the one read instead of each reading it.
+		c.once.Do(func() {
+			var cur *directory.Entry
+			cur, c.err = r.dst.Get(ctx, v, []string{"objectClass"})
+			c.ok = cur != nil
+		})
+		return c.ok, c.err
 	}
 
 	job := p.Job()
@@ -373,6 +406,12 @@ func (r *runner) references(ctx context.Context, p *plan.Plan) error {
 		err := workpool.Feed(ctx, r.opt.Workers, func(ctx context.Context, emit func(directory.Entry) error) error {
 			return p.WalkRefs(ctx, k, names, emit)
 		}, func(ctx context.Context, e directory.Entry) error {
+			r.mu.Lock()
+			skipped := r.skipped[dn.Normalize(e.DN)]
+			r.mu.Unlock()
+			if skipped {
+				return nil
+			}
 			for _, name := range names {
 				values := e.Values(name)
 				if len(values) == 0 {

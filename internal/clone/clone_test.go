@@ -287,8 +287,16 @@ func TestInterruptedUserGetsPasswordOnRerun(t *testing.T) {
 	if _, err := Run(context.Background(), src, dst, job, opt, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
-	delete(dst.Lookup(alice).Attrs, "unicodePwd")
-	dst.Lookup(alice).Attrs["pwdLastSet"] = []string{"0"}
+	// alice is created as a run stopped right after the add would leave her: no password, pwdLastSet=0 (set by the
+	// fake as AD does).
+	attrs := dst.Lookup(alice).Attrs
+	dst.Delete(alice)
+	delete(attrs, "unicodePwd")
+	delete(attrs, "objectGUID")
+	delete(attrs, "entryUUID")
+	if err := dst.Add(context.Background(), directory.Entry{DN: alice, Attrs: attrs}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := Run(context.Background(), src, dst, job, opt, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
@@ -321,5 +329,33 @@ func TestDiffFlagsCaseOnlyDifferencesAndCountsThem(t *testing.T) {
 	}
 	if sum.Differences[diff.Differ] != 2 || sum.CaseOnly != 1 {
 		t.Fatalf("a case-only difference still counts as a difference: %+v", sum)
+	}
+}
+
+// A user named "x,OU=Users" directly under OU=IDM and a user "x" in OU=Users have DNs that read alike once
+// unescaped; they are two objects, and both are cloned and compared.
+func TestDNsThatDifferOnlyByAnEscapedCommaAreTwoObjects(t *testing.T) {
+	src, dst := fakedir.New(domain), fakedir.New(domain)
+	src.Put(base, map[string][]string{"objectClass": {"top", "organizationalUnit"}, "ou": {"IDM"}})
+	src.Put("OU=Users,"+base, map[string][]string{"objectClass": {"top", "organizationalUnit"}, "ou": {"Users"}})
+	escaped, plain := `CN=x\,OU=Users,`+base, "CN=x,OU=Users,"+base
+	userAt(src, escaped, "escaped")
+	userAt(src, plain, "plain")
+	src.Lookup(escaped).Attrs["cn"] = []string{"x,OU=Users"}
+	job := options(t, allKinds()...)
+	rep, err := Run(context.Background(), src, dst, job, Options{UserPassword: "Fixed1!", Workers: 2}, &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Added != 4 {
+		t.Fatalf("two OUs and two users must be added: %+v", rep)
+	}
+	for _, d := range []string{escaped, plain} {
+		if e := dst.Lookup(d); e == nil || !strings.EqualFold(e.DN, d) {
+			t.Fatalf("%s is missing on the target", d)
+		}
+	}
+	if diffs := runDiff(t, src, dst, job); len(diffs) != 0 {
+		t.Fatalf("%+v", diffs)
 	}
 }
