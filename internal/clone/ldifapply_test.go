@@ -145,7 +145,8 @@ func TestDryRunLDIFLoadedWithLdapmodifyEqualsAClone(t *testing.T) {
 func dryRunEqualsClone(t *testing.T, src, dst *fakedir.Dir, job plan.Job, preserve bool) {
 	t.Helper()
 	dst.IDPrefix = 0xd1
-	opt := Options{UserPassword: "Fixed1!", Workers: 1, Preserve: preserve, Operational: preserve}
+	// Several workers, as the command runs it: the LDIF records must not interleave.
+	opt := Options{UserPassword: "Fixed1!", Workers: 4, Preserve: preserve, Operational: preserve}
 	var res identity.Resolver = identity.ByIdentity(job.Profile.Identity)
 	if !preserve {
 		root, err := identity.RootKey(context.Background(), src, job.BaseDN, job.Profile.Identity)

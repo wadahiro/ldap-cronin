@@ -29,7 +29,7 @@ type Dir struct {
 	w        ldif.Writer
 	deferred []string // set after the password (the profile's account-owned attributes)
 
-	mu      sync.Mutex
+	mu      sync.Mutex                     // guards written, and serializes the writes: clone calls from its workers
 	written map[string]map[string][]string // normalized DN -> required attribute -> values written at Add
 }
 
@@ -86,10 +86,10 @@ func (d *Dir) Add(ctx context.Context, e directory.Entry, controls ...directory.
 		}
 		kept[must] = v
 	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	if kept != nil {
-		d.mu.Lock()
 		d.written[dn.Normalize(e.DN)] = kept
-		d.mu.Unlock()
 	}
 	d.w.Add(e.DN, e.Attrs, controls...)
 	return nil
@@ -99,6 +99,8 @@ func (d *Dir) Replace(ctx context.Context, entryDN string, attrs map[string][]st
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	for n := range attrs {
 		if d.needsPassword(n) {
 			d.w.Deferred(entryDN, attrs, "clone sets this after the password; run clone against the loaded target")
@@ -124,6 +126,8 @@ func (d *Dir) AddValues(ctx context.Context, entryDN, attr string, values []stri
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	d.w.AddValues(entryDN, attr, values)
 	return nil
 }

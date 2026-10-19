@@ -52,8 +52,7 @@ func (c ldapConn) View(ranged []string) directory.Directory { return c.Client.Wi
 type Session struct {
 	Cfg *config.Config
 	Job plan.Job
-	// Src is the source, read sequentially on a single connection: parallel reads would only add load on the
-	// source, and the paging cookie is tied to the connection anyway.
+	// Src is the source, on sourceConns connections (see there).
 	Src  directory.Directory
 	Warn io.Writer
 
@@ -62,6 +61,13 @@ type Session struct {
 	src     Conn
 }
 
+// sourceConns is how many connections the source gets: one for the paged search clone or diff walks (it holds its
+// connection until the last page, as the paging cookie is tied to it), and one for what the workers read meanwhile
+// (what a member outside the scope is, the entry of a referenced object). With one, those reads waited for the walk
+// and the walk for the workers, and the run stopped for ever once more groups than the workers' queue were left.
+// More would only add load: the source is otherwise read sequentially.
+const sourceConns = 2
+
 // Open connects to the source, resolves the profile (asking the source's root DSE for auto) and builds the job.
 // The target is not touched: a dry-run and a native import never connect to it over LDAP.
 func Open(ctx context.Context, cfg *config.Config, secrets Secrets, dial Dialer, warn io.Writer) (*Session, error) {
@@ -69,7 +75,7 @@ func Open(ctx context.Context, cfg *config.Config, secrets Secrets, dial Dialer,
 	if err != nil {
 		return nil, err
 	}
-	src, err := dial(ctx, cfg.Source, pw, 1)
+	src, err := dial(ctx, cfg.Source, pw, sourceConns)
 	if err != nil {
 		return nil, err
 	}

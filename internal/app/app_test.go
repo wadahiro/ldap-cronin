@@ -28,8 +28,10 @@ func (c fakeConn) Close()                            {}
 // world is a source and a target behind a Dialer, with a record of what was dialed and which passwords were asked.
 type world struct {
 	src, dst *fakedir.Dir
-	dialed   []string
-	asked    []string
+	// pool puts each dialed directory behind a pool of as many connections as the session asks for (see pooled).
+	pool   bool
+	dialed []string
+	asked  []string
 }
 
 func newWorld() *world {
@@ -44,15 +46,19 @@ func newWorld() *world {
 	// would take the target for a native import.
 	dst.IDPrefix = 0xd1
 	dst.Put(domain, map[string][]string{"objectClass": {"domainDNS"}})
-	return &world{src: src, dst: dst}
+	return &world{src: src, dst: dst, pool: true}
 }
 
-func (w *world) dial(_ context.Context, ep config.Endpoint, _ string, _ int) (Conn, error) {
+func (w *world) dial(_ context.Context, ep config.Endpoint, _ string, conns int) (Conn, error) {
 	w.dialed = append(w.dialed, ep.URL)
+	d := w.dst
 	if strings.Contains(ep.URL, "src") {
-		return fakeConn{w.src}, nil
+		d = w.src
 	}
-	return fakeConn{w.dst}, nil
+	if w.pool {
+		return pooledConn{newPooled(d, conns)}, nil
+	}
+	return fakeConn{d}, nil
 }
 
 func (w *world) secrets() Secrets {
