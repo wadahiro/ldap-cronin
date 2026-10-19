@@ -26,7 +26,8 @@ base_dn = "OU=IDM,DC=ad,DC=example,DC=com"   # not the domain root: it would rea
 
 - **Users are created in three steps**: add (disabled), set `unicodePwd` with a modify, then set `userAccountControl` to the source's value (without the bits the server manages). A real AD accepts `unicodePwd` only in a modify, never in the add ([KB 269190](https://learn.microsoft.com/en-us/troubleshoot/windows-server/active-directory/change-windows-active-directory-user-password)), and `userAccountControl` comes last because a disabled or never-expires flag changes the preconditions of setting the password. A re-run sets the password only for a user whose creation stopped before it (`pwdLastSet=0`), so it never rolls back a password the program under test changed.
 - **Built-in objects are never touched**: everything with `isCriticalSystemObject=TRUE` (Administrator, krbtgt, ...) is excluded, even when `base_dn` is `CN=Users`.
-- **Users** are `(&(objectCategory=person)(objectClass=user))`, which leaves computers out; **groups** are `(objectClass=group)`.
+- **Kinds.** Users are `(&(objectCategory=person)(objectClass=user))`, which leaves computers and contacts out; groups are `(objectClass=group)`; computers are `(objectCategory=computer)`, which leaves managed service accounts out; contacts are `(objectClass=contact)`. All five kinds (with `ou`) are cloned unless `[scope] objects` lists fewer.
+- **Computers are accounts too.** A computer is added as a disabled workstation trust that needs no password (`userAccountControl` 4130), gets the fixed password, and then its source `userAccountControl` (4096 for a workstation), so its account type is the source's from the add on. A joined computer has a password, so the clone has one too; it is not the machine's, so the lab computer cannot log on as the real one. Its LAPS passwords, shadow credentials (`msDS-KeyCredentialLink`), resource-based delegation and gMSA password are never cloned. The values the machine refreshes by itself (`msDS-SupportedEncryptionTypes`, `lastLogonTimestamp`) are not in the defaults, so a live source does not differ on every diff.
 - **Never cloned**: identifiers and server-managed attributes (`objectGUID`, `objectSid`, `sIDHistory`, `whenCreated`, `uSNChanged`, `memberOf`, `pwdLastSet`, the password hashes, ...). Listing one in `[attributes]` is an error.
 - **Every member is reproduced where AD allows it.** A linked attribute such as `member` can only name an object the target holds, so for each value outside the scope clone:
   - clones the object if it is of a kind (a user or group outside `base_dn`), without its own references (`[scope] references = "clone"`, the default);
@@ -48,9 +49,10 @@ base_dn = "OU=IDM,DC=ad,DC=example,DC=com"   # not the domain root: it would rea
 
 ## Limitations
 
-- Only users, groups and OUs are cloned. Other object classes are reachable only through custom per-kind `[scope.filters]` and `[attributes]`.
+- Only OUs, groups, users, computers and contacts are cloned. Other object classes (BitLocker recovery information, password settings objects, managed service accounts, GPOs) are reachable only through custom per-kind `[scope.filters]` and `[attributes]`; a member of such a class is skipped with a warning and counted by `diff`.
 - Not yet verified on a real AD:
   - writing the marker with a delegated (non-admin) account;
   - interference with the marker attribute by Exchange, Entra Connect or ADUC's "copy user";
+  - adding a computer with `userAccountControl` 4130 and then setting 4096 (verified on Samba);
   - the effect of `workers` on a real AD (measured on Samba only, see [operations.md](operations.md#performance-figures-measured-with-samba4-as-the-target)).
 - `clone -native` (the same `objectGUID` and `objectSid`) works only into the Samba lab: Windows AD does not let a client choose an `objectGUID`.

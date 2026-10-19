@@ -29,9 +29,11 @@ const (
 
 // Names of the default kinds, the labels the config file uses ([scope] objects, [scope.filters], [attributes.include]).
 const (
-	KindOU    = "ou"
-	KindGroup = "group"
-	KindUser  = "user"
+	KindOU       = "ou"
+	KindGroup    = "group"
+	KindUser     = "user"
+	KindComputer = "computer"
+	KindContact  = "contact"
 )
 
 // Role is what the tool does with entries of a kind. Only the role matters to the shared code, never the kind name.

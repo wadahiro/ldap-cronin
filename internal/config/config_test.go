@@ -30,7 +30,7 @@ func TestParseAppliesDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(c.Scope.Objects) != 3 || c.Run.Workers != defaultWorkers || c.Mask.Value != defaultMaskValue {
+	if len(c.Scope.Objects) != 0 || c.Run.Workers != defaultWorkers || c.Mask.Value != defaultMaskValue {
 		t.Fatalf("%+v", c)
 	}
 	if c.Source.Timeout() != defaultTimeout || c.Target.Timeout() != defaultTimeout {
@@ -62,7 +62,7 @@ func TestParseRejectsInvalid(t *testing.T) {
 		"bad scheme":           strings.Replace(valid, "ldap://dst:389", "http://dst", 1),
 		"unclonable include":   withProfile("ad") + "\n[attributes]\nextra_include = [\"objectGUID\"]\n",
 		"unknown profile":      withProfile("oracle"),
-		"unknown object":       strings.Replace(valid, "[scope]", "[scope]\nobjects = [\"computer\"]", 1),
+		"unknown object":       strings.Replace(valid, "[scope]", "[scope]\nobjects = [\"printer\"]", 1),
 	}
 	for name, raw := range cases {
 		if _, err := Parse([]byte(raw)); err == nil {

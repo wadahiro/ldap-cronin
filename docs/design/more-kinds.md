@@ -1,6 +1,6 @@
 # Membership fidelity: every member on the target, and diff sees every change to it
 
-Status: in progress. Steps 1 to 3 (3.1 to 3.6) are implemented; steps 4 and 5 follow: computers and contacts (3.7, 3.8), the counts (3.9).
+Status: in progress. Steps 1 to 4 (3.1 to 3.8) are implemented; step 5 follows: the counts (3.9).
 
 ## 1. Goal
 
@@ -168,14 +168,16 @@ Computers are what most groups hold besides users (3.1), so they become a defaul
 | | |
 |---|---|
 | Filter | `(objectCategory=computer)`. Service accounts have their own `objectCategory` and stay out; the user filter (`objectCategory=person`) already leaves computers out |
-| Role | Leaf, after users and groups. Not an account: no password; the computer is pre-staged |
+| Role | Leaf, after groups and users. An account: it gets the fixed password through the account steps, as a joined computer has a password (a pre-staged computer without one is not what production holds) |
 | Default attributes | `sAMAccountName`, `userAccountControl`, `dNSHostName`, `description`, `displayName`, `location`, `managedBy`, `operatingSystem`, `operatingSystemVersion`, `operatingSystemServicePack`, `servicePrincipalName`, `info` |
 | Never cloned (added to `NeverClone`) | LAPS (`ms-Mcs-AdmPwd`, `ms-Mcs-AdmPwdExpirationTime`, `msLAPS-Password`, `msLAPS-EncryptedPassword`, `msLAPS-EncryptedPasswordHistory`, `msLAPS-EncryptedDSRMPassword`, `msLAPS-PasswordExpirationTime`), `msDS-KeyCredentialLink`, `msDS-AllowedToActOnBehalfOfOtherIdentity`, `msDS-ManagedPassword`. `primaryGroupID` already is (the DC sets 515) |
 | Not in the default list | `msDS-SupportedEncryptionTypes` and other values the machine refreshes (a live source would differ on every diff); `userCertificate` (binary, a credential) |
 
-`userAccountControl` is copied without the bits the server manages (a workstation is 4096). Whether a real AD
-accepts a computer added with 4096 and no password is **unverified**; if not, it is created with `PASSWD_NOTREQD`
-(32) added and set to the source value afterwards, as the account steps do for users.
+`userAccountControl` is copied without the bits the server manages (a workstation is 4096). The add carries the
+account type, disabled and without a password required (4130); the password and then the source value follow, as
+for users. On Samba the add without `userAccountControl` works too (the DC makes a normal account and the last step
+changes its type), but a run stopped before the last step would leave a computer that is a user account. A real AD
+is **unverified**.
 
 ### 3.8 `contact` (AD)
 
@@ -261,7 +263,8 @@ They are not kinds, so they are not referenced objects either: they show in the 
 ## 7. Open questions (unverified)
 
 - `member: <SID=...>` on Samba and AD: well-known SIDs, and a SID of a domain the target does not trust.
-- A computer added with `userAccountControl` 4096 and no password on a real AD (3.7).
+- A computer added with `userAccountControl` 4130, then given the password and 4096, on a real AD (3.7; Samba
+  verified).
 - Whether AD's `member` accepts any object class over LDAP (only matters for objects of no kind, which are
   unreproducible either way).
 - diff compares a referenced object, but not its ancestors: a parent leaf above a referenced user (a user under

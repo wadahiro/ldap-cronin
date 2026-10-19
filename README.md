@@ -4,7 +4,7 @@
 
 # ldap-cronin (LDAP cRONIN)
 
-A Go tool that clones the contents of a given subtree (OUs, groups and users) from one LDAP directory to another over LDAP, and later **verifies what changed on the target**.
+A Go tool that clones the contents of a given subtree (OUs, groups and users, and on AD computers and contacts) from one LDAP directory to another over LDAP, and later **verifies what changed on the target**.
 It works with **Active Directory** (a real AD or Samba4 AD) and with **generic LDAP servers** such as OpenLDAP and 389 Directory Server. The server type is detected automatically (the `ad` and `ldap` profiles).
 
 Typical use: build a realistic, safe-to-break test copy of a directory (with fixed passwords and masked attributes), let another program change it, and check exactly what changed with `diff`.
@@ -35,7 +35,7 @@ The name is a pun on "clone" and "ronin", a masterless samurai: cRONIN is a **c*
 | `lab snapshot / snapshots / restore` | Take, list and restore snapshots of the lab data |
 | `version` | Print the version |
 
-Objects are applied in this order: parent OUs/containers, then groups and users, then `member`/`manager`/`managedBy`.
+Objects are applied in this order: parent OUs/containers, then groups, users, computers and contacts, then `member`/`manager`/`managedBy`.
 Parents above `base_dn` are created automatically if they do not exist on the target; a parent that is itself a user or group (a group under a user) is created as one, with its attributes and password. The target is expected to be empty, and nothing is ever deleted (add and update only).
 
 ## Usage
@@ -65,8 +65,9 @@ The target must be of the same type. The profile selects the default filters and
 | Users | `(&(objectCategory=person)(objectClass=user))` | `(objectClass=inetOrgPerson)` |
 | Groups | `(objectClass=group)` | `groupOfNames`, `groupOfUniqueNames` or `posixGroup` |
 | OUs | `organizationalUnit` | `organizationalUnit` |
+| Computers, contacts | `(objectCategory=computer)`, `(objectClass=contact)` | none |
 | System objects | excluded (`isCriticalSystemObject=TRUE`) | none (there is no such marker) |
-| Fixed password | add (disabled), `unicodePwd` modify over LDAPS, then `userAccountControl` | `userPassword` sent with the plain value in the add (the server hashes it) |
+| Fixed password | add (disabled), `unicodePwd` modify over LDAPS, then `userAccountControl` (users and computers) | `userPassword` sent with the plain value in the add (the server hashes it) |
 | DN-valued attributes | schema `attributeSyntax=2.5.5.1` | subschema `attributeTypes`, syntax DN / Name and Optional UID, following `SUP` |
 | Object identity (renames) | `objectGUID` | `entryUUID` |
 | Large `member` values | `member;range=0-N` | plain read |

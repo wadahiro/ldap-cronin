@@ -21,14 +21,16 @@ import (
 	"github.com/wadahiro/ldap-cronin/internal/identity"
 )
 
-// The membership test on real Samba servers: a group whose members are a user of the scope, a user outside it, a
-// built-in group and a well-known principal is cloned with every member (the outside user as a referenced object,
-// the principal by SID), diff finds nothing, and removing each kind of member on the target shows.
+// The membership test on real Samba servers: a group whose members are a user, a computer and a contact of the
+// scope, a user and a computer outside it, a built-in group and a well-known principal is cloned with every member
+// (the outside ones as referenced objects, the principal by SID), diff finds nothing, and removing each kind of
+// member on the target shows.
 func TestEveryKindOfMemberIsClonedAndItsRemovalShows(t *testing.T) {
 	runID := time.Now().UnixNano() % 1_000_000
 	root := fmt.Sprintf("OU=Mem%06d,%s", runID, realmDN)
 	scope, out := "OU=Scope,"+root, "OU=Out,"+root
 	group, ann, carl := "CN=G,"+scope, "CN=Ann,"+scope, "CN=Carl,"+out
+	pc, pcOut, contact := "CN=PC1,"+scope, "CN=PC2,"+out, "CN=Partner,"+scope
 	ctx := context.Background()
 	src, dst := dial(t, srcURL), dial(t, dstURL)
 	// A well-known principal the target does not hold yet, so clone has to write it by SID (Samba provisions some).
@@ -50,6 +52,12 @@ func TestEveryKindOfMemberIsClonedAndItsRemovalShows(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// A joined workstation: a workstation trust account with its host name and SPNs.
+	computer := func(d, sam string) directory.Entry {
+		return directory.Entry{DN: d, Attrs: map[string][]string{"objectClass": {"computer"}, "cn": {strings.SplitN(d[3:], ",", 2)[0]},
+			"sAMAccountName": {sam + "$"}, "userAccountControl": {"4096"}, "dNSHostName": {sam + ".ad.example.com"},
+			"servicePrincipalName": {"HOST/" + sam, "HOST/" + sam + ".ad.example.com"}, "operatingSystem": {"Windows 11 Enterprise"}}}
+	}
 	for _, e := range []directory.Entry{
 		{DN: root, Attrs: map[string][]string{"objectClass": {"organizationalUnit"}, "ou": {fmt.Sprintf("Mem%06d", runID)}}},
 		{DN: scope, Attrs: map[string][]string{"objectClass": {"organizationalUnit"}, "ou": {"Scope"}}},
@@ -58,6 +66,10 @@ func TestEveryKindOfMemberIsClonedAndItsRemovalShows(t *testing.T) {
 		{DN: carl, Attrs: map[string][]string{"objectClass": {"user"}, "cn": {"Carl"}, "sAMAccountName": {fmt.Sprintf("m%06dcarl", runID)},
 			"title": {"outside the scope"}}},
 		{DN: group, Attrs: map[string][]string{"objectClass": {"group"}, "cn": {"G"}, "sAMAccountName": {fmt.Sprintf("m%06dg", runID)}}},
+		computer(pc, fmt.Sprintf("m%06dpc1", runID)),
+		computer(pcOut, fmt.Sprintf("m%06dpc2", runID)),
+		{DN: contact, Attrs: map[string][]string{"objectClass": {"contact"}, "cn": {"Partner"}, "sn": {"Partner"},
+			"mail": {"partner@other.example"}, "company": {"Other"}}},
 	} {
 		must(src.Add(ctx, e))
 	}
@@ -67,11 +79,11 @@ func TestEveryKindOfMemberIsClonedAndItsRemovalShows(t *testing.T) {
 	if e, err := src.Get(ctx, principal, []string{"objectClass"}); err == nil && e != nil {
 		byPrincipal = principal
 	}
-	must(src.AddValues(ctx, group, "member", []string{ann, carl, domainAdm, byPrincipal}))
+	must(src.AddValues(ctx, group, "member", []string{ann, carl, pc, pcOut, contact, domainAdm, byPrincipal}))
 	// What the DC made of the SID: a foreign security principal, or the object in CN=WellKnown Security Principals
 	// of the configuration (Samba does that for Everyone). Either is the value clone must reproduce.
 	for _, v := range mustGet(t, src, group, "member").Values("member") {
-		if !dn.Equal(v, ann) && !dn.Equal(v, carl) && !dn.Equal(v, domainAdm) {
+		if !slices.ContainsFunc([]string{ann, carl, pc, pcOut, contact, domainAdm}, func(m string) bool { return dn.Equal(v, m) }) {
 			principal = v
 		}
 	}
@@ -85,11 +97,18 @@ func TestEveryKindOfMemberIsClonedAndItsRemovalShows(t *testing.T) {
 	opt := planOptionsFor(t, scope)
 	rep, err := clone.Run(ctx, src, dst, opt, clone.Options{UserPassword: fixedPw, Workers: 4, Marker: &m}, &bytes.Buffer{})
 	must(err)
-	if rep.Referenced != 1 || rep.WarningCount != 0 {
-		t.Fatalf("carl must be cloned as a referenced object and nothing skipped: %+v", rep)
+	if rep.Referenced != 2 || rep.WarningCount != 0 {
+		t.Fatalf("carl and PC2 must be cloned as referenced objects and nothing skipped: %+v", rep)
+	}
+	// The computers are workstation trust accounts on the target too, with a password, and the same flags.
+	for _, d := range []string{pc, pcOut} {
+		want, got := mustGet(t, src, d, "userAccountControl", "sAMAccountType"), mustGet(t, dst, d, "userAccountControl", "sAMAccountType", "pwdLastSet")
+		if got.Values("userAccountControl")[0] != "4096" || got.Values("sAMAccountType")[0] != want.Values("sAMAccountType")[0] || got.Values("pwdLastSet")[0] == "0" {
+			t.Fatalf("%s on the target: %v (source %v)", d, got.Attrs, want.Attrs)
+		}
 	}
 	members := mustGet(t, dst, group, "member").Values("member")
-	for _, want := range []string{ann, carl, domainAdm, principal} {
+	for _, want := range []string{ann, carl, pc, pcOut, contact, domainAdm, principal} {
 		if !slices.ContainsFunc(members, func(v string) bool { return dn.Equal(v, want) }) {
 			t.Fatalf("member %s is missing on the target: %v", want, members)
 		}
@@ -118,12 +137,13 @@ func TestEveryKindOfMemberIsClonedAndItsRemovalShows(t *testing.T) {
 		t.Fatalf("want one member difference: %+v", diffs)
 	}
 	removed := append(diffs[0].OnlySource, diffs[0].Source...)
-	for _, want := range []string{carl, domainAdm, principal} {
+	gone := []string{carl, pc, pcOut, contact, domainAdm, principal}
+	for _, want := range gone {
 		if !slices.ContainsFunc(removed, func(v string) bool { return dn.Equal(v, want) }) {
 			t.Errorf("the removal of %s must show: %v", want, removed)
 		}
 	}
-	if len(removed) != 3 || len(diffs[0].OnlyTarget)+len(diffs[0].Target) != 0 {
-		t.Fatalf("exactly the three removed members: %v / %v", removed, strings.Join(append(diffs[0].OnlyTarget, diffs[0].Target...), ","))
+	if len(removed) != len(gone) || len(diffs[0].OnlyTarget)+len(diffs[0].Target) != 0 {
+		t.Fatalf("exactly the removed members: %v / %v", removed, strings.Join(append(diffs[0].OnlyTarget, diffs[0].Target...), ","))
 	}
 }

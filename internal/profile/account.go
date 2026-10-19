@@ -3,6 +3,7 @@ package profile
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"unicode/utf16"
 
@@ -40,7 +41,17 @@ const (
 // It was not faster on Samba either (about 105 s for 1600 users both ways).
 // userAccountControl comes last: applying disabled or never-expires first changes the preconditions of setting the
 // password, and a real AD refuses to create a user with UAC=512 and no password.
+//
+// A computer is added with its account type (a workstation trust), disabled and without a password required, so
+// the last step changes only those flags. Without it the DC makes a normal (user) account; Samba lets the last step
+// change the type, but a run stopped before it would leave a computer that is a user account (sAMAccountType).
 type adAccount struct{}
+
+const (
+	uacDisabled         = 0x2
+	uacPasswdNotReqd    = 0x20
+	uacWorkstationTrust = 0x1000
+)
 
 func (adAccount) AddEntry(e directory.Entry, _ string) directory.Entry {
 	out := directory.Entry{DN: e.DN, Attrs: make(map[string][]string, len(e.Attrs))}
@@ -48,6 +59,9 @@ func (adAccount) AddEntry(e directory.Entry, _ string) directory.Entry {
 		if !strings.EqualFold(n, attrUAC) {
 			out.Attrs[n] = v
 		}
+	}
+	if n, err := strconv.ParseInt(strings.TrimSpace(first(e.Values(attrUAC))), 10, 64); err == nil && n&uacWorkstationTrust != 0 {
+		out.Attrs[attrUAC] = []string{strconv.Itoa(uacWorkstationTrust | uacDisabled | uacPasswdNotReqd)}
 	}
 	return out
 }

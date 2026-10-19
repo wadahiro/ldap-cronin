@@ -47,7 +47,7 @@ type Scope struct {
 	// (a generic LDAP base_dn without DC= components that the server does not list in namingContexts).
 	RootDN  string            `toml:"root_dn"`
 	BaseDN  string            `toml:"base_dn"`
-	Objects []string          `toml:"objects"`
+	Objects []string          `toml:"objects"` // empty: every kind of the profile
 	Filters map[string]string `toml:"filters"`
 	// References is what is done with a reference to an entry outside the scope: clone (default), existing or
 	// skip (see plan.RefsClone).
@@ -135,9 +135,6 @@ func Parse(raw []byte) (*Config, error) {
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&c); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
-	}
-	if len(c.Scope.Objects) == 0 {
-		c.Scope.Objects = []string{profile.KindOU, profile.KindGroup, profile.KindUser}
 	}
 	if c.Run.Workers == 0 {
 		c.Run.Workers = defaultWorkers
@@ -308,7 +305,7 @@ func (c *Config) checkMarker(p profile.Profile, attr string) error {
 			return fmt.Errorf("[mapping] attribute %q is masked; a masked attribute cannot hold a marker", attr)
 		}
 	}
-	for _, kind := range c.Scope.Objects {
+	for _, kind := range c.objects(p) {
 		list, err := p.Attrs(kind, c.override())
 		if err != nil {
 			continue // reported by checkAttributes
@@ -328,7 +325,7 @@ func (c *Config) checkAttributes(p profile.Profile) error {
 			return fmt.Errorf("[mask] attribute %q cannot be masked with a fixed string (identity, unique, DN-reference or non-string attribute)", a)
 		}
 	}
-	for _, kind := range c.Scope.Objects {
+	for _, kind := range c.objects(p) {
 		if _, err := p.Attrs(kind, c.override()); err != nil {
 			return fmt.Errorf("[attributes] %s: %w", kind, err)
 		}
@@ -356,6 +353,14 @@ func (c *Config) ProfileName() string {
 	return c.Scope.Profile
 }
 
+// objects are the kinds [scope] objects enables for p: every kind of the profile when it is not set.
+func (c *Config) objects(p profile.Profile) []string {
+	if len(c.Scope.Objects) == 0 {
+		return p.KindNames()
+	}
+	return c.Scope.Objects
+}
+
 func (c *Config) override() profile.Override {
 	return profile.Override{Include: c.Attributes.Include, Extra: c.Attributes.Extra, Exclude: c.Attributes.Exclude}
 }
@@ -371,7 +376,7 @@ func (c *Config) JobFor(p profile.Profile) (plan.Job, error) {
 	job := plan.Job{Profile: p, RootDN: c.Scope.RootDN, BaseDN: c.Scope.BaseDN, Masker: mask.New(c.Mask.Value, c.Mask.Attributes),
 		References: c.Scope.References}
 	for _, spec := range p.Kinds { // the profile's order, whatever order the config lists them in
-		if !contains(c.Scope.Objects, spec.Name) {
+		if !contains(c.objects(p), spec.Name) {
 			continue
 		}
 		list, err := p.Attrs(spec.Name, c.override())

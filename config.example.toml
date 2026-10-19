@@ -19,7 +19,7 @@ insecure_skip_verify = true
 # Starting point in the source. The domain root (DC=...) cannot be used because it would overwrite built-in accounts.
 # Parent OUs / containers above the starting point are created automatically if they do not exist on the target.
 base_dn = "OU=IDM,DC=ad,DC=example,DC=com"
-objects = ["ou", "group", "user"]   # all of them if omitted
+# objects = ["ou", "group", "user"] # every kind of the profile if omitted (ad: also computer and contact)
 # references = "clone"               # an entry outside the scope that a reference names (a member outside base_dn):
 #                                    # clone (default) creates it as its kind, without its own references, so every
 #                                    # member is on the target; existing writes only what the target holds; skip

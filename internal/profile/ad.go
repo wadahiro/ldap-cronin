@@ -37,6 +37,23 @@ var AD = Profile{
 				"wWWHomePage", "url", "info", "homeDirectory", "homeDrive", "scriptPath", "profilePath",
 				"uidNumber", "gidNumber", "loginShell", "unixHomeDirectory",
 			}},
+		// Computers are what groups hold most besides users. A computer is an account too: it gets the fixed
+		// password, as a joined computer has one (a pre-staged computer without it is not what production holds).
+		// Service accounts (msDS-ManagedServiceAccount) have their own objectCategory and stay out.
+		{Name: KindComputer, Role: RoleLeaf, Order: 2, Account: true, Filter: "(objectCategory=computer)", Is: classIs("computer"), Default: []string{
+			"sAMAccountName", "userAccountControl", "dNSHostName", "description", "displayName", "location",
+			"managedBy", "operatingSystem", "operatingSystemVersion", "operatingSystemServicePack",
+			"servicePrincipalName", "info",
+		}},
+		// Contacts: the user list without the account and logon attributes.
+		{Name: KindContact, Role: RoleLeaf, Order: 3, Filter: "(objectClass=contact)", Is: classIs("contact"), Default: []string{
+			"givenName", "sn", "initials", "middleName", "displayName", "description",
+			"mail", "telephoneNumber", "mobile", "homePhone", "pager", "ipPhone",
+			"facsimileTelephoneNumber", "title", "department", "company", "division",
+			"physicalDeliveryOfficeName", "manager", "employeeID", "employeeNumber", "employeeType",
+			"streetAddress", "postOfficeBox", "l", "st", "postalCode", "co", "c",
+			"wWWHomePage", "url", "info",
+		}},
 	},
 	Required:      []string{"objectClass", "cn", "ou"},
 	AncestorAttrs: []string{"objectClass", "cn", "ou", "description"},
@@ -47,6 +64,12 @@ var AD = Profile{
 		"dBCSPwd", "ntPwdHistory", "lmPwdHistory", "supplementalCredentials", "sAMAccountType",
 		"objectCategory", "instanceType", "nTSecurityDescriptor", "isCriticalSystemObject",
 		"systemFlags", "dSCorePropagationData", "primaryGroupID", "msDS-KeyVersionNumber",
+		// Credentials of computers: LAPS (legacy and Windows LAPS), Windows Hello / shadow credentials, resource-based
+		// delegation (who may act as the computer), the gMSA password.
+		"ms-Mcs-AdmPwd", "ms-Mcs-AdmPwdExpirationTime", "msLAPS-Password", "msLAPS-EncryptedPassword",
+		"msLAPS-EncryptedPasswordHistory", "msLAPS-EncryptedDSRMPassword", "msLAPS-EncryptedDSRMPasswordHistory",
+		"msLAPS-PasswordExpirationTime", "msDS-KeyCredentialLink", "msDS-AllowedToActOnBehalfOfOtherIdentity",
+		"msDS-ManagedPassword",
 	},
 	NoMask: []string{
 		"objectClass", "cn", "ou", "sAMAccountName", "userPrincipalName", "servicePrincipalName",

@@ -377,6 +377,10 @@ func matches(e directory.Entry, filter string) bool {
 		return strings.Contains(classes, "inetorgperson")
 	case strings.Contains(filter, "organizationalUnit"):
 		return strings.Contains(classes, "organizationalunit")
+	case strings.Contains(filter, "objectCategory=computer"):
+		return strings.Contains(classes, "computer")
+	case strings.Contains(filter, "objectClass=contact"):
+		return strings.Contains(classes, "contact")
 	case strings.Contains(filter, "objectCategory=person"):
 		return strings.Contains(classes, "user") && !strings.Contains(classes, "computer")
 	case strings.Contains(filter, "objectClass=group"):

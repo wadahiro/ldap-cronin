@@ -84,6 +84,20 @@ func randomTree(rng *rand.Rand) *fakedir.Dir {
 		src.Put(d, map[string][]string{"objectClass": {"top", "group"}, "cn": {v}, "sAMAccountName": {fmt.Sprintf("g%03d", i)}})
 		groups = append(groups, d)
 	}
+	// Computers and contacts, which groups hold besides users.
+	others := []string{}
+	for i, n := 0, rng.Intn(4); i < n; i++ {
+		d, v := child("CN", ous[rng.Intn(len(ous))])
+		if rng.Intn(2) == 0 {
+			src.Put(d, map[string][]string{"objectClass": {"top", "person", "organizationalPerson", "user", "computer"}, "cn": {v},
+				"sAMAccountName": {fmt.Sprintf("c%03d$", i)}, "userAccountControl": {"4096"}, "operatingSystem": {"Windows 11"},
+				"ms-Mcs-AdmPwd": {"laps-secret"}})
+		} else {
+			src.Put(d, map[string][]string{"objectClass": {"top", "person", "organizationalPerson", "contact"}, "cn": {v},
+				"mail": {fmt.Sprintf("k%03d@other.example", i)}})
+		}
+		others = append(others, d)
+	}
 	pick := func(from []string) string { return from[rng.Intn(len(from))] }
 	for _, u := range users {
 		switch rng.Intn(3) {
@@ -103,6 +117,10 @@ func randomTree(rng *rand.Rand) *fakedir.Dir {
 				m = pick(groups) // nested groups, possibly the group itself
 			case 1:
 				m = pick(outside)
+			case 2:
+				if len(others) > 0 {
+					m = pick(others)
+				}
 			}
 			if !seen[strings.ToLower(m)] {
 				seen[strings.ToLower(m)] = true

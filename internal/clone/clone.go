@@ -183,11 +183,11 @@ func (r *runner) upsert(ctx context.Context, e directory.Entry, account profile.
 	extra := r.guidAttr()
 	add := desired
 	if account != nil {
+		add = account.AddEntry(desired, r.opt.UserPassword) // it sees the owned attributes (a computer's account type)
 		for _, a := range account.Owned() {
 			delete(desired.Attrs, a)
 		}
 		extra = append(extra, account.ReadExtra()...)
-		add = account.AddEntry(desired, r.opt.UserPassword)
 	}
 	err = r.add(ctx, add)
 	if errors.Is(err, directory.ErrSchemaViolation) {
