@@ -105,11 +105,15 @@ func Run(ctx context.Context, src, dst directory.Directory, job plan.Job, o Opti
 	r.p = p
 	r.loc = &locator{scheme: job.Profile.Identity, dst: dst, domain: p.Root, res: o.Resolver,
 		targetOf: map[string]string{}, found: plan.NewScope(), renamedBack: map[string]string{}}
-	// Containers go shallowest first: to know the expected parent DN of a child, where its parent lives on the
-	// target (whether it moved) must already be known.
+	// Containers and parent leaves go shallowest first: to know the expected parent DN of a child, where its parent
+	// lives on the target (whether it moved) must already be known.
 	if err := p.EachLevel(ctx, o.Workers, func(ctx context.Context, n plan.Node) error {
 		names := []string{"objectClass"}
-		if n.Kind != nil {
+		switch {
+		case n.Outside:
+			names = r.withoutRefs(n.Kind.Attrs)
+			r.referenced()
+		case n.Kind != nil:
 			names = n.Kind.Attrs
 			r.compared(n.Kind.Name)
 			r.noteOutside(n.Entry, names)
@@ -199,17 +203,26 @@ func (r *runner) checkReferenced(ctx context.Context, refs *plan.Classifier, wor
 		if err != nil || e == nil {
 			return err
 		}
-		var names []string
-		for _, n := range k.Attrs {
-			if !r.p.IsRef(n) {
-				names = append(names, n)
-			}
-		}
-		r.mu.Lock()
-		r.sum.Referenced++
-		r.mu.Unlock()
-		return r.check(ctx, *e, names, k, false)
+		r.referenced()
+		return r.check(ctx, *e, r.withoutRefs(k.Attrs), k, false)
 	})
+}
+
+// withoutRefs returns names without the DN reference attributes.
+func (r *runner) withoutRefs(names []string) []string {
+	var out []string
+	for _, n := range names {
+		if !r.p.IsRef(n) {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+func (r *runner) referenced() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.sum.Referenced++
 }
 
 func (r *runner) report(d Difference) {

@@ -76,7 +76,11 @@ func randomTree(rng *rand.Rand) *fakedir.Dir {
 		users = append(users, d)
 	}
 	for i, n := 0, 1+rng.Intn(4); i < n; i++ {
-		d, v := child("CN", ous[rng.Intn(len(ous))])
+		parent := ous[rng.Intn(len(ous))]
+		if rng.Intn(4) == 0 {
+			parent = users[rng.Intn(len(users))] // a parent leaf: a user holding a child
+		}
+		d, v := child("CN", parent)
 		src.Put(d, map[string][]string{"objectClass": {"top", "group"}, "cn": {v}, "sAMAccountName": {fmt.Sprintf("g%03d", i)}})
 		groups = append(groups, d)
 	}
@@ -204,7 +208,11 @@ func randomGenericTree(rng *rand.Rand) *fakedir.Dir {
 	}
 	var groups []string
 	for i, n := 0, 1+rng.Intn(4); i < n; i++ {
-		d, v := child("cn", ous[rng.Intn(len(ous))])
+		parent := ous[rng.Intn(len(ous))]
+		if rng.Intn(4) == 0 {
+			parent = pick(users) // a parent leaf: a generic server has no structure rules
+		}
+		d, v := child("cn", parent)
 		members := []string{pick(users)} // groupOfNames needs one
 		for j, m := 0, rng.Intn(len(users)); j < m; j++ {
 			c := pick(users)
@@ -240,7 +248,7 @@ func TestRandomGenericTreesCloneToAnIdenticalTargetAndRerunsWriteNothing(t *test
 			target := func() *fakedir.Dir {
 				d := fakedir.New(gRoot)
 				d.IDPrefix, d.Relax = 0xd1, profile.RelaxOID
-				d.RequireAttr = map[string]string{"groupofnames": "member"}
+				d.RequireAttr = map[string]string{"groupofnames": "member", "inetorgperson": "sn"}
 				return d
 			}
 			dst, job := target(), genericOptions(t)

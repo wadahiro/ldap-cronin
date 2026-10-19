@@ -115,8 +115,9 @@ func (s *Scope) Len() int { return len(s.set) }
 
 type Plan struct {
 	Root string
-	// Containers are the parents to create (create-only ancestors such as CN= containers) and the container kinds,
-	// shallowest first, with the allow list and masking applied. They are the only entries held in memory.
+	// Containers are the parents to create (create-only ancestors such as CN= containers, and parent leaves) and the
+	// container kinds, shallowest first, with the allow list and masking applied. They are the only entries held in
+	// memory.
 	Containers []Node
 	Scope      *Scope
 
@@ -124,6 +125,9 @@ type Plan struct {
 	job  Job
 	read Read
 	refs map[string]profile.RefInfo // lowercase attribute name
+	// parentLeaves are the normalized DNs of the leaves of the scope that are also ancestors, handled in
+	// Containers instead of by EachLeaf.
+	parentLeaves map[string]bool
 }
 
 // Job returns the job the plan was built for.
@@ -186,18 +190,19 @@ func Build(ctx context.Context, src directory.Directory, job Job, read Read) (*P
 		}
 	}
 
+	p.parentLeaves = map[string]bool{}
 	for key, a := range ancestors {
 		if selected[key] {
 			continue
 		}
-		e, err := src.Get(ctx, a, p.withRead(job.Profile.AncestorAttrs))
+		n, err := p.Ancestor(ctx, a)
 		if err != nil {
-			return nil, fmt.Errorf("read ancestor %s: %w", a, err)
+			return nil, err
 		}
-		if e == nil {
-			return nil, fmt.Errorf("ancestor %s does not exist on source", a)
+		p.Containers = append(p.Containers, n)
+		if n.Kind != nil && !n.Outside {
+			p.parentLeaves[key] = true
 		}
-		p.Containers = append(p.Containers, Node{Entry: job.Masker.Apply(*e), CreateOnly: true})
 		p.Scope.Add(a)
 	}
 	// Map iteration made the ancestor order random; DN order keeps a level's work (and the logs) reproducible.
@@ -209,6 +214,38 @@ func Build(ctx context.Context, src directory.Directory, job Job, read Read) (*P
 		return dn.Normalize(p.Containers[i].Entry.DN) < dn.Normalize(p.Containers[j].Entry.DN)
 	})
 	return p, nil
+}
+
+// Ancestor returns the node of an ancestor a of an entry to clone that is not selected as a container.
+//
+// An entry of a leaf kind is a parent leaf (a user holding Exchange's ActiveSync container, any entry on a server
+// without structure rules): created with only the ancestor attributes it would miss what its kind requires (sn of
+// inetOrgPerson, the account steps). One of the scope (scanned as a leaf) is handled as its kind; one outside it
+// (narrowed out by the filter, or above base_dn) as a referenced object is, without its own references (Outside).
+// Anything else is a create-only ancestor.
+func (p *Plan) Ancestor(ctx context.Context, a string) (Node, error) {
+	k, err := p.KindOf(ctx, a)
+	if err != nil {
+		return Node{}, fmt.Errorf("read ancestor %s: %w", a, err)
+	}
+	if k != nil && k.Role == profile.RoleLeaf {
+		e, err := p.ReadReferenced(ctx, a, k)
+		if err != nil {
+			return Node{}, fmt.Errorf("read ancestor %s: %w", a, err)
+		}
+		if e == nil {
+			return Node{}, fmt.Errorf("ancestor %s does not exist on source", a)
+		}
+		return Node{Entry: *e, Kind: k, Outside: !p.Scope.Has(a)}, nil
+	}
+	e, err := p.src.Get(ctx, a, p.withRead(p.job.Profile.AncestorAttrs))
+	if err != nil {
+		return Node{}, fmt.Errorf("read ancestor %s: %w", a, err)
+	}
+	if e == nil {
+		return Node{}, fmt.Errorf("ancestor %s does not exist on source", a)
+	}
+	return Node{Entry: p.job.Masker.Apply(*e), CreateOnly: true}, nil
 }
 
 // withRead adds the attributes Read asks for to names.

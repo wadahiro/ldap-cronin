@@ -153,6 +153,8 @@ However, changing the RDN makes the server change `cn` (or `ou` for an OU) as we
 Moving or renaming an OU changes the DN of everything under it, so
 **children that are fully explained by the parent OU's move are not listed** (only the OU itself appears). The summary shows the count as `not listed: N entries moved along with a renamed/moved parent OU`.
 
+The same holds for a user or group that has children (a group under a user, which a generic server allows): its rename or move is reported once, for it alone.
+
 Only children found by identifier that moved with the parent as expected are left out. These **are** shown:
 
 | What happened on the target | What is shown |

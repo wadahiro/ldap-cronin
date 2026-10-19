@@ -1,6 +1,6 @@
 # Membership fidelity: every member on the target, and diff sees every change to it
 
-Status: in progress. Steps 1 and 2 (3.1 to 3.5) are implemented; steps 3 to 5 follow: parent leaves (3.6), computers and contacts (3.7, 3.8), the counts (3.9).
+Status: in progress. Steps 1 to 3 (3.1 to 3.6) are implemented; steps 4 and 5 follow: computers and contacts (3.7, 3.8), the counts (3.9).
 
 ## 1. Goal
 
@@ -150,9 +150,12 @@ references not compared (could not be cloned): member 20 (trusted-domain princip
 A **parent leaf** is an entry of a leaf kind that is also the ancestor of an entry in scope (or of a referenced
 object).
 
-- `plan.Build` records the kind of every leaf it scans (the scope keeps a kind index per DN). An ancestor found in
-  the scope as a leaf is not made create-only: it is read with its kind's attributes and added to `Containers` as
-  `Node{Entry, Kind, Leaf: true}`.
+- `plan.Build` tells a leaf among the ancestors by its object classes (`Plan.KindOf`, the kind predicates of 3.1),
+  so the scope keeps no kind per DN: ancestors are few, and one read each is cheaper than an index of every leaf.
+  Such an ancestor is not made create-only: it is read with its kind's attributes and added to `Containers` as
+  `Node{Entry, Kind}`. One outside the scope (above `base_dn`, or narrowed out by the filter) is still needed as
+  the parent: it is `Outside`, cloned and compared without its own references, as a referenced object is, and
+  counted with them. The ancestors of a referenced object go through the same `Plan.Ancestor`.
 - `EachLevel` hands a parent leaf to the caller's leaf function at its depth: clone runs the leaf path (account
   steps, marker, mapping), diff compares it as a leaf, and its children's expected DN is known when it moved.
 - `EachLeaf` skips the DNs handled as parent leaves (a set of the parent leaves only).
@@ -220,7 +223,7 @@ They are not kinds, so they are not referenced objects either: they show in the 
 | Where | Change |
 |---|---|
 | `internal/profile` | `KindComputer`, `KindContact`; a class predicate per kind; `RefsNeedEntry`; well-known SIDs and the `<SID=>` form; `NeverClone` additions; kind order |
-| `internal/plan` | Scope with a kind index; the leaf scan reads reference attributes and collects outside DNs; the reference classification (3.1); referenced objects and parent leaves in the plan; `Unselected(ctx)` for the counts |
+| `internal/plan` | Parent leaves told by `KindOf` among the ancestors; the leaf scan reads reference attributes and collects outside DNs; the reference classification (3.1); referenced objects and parent leaves in the plan; `Unselected(ctx)` for the counts |
 | `internal/clone` | Parent leaves in the level pass; referenced objects created before the reference pass; values applied per class (by SID for principals) |
 | `internal/diff` | Parent leaves; referenced objects compared without references; `resolveRefs` compares every reproducible value; summary lines |
 | `internal/config` | `references`; the new kind names |
@@ -261,3 +264,6 @@ They are not kinds, so they are not referenced objects either: they show in the 
 - A computer added with `userAccountControl` 4096 and no password on a real AD (3.7).
 - Whether AD's `member` accepts any object class over LDAP (only matters for objects of no kind, which are
   unreproducible either way).
+- diff compares a referenced object, but not its ancestors: a parent leaf above a referenced user (a user under
+  another user outside the scope) is cloned and counted by clone, and neither compared nor counted by diff. Comparing
+  them needs them shallowest first, before the referenced object.

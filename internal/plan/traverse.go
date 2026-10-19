@@ -11,19 +11,25 @@ import (
 	"github.com/wadahiro/ldap-cronin/internal/workpool"
 )
 
-// Node is one container of the plan.
+// Node is one container or parent leaf of the plan.
 type Node struct {
 	Entry directory.Entry
-	// Kind is the kind the entry was selected as; nil for a create-only ancestor.
+	// Kind is the kind the entry is handled as; nil for a create-only ancestor.
 	Kind *Kind
 	// CreateOnly marks an ancestor above or between the selected entries (CN=Users, ...): it is created when missing
 	// and otherwise left alone, and diff only checks that it exists.
 	CreateOnly bool
+	// Outside marks a parent leaf outside the scope (see Plan.Ancestor): it is handled as its kind without its own
+	// references, as a referenced object is.
+	Outside bool
 }
 
-// EachLevel calls fn for every container, one depth at a time and shallowest first, with the entries of one depth
-// in parallel. A level waits for the previous one because a child can only be created, or its expected location on
-// the target known, once its parent has been handled.
+// Leaf reports whether n is a parent leaf: an entry of a leaf kind that is the ancestor of another to clone.
+func (n Node) Leaf() bool { return n.Kind != nil && n.Kind.Role == profile.RoleLeaf }
+
+// EachLevel calls fn for every container and parent leaf, one depth at a time and shallowest first, with the
+// entries of one depth in parallel. A level waits for the previous one because a child can only be created, or its
+// expected location on the target known, once its parent has been handled.
 func (p *Plan) EachLevel(ctx context.Context, workers int, fn func(context.Context, Node) error) error {
 	items := p.Containers
 	for len(items) > 0 {
@@ -40,13 +46,19 @@ func (p *Plan) EachLevel(ctx context.Context, workers int, fn func(context.Conte
 	return nil
 }
 
-// EachLeaf streams the enabled leaf kinds (groups, users) in the profile's creation order. The source is read
-// sequentially on one connection while fn runs on at most workers entries, so memory stays bounded by workers.
-// Leaves do not depend on each other (references are applied afterwards), which is what makes the parallelism safe.
+// EachLeaf streams the enabled leaf kinds (groups, users) in the profile's creation order, without the parent
+// leaves (EachLevel handles them). The source is read sequentially on one connection while fn runs on at most
+// workers entries, so memory stays bounded by workers. Leaves do not depend on each other (references are applied
+// afterwards), which is what makes the parallelism safe.
 func (p *Plan) EachLeaf(ctx context.Context, workers int, fn func(ctx context.Context, k *Kind, e directory.Entry) error) error {
 	for _, k := range p.Leaves() {
 		err := workpool.Feed(ctx, workers, func(ctx context.Context, emit func(directory.Entry) error) error {
-			return p.Walk(ctx, k, k.Attrs, emit)
+			return p.Walk(ctx, k, k.Attrs, func(e directory.Entry) error {
+				if p.parentLeaves[dn.Normalize(e.DN)] {
+					return nil // handled by EachLevel
+				}
+				return emit(e)
+			})
 		}, func(ctx context.Context, e directory.Entry) error {
 			return fn(ctx, k, e)
 		})

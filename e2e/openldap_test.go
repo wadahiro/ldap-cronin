@@ -60,6 +60,11 @@ objectClass: groupOfNames
 cn: Eng
 member: uid=alice,ou=People,ou=IDM,dc=example,dc=org
 member: uid=bob,ou=People,ou=IDM,dc=example,dc=org
+
+dn: cn=Devices,uid=alice,ou=People,ou=IDM,dc=example,dc=org
+objectClass: groupOfNames
+cn: Devices
+member: uid=bob,ou=People,ou=IDM,dc=example,dc=org
 `
 
 // olACL grants cn=cloner manage (what the relax control needs) and cn=writer only write, ahead of the image's own
@@ -179,8 +184,10 @@ base_dn = %q
 	if err != nil {
 		t.Fatalf("clone: %v\n%s", err, out.String())
 	}
-	if rep.Added != 6 {
-		t.Fatalf("expected 6 objects: %+v\n%s", *rep, out.String())
+	// 7 with the group under alice: a parent leaf, which a generic server allows. alice is cloned as the user she
+	// is (OpenLDAP refuses an inetOrgPerson without sn), and logs in with the fixed password below.
+	if rep.Added != 7 {
+		t.Fatalf("expected 7 objects: %+v\n%s", *rep, out.String())
 	}
 
 	diffs, err := runDiffWith(opt, src, dst, nil)
@@ -259,5 +266,27 @@ base_dn = %q
 	}
 	if !renamed {
 		t.Fatalf("the rename must be found through the preserved entryUUID: %+v", diffs)
+	}
+
+	// A parent leaf renamed on the target takes its child along: alice is RENAMED, and the group under her is
+	// neither missing nor extra.
+	if err := conn.ModifyDN(ldap.NewModifyDNRequest(alice, "uid=alice2", true, "")); err != nil {
+		t.Fatal(err)
+	}
+	diffs, err = runDiffWith(opt, src, dst, res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	renamed = false
+	for _, d := range diffs {
+		switch {
+		case d.Kind == diff.Renamed && strings.EqualFold(d.DN, alice):
+			renamed = true
+		case (d.Kind == diff.OnlySource || d.Kind == diff.OnlyTarget) && strings.Contains(strings.ToLower(d.DN), "cn=devices"):
+			t.Errorf("the child of a renamed parent leaf must not be missing or extra: %+v", d)
+		}
+	}
+	if !renamed {
+		t.Fatalf("the rename of the parent leaf must be found: %+v", diffs)
 	}
 }

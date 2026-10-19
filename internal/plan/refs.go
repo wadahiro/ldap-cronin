@@ -120,7 +120,7 @@ func (c *Classifier) classify(ctx context.Context, v string, chk *refCheck) erro
 		mode = RefsClone
 	}
 	if mode == RefsClone {
-		k, err := c.kindOf(ctx, v)
+		k, err := c.p.KindOf(ctx, v)
 		if err != nil {
 			return err
 		}
@@ -153,18 +153,19 @@ func (c *Classifier) classify(ctx context.Context, v string, chk *refCheck) erro
 	return nil
 }
 
-// kindOf reads the source entry v names and returns the enabled kind it is of; nil when it is outside the naming
-// context, missing, built-in, or of no enabled kind.
-func (c *Classifier) kindOf(ctx context.Context, v string) (*Kind, error) {
-	prof := c.p.job.Profile
-	if !dn.IsDescendant(v, c.p.Root) {
+// KindOf reads the source entry entryDN names and returns the enabled kind it is of, by its object classes as the
+// kind's Is says (without the configured narrowing of the filter); nil when it is outside the naming context,
+// missing, built-in, or of no enabled kind.
+func (p *Plan) KindOf(ctx context.Context, entryDN string) (*Kind, error) {
+	prof := p.job.Profile
+	if !dn.IsDescendant(entryDN, p.Root) {
 		return nil, nil // another naming context (another domain of the forest): not read
 	}
 	attrs := []string{"objectClass"}
 	if prof.SystemAttr != "" {
 		attrs = append(attrs, prof.SystemAttr)
 	}
-	e, err := c.p.src.Get(ctx, v, attrs)
+	e, err := p.src.Get(ctx, entryDN, attrs)
 	if err != nil || e == nil {
 		return nil, err
 	}
@@ -172,8 +173,8 @@ func (c *Classifier) kindOf(ctx context.Context, v string) (*Kind, error) {
 		return nil, nil // a built-in object is never created: the target has its own, or none
 	}
 	classes := e.Values("objectClass")
-	for i := range c.p.job.Kinds {
-		if k := &c.p.job.Kinds[i]; k.Is != nil && k.Is(classes) {
+	for i := range p.job.Kinds {
+		if k := &p.job.Kinds[i]; k.Is != nil && k.Is(classes) {
 			return k, nil
 		}
 	}
@@ -208,16 +209,6 @@ func (c *Classifier) Reproducible(ctx context.Context, values []string) ([]strin
 // ReadReferenced reads the source entry of a referenced value as its kind (with what Read asks for, masked).
 func (p *Plan) ReadReferenced(ctx context.Context, v string, k *Kind) (*directory.Entry, error) {
 	e, err := p.src.Get(ctx, v, p.withRead(k.Attrs))
-	if err != nil || e == nil {
-		return e, err
-	}
-	m := p.job.Masker.Apply(*e)
-	return &m, nil
-}
-
-// ReadAncestor reads the source entry of a create-only ancestor (with what Read asks for, masked).
-func (p *Plan) ReadAncestor(ctx context.Context, a string) (*directory.Entry, error) {
-	e, err := p.src.Get(ctx, a, p.withRead(p.job.Profile.AncestorAttrs))
 	if err != nil || e == nil {
 		return e, err
 	}

@@ -135,9 +135,16 @@ func (r *runner) leaf(ctx context.Context, k *plan.Kind, e directory.Entry) erro
 	return nil
 }
 
-// ensure creates or updates one container. A create-only ancestor that already exists on the target (CN=Users, ...)
-// is left untouched.
+// ensure creates or updates one container, or a parent leaf as its kind. A create-only ancestor that already exists
+// on the target (CN=Users, ...) is left untouched.
 func (r *runner) ensure(ctx context.Context, n plan.Node) error {
+	if n.Leaf() {
+		if err := r.leaf(ctx, n.Kind, n.Entry); err != nil || !n.Outside {
+			return err
+		}
+		r.count(func(rep *Report) { rep.Referenced++ })
+		return nil
+	}
 	if !n.CreateOnly {
 		created, cur, err := r.upsert(ctx, n.Entry, nil)
 		if err != nil {
@@ -486,7 +493,7 @@ func (r *runner) writeForm(ctx context.Context, values []string) ([]string, erro
 }
 
 // referenced creates, once, an entry outside the scope that a reference names (plan.RefReferenced): its missing
-// ancestors as create-only, then the entry as its kind, without its own references (depth one: following them
+// ancestors (see plan.Plan.Ancestor), then the entry as its kind, without its own references (depth one: following them
 // would pull the directory in through company-wide groups).
 func (r *runner) referenced(ctx context.Context, v string) error {
 	return r.once(ctx, "ref:"+dn.Normalize(v), func() error {
@@ -500,15 +507,13 @@ func (r *runner) referenced(ctx context.Context, v string) error {
 			if r.plan.Scope.Has(a) {
 				continue
 			}
-			if err := r.once(ctx, "anc:"+dn.Normalize(a), func() error {
-				e, err := r.plan.ReadAncestor(ctx, a)
+			// The key of a referenced entry: an ancestor that a reference also names is created once.
+			if err := r.once(ctx, "ref:"+dn.Normalize(a), func() error {
+				n, err := r.plan.Ancestor(ctx, a)
 				if err != nil {
 					return err
 				}
-				if e == nil {
-					return fmt.Errorf("ancestor %s of %s does not exist on source", a, v)
-				}
-				return r.ensure(ctx, plan.Node{Entry: *e, CreateOnly: true})
+				return r.ensure(ctx, n)
 			}); err != nil {
 				return err
 			}

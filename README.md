@@ -36,7 +36,7 @@ The name is a pun on "clone" and "ronin", a masterless samurai: cRONIN is a **c*
 | `version` | Print the version |
 
 Objects are applied in this order: parent OUs/containers, then groups and users, then `member`/`manager`/`managedBy`.
-Parents above `base_dn` are created automatically if they do not exist on the target. The target is expected to be empty, and nothing is ever deleted (add and update only).
+Parents above `base_dn` are created automatically if they do not exist on the target; a parent that is itself a user or group (a group under a user) is created as one, with its attributes and password. The target is expected to be empty, and nothing is ever deleted (add and update only).
 
 ## Usage
 

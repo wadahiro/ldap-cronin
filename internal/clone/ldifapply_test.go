@@ -135,8 +135,8 @@ func TestDryRunLDIFLoadedWithLdapmodifyEqualsAClone(t *testing.T) {
 	t.Run("ldap", func(t *testing.T) {
 		dst := fakedir.New(gRoot)
 		dst.Relax = profile.RelaxOID
-		dst.RequireAttr = map[string]string{"groupofnames": "member"}
-		dryRunEqualsClone(t, genericSource(), dst, genericOptions(t), true)
+		dst.RequireAttr = map[string]string{"groupofnames": "member", "inetorgperson": "sn"}
+		dryRunEqualsClone(t, genericParentLeafSource(), dst, genericOptions(t), true)
 	})
 }
 
