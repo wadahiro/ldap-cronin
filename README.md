@@ -40,6 +40,9 @@ Parents above `base_dn` are created automatically if they do not exist on the ta
 
 ## Usage
 
+For a first run against Active Directory, follow the [tutorial](docs/tutorial-ad.md): a complete configuration, a
+clone into the Samba4 lab with snapshots, and the same clone into a test AD.
+
 ```sh
 cp config.example.toml config.toml   # edit it
 make build                           # produces bin/ldap-cronin (requires Go)

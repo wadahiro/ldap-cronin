@@ -2,6 +2,8 @@
 
 The `ad` profile clones and compares Active Directory and Samba4 AD. It is chosen when the root DSE's `supportedCapabilities` contains `1.2.840.113556.1.4.800`; how it differs from the generic profile is in the [table in the README](../README.md#server-types-profiles).
 `ldap-cronin list-attrs -profile ad` prints the default attributes (the ones Samba4 has out of the box).
+For a first run, the [tutorial](tutorial-ad.md) goes through a complete configuration and a clone into the lab and
+into a test AD.
 
 ## Configuration
 
