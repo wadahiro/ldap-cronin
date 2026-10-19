@@ -97,23 +97,49 @@ func dnRefsFromSchema(definitions []string) map[string]bool {
 // schema, so back links such as memberOf are excluded through the profile's never-clone list instead.
 type subschema struct{}
 
-func (subschema) Discover(ctx context.Context, src directory.Directory) (Schema, bool, error) {
-	root, err := src.Get(ctx, "", []string{"subschemaSubentry"})
+// Attributes reads every name of every attributeTypes value of the subschema subentry.
+func (subschema) Attributes(ctx context.Context, d directory.Directory) (map[string]bool, bool, error) {
+	defs, ok, err := attributeTypes(ctx, d)
+	if err != nil || !ok {
+		return nil, ok, err
+	}
+	out := map[string]bool{}
+	for _, def := range defs {
+		if t, ok := parseAttributeType(def); ok {
+			for _, n := range t.names {
+				out[strings.ToLower(n)] = true
+			}
+		}
+	}
+	return out, true, nil
+}
+
+// attributeTypes reads the attributeTypes of the subschema subentry; ok=false when the server has none to read.
+func attributeTypes(ctx context.Context, d directory.Directory) ([]string, bool, error) {
+	root, err := d.Get(ctx, "", []string{"subschemaSubentry"})
 	if err != nil {
-		return Schema{}, false, fmt.Errorf("read root DSE: %w", err)
+		return nil, false, fmt.Errorf("read root DSE: %w", err)
 	}
 	if root == nil || first(root.Values("subschemaSubentry")) == "" {
-		return Schema{}, false, nil
+		return nil, false, nil
 	}
-	sub, err := src.Get(ctx, first(root.Values("subschemaSubentry")), []string{"attributeTypes"})
+	sub, err := d.Get(ctx, first(root.Values("subschemaSubentry")), []string{"attributeTypes"})
 	if err != nil {
-		return Schema{}, false, fmt.Errorf("read schema: %w", err)
+		return nil, false, fmt.Errorf("read schema: %w", err)
 	}
 	if sub == nil {
-		return Schema{}, false, nil
+		return nil, false, nil
+	}
+	return sub.Values("attributeTypes"), true, nil
+}
+
+func (subschema) Discover(ctx context.Context, src directory.Directory) (Schema, bool, error) {
+	defs, ok, err := attributeTypes(ctx, src)
+	if err != nil || !ok {
+		return Schema{}, ok, err
 	}
 	s := Schema{Refs: map[string]RefInfo{}, BackLinks: map[string]bool{}, Unsupported: map[string]bool{}}
-	for name, single := range dnRefsFromSchema(sub.Values("attributeTypes")) {
+	for name, single := range dnRefsFromSchema(defs) {
 		s.Refs[name] = RefInfo{Single: single}
 	}
 	return s, true, nil

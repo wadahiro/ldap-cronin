@@ -98,6 +98,7 @@ var AD = Profile{
 	Marker:      "adminDisplayName",
 	MarkerCheck: adSchema{},
 	Refs:        adSchema{},
+	SchemaAttrs: adSchema{},
 	Root:        adRoot{},
 	Account:     adAccount{},
 	Native:      adNative{},
@@ -171,6 +172,28 @@ func (adSchema) Discover(ctx context.Context, src directory.Directory) (Schema, 
 		return Schema{}, false, fmt.Errorf("read schema: %w", err)
 	}
 	return s, true, nil
+}
+
+// Attributes reads the lDAPDisplayName of every attributeSchema entry.
+func (adSchema) Attributes(ctx context.Context, d directory.Directory) (map[string]bool, bool, error) {
+	root, err := d.Get(ctx, "", []string{"schemaNamingContext"})
+	if err != nil {
+		return nil, false, fmt.Errorf("read root DSE: %w", err)
+	}
+	if root == nil || first(root.Values("schemaNamingContext")) == "" {
+		return nil, false, nil
+	}
+	out := map[string]bool{}
+	err = d.Walk(ctx, first(root.Values("schemaNamingContext")), "(objectClass=attributeSchema)", []string{"lDAPDisplayName"}, func(e directory.Entry) error {
+		if n := first(e.Values("lDAPDisplayName")); n != "" {
+			out[strings.ToLower(n)] = true
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, false, fmt.Errorf("read schema: %w", err)
+	}
+	return out, true, nil
 }
 
 // Unicode, case-insensitive and printable string syntaxes: the ones a marker can be stored and searched in.

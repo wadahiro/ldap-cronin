@@ -250,6 +250,59 @@ func (p *Plan) Ancestor(ctx context.Context, a string) (Node, error) {
 	return Node{Entry: p.job.Masker.Apply(*e), CreateOnly: true}, nil
 }
 
+// CheckTargetSchema refuses a job whose allow lists name an attribute the source schema defines and the target's
+// lacks. Found at the first object holding a value, it would stop clone half way, with what came before written. An
+// attribute neither schema defines is no problem (no value is ever read), and a schema that cannot be read (the
+// dry-run, test directories) skips the check.
+func CheckTargetSchema(ctx context.Context, src, dst directory.Directory, job Job) error {
+	lister := job.Profile.SchemaAttrs
+	if lister == nil {
+		return nil
+	}
+	have, ok, err := lister.Attributes(ctx, dst)
+	if err != nil || !ok {
+		return err
+	}
+	defined, ok, err := lister.Attributes(ctx, src)
+	if err != nil || !ok {
+		return err
+	}
+	missing := map[string][]string{} // attribute -> kinds
+	var names []string
+	note := func(attr, kind string) {
+		key := strings.ToLower(attr)
+		if !defined[key] || have[key] {
+			return
+		}
+		if _, seen := missing[attr]; !seen {
+			names = append(names, attr)
+		}
+		for _, k := range missing[attr] {
+			if k == kind {
+				return
+			}
+		}
+		missing[attr] = append(missing[attr], kind)
+	}
+	for _, k := range job.Kinds {
+		for _, a := range k.Attrs {
+			note(a, k.Name)
+		}
+	}
+	for _, a := range job.Profile.AncestorAttrs {
+		note(a, "parents")
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	sort.Strings(names)
+	parts := make([]string, len(names))
+	for i, n := range names {
+		parts[i] = fmt.Sprintf("%s (%s)", n, strings.Join(missing[n], ", "))
+	}
+	return fmt.Errorf("the target schema lacks attributes that the source defines and the allow lists name: %s; add them to the target's schema, or leave them out with [attributes] exclude", strings.Join(parts, ", "))
+}
+
 // Unselected counts, by structural object class, the entries under base_dn that clone does not copy: those of no
 // enabled kind (BitLocker recovery information, ActiveSync devices, a kind left out of [scope] objects) and the
 // built-in ones. The parents it creates are not counted. It is one more paged search, reading only the classes.

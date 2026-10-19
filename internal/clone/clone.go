@@ -97,6 +97,9 @@ func Run(ctx context.Context, src, dst directory.Directory, job plan.Job, opt Op
 			read.Extra = job.Profile.Preserve.Operational
 		}
 	}
+	if err := plan.CheckTargetSchema(ctx, src, dst, job); err != nil {
+		return nil, err
+	}
 	p, err := plan.Build(ctx, src, job, read)
 	if err != nil {
 		return nil, err
@@ -209,7 +212,7 @@ func (r *runner) upsert(ctx context.Context, e directory.Entry, account profile.
 		extra = append(extra, account.ReadExtra()...)
 	}
 	err = r.add(ctx, add)
-	if errors.Is(err, directory.ErrSchemaViolation) {
+	if errors.Is(err, directory.ErrSchemaViolation) && r.prof.RefsAtCreation {
 		// A group class such as groupOfNames requires a member at creation, which the deferred reference pass cannot give.
 		// Retrying with the references keeps the common case (AD, where nothing is required) on the cheaper path.
 		withRefs, rerr := r.withRefs(ctx, e, add)

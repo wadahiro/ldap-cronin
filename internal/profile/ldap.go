@@ -49,6 +49,7 @@ var LDAP = Profile{
 	BuiltinRefs: map[string]RefInfo{
 		"member": {}, "uniquemember": {}, "owner": {}, "seealso": {}, "manager": {}, "secretary": {}, "roleoccupant": {},
 	},
+	RefsAtCreation: true,
 	// No Ranged: OpenLDAP does not implement the range option and would return member empty.
 	Identity: identity.EntryUUID,
 	// The relax control (an expired Internet-Draft that OpenLDAP implements) lets an Add set entryUUID and the
@@ -60,9 +61,10 @@ var LDAP = Profile{
 		Remedy: "the relax control needs manage access to the entries (or the rootdn) on OpenLDAP; " +
 			"grant it, or set [mapping] mode = \"marker\" with an attribute, \"file\" or \"off\"",
 	},
-	Refs:    subschema{},
-	Root:    namingContextRoot{},
-	Account: ldapAccount{},
+	Refs:        subschema{},
+	SchemaAttrs: subschema{},
+	Root:        namingContextRoot{},
+	Account:     ldapAccount{},
 }
 
 // RelaxOID is the relax control (draft-zeilenga-ldap-relax).

@@ -121,6 +121,13 @@ type RefDiscoverer interface {
 	Discover(ctx context.Context, src directory.Directory) (s Schema, ok bool, err error)
 }
 
+// AttributeLister reads the names of the attributes a schema defines.
+type AttributeLister interface {
+	// Attributes returns the lowercase names; ok=false when the schema cannot be read (test directories, the
+	// dry-run), and the check that uses it is then skipped.
+	Attributes(ctx context.Context, d directory.Directory) (names map[string]bool, ok bool, err error)
+}
+
 // RootResolver finds the top of the naming context that holds base_dn. [scope] root_dn, when set, bypasses it.
 type RootResolver interface {
 	Root(ctx context.Context, src directory.Directory, baseDN string) (string, error)
@@ -181,6 +188,10 @@ type Profile struct {
 	BuiltinRefs map[string]RefInfo
 	// Ranged attributes are always fetched with the AD range option (member;range=0-N).
 	Ranged []string
+	// RefsAtCreation is true when a class may require a DN reference at creation (groupOfNames needs a member), so
+	// an object class violation of an Add without the references is retried with them. Where none does (AD), the
+	// violation is about something else (an attribute or class the target lacks) and is reported as it is.
+	RefsAtCreation bool
 	// RefsNeedEntry is true when the server accepts a DN reference only to an existing entry (AD's linked
 	// attributes). A generic server takes any DN, so a value naming nothing cloned is still written as it is.
 	RefsNeedEntry bool
@@ -195,6 +206,9 @@ type Profile struct {
 	// MarkerCheck is nil when the profile cannot read what the target schema says about an attribute.
 	MarkerCheck MarkerChecker
 	Refs        RefDiscoverer
+	// SchemaAttrs lists the attributes of a schema, so clone can refuse to start when the target lacks one the
+	// allow lists name and the source has. nil: no check.
+	SchemaAttrs AttributeLister
 	Root        RootResolver
 	Account     Account
 	// Native is nil when clone -native is not possible for this server type.

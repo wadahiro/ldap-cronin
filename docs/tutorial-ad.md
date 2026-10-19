@@ -283,6 +283,7 @@ program added: `diff` lists those as `ONLY_TARGET`).
 | Message | What to do |
 |---|---|
 | `set password (LDAPS is required; ...)` | Use `ldaps://` (or `start_tls = true`) for the target, and a fixed password the target's policy accepts. Re-run `clone`: it sets the password of the users created without one |
+| `the target schema lacks attributes that the source defines and the allow lists name: ...` | Nothing was written. Add the attributes to the target's schema (on the lab, `ldapmodify` an `attributeSchema` entry), or leave them out with `[attributes] exclude` |
 | `base_dn ... must be below the root` | `base_dn` is the domain root, or not in the domain; clone an OU |
 | `... already exists on the target but its ... differs` | Only with `clone -native`: the lab holds another object at that DN. Use a fresh lab |
 | `warning: [mapping] attribute adminDisplayName is not indexed on the target` | Index it (step 9); the lab does this itself |
