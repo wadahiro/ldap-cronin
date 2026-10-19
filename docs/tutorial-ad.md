@@ -101,8 +101,12 @@ counts go to the terminal:
 
 ```
 added=1234 updated=0 unchanged=0 warnings=2
-referenced objects outside the scope cloned: 3 (user 2, computer 1)
-not cloned (matches no kind): msFVE-RecoveryInformation 12, serviceConnectionPoint 2
+referenced objects outside the scope cloned: 3
+  user      2
+  computer  1
+not cloned (matches no kind): 14
+  msFVE-RecoveryInformation  12
+  serviceConnectionPoint      2
 ```
 
 - **referenced objects outside the scope**: members that live outside `base_dn` (a user in `CN=Users`, a computer
@@ -166,8 +170,11 @@ differences:
   RENAMED     : 0   (same object, but its DN differs on target: renamed/moved)
 rename/move check: on (markers in adminDisplayName)
 referenced objects outside the scope compared: 3 (without their own references)
-not compared (matches no kind, so clone does not copy it): msFVE-RecoveryInformation 12, serviceConnectionPoint 2
-references not compared (clone cannot write them: the target lacks their entries): member 2
+not compared (matches no kind, so clone does not copy it): 14
+  msFVE-RecoveryInformation  12
+  serviceConnectionPoint      2
+references not compared (clone cannot write them: the target lacks their entries): 2
+  member  2
 compared attributes:
   ...
 not compared:

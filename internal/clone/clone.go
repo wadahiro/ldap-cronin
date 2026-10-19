@@ -63,10 +63,10 @@ type Report struct {
 func (rep *Report) WriteSummary(w io.Writer) {
 	fmt.Fprintf(w, "\nadded=%d updated=%d unchanged=%d warnings=%d\n", rep.Added, rep.Updated, rep.Unchanged, rep.WarningCount)
 	if rep.Referenced > 0 {
-		fmt.Fprintf(w, "referenced objects outside the scope cloned: %d (%s)\n", rep.Referenced, plan.Counts(rep.ReferencedKinds))
+		plan.WriteCounts(w, "referenced objects outside the scope cloned", rep.ReferencedKinds)
 	}
 	if len(rep.NotCloned) > 0 {
-		fmt.Fprintf(w, "not cloned (matches no kind): %s\n", plan.Counts(rep.NotCloned))
+		plan.WriteCounts(w, "not cloned (matches no kind)", rep.NotCloned)
 	}
 }
 

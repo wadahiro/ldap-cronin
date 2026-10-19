@@ -8,7 +8,9 @@ import (
 	"context"
 	"fmt"
 	"hash/maphash"
+	"io"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/wadahiro/ldap-cronin/internal/compare"
@@ -269,12 +271,19 @@ func (p *Plan) Unselected(ctx context.Context) (map[string]int, error) {
 	return out, nil
 }
 
-// Counts prints counts per name, the largest first ("msFVE-RecoveryInformation 120, contact 3"), for the
-// summaries of clone and diff.
-func Counts(m map[string]int) string {
+// WriteCounts prints a heading with the total, then one name per line with its count, the largest first, so a
+// long list stays readable in the summaries of clone and diff:
+//
+//	not cloned (matches no kind): 14
+//	  msFVE-RecoveryInformation  12
+//	  serviceConnectionPoint      2
+func WriteCounts(w io.Writer, heading string, m map[string]int) {
 	names := make([]string, 0, len(m))
-	for n := range m {
+	total, width := 0, 0
+	for n, c := range m {
 		names = append(names, n)
+		total += c
+		width = max(width, len(n))
 	}
 	sort.Slice(names, func(i, j int) bool {
 		if m[names[i]] != m[names[j]] {
@@ -282,11 +291,11 @@ func Counts(m map[string]int) string {
 		}
 		return names[i] < names[j]
 	})
-	parts := make([]string, len(names))
-	for i, n := range names {
-		parts[i] = fmt.Sprintf("%s %d", n, m[n])
+	fmt.Fprintf(w, "%s: %d\n", heading, total)
+	digits := len(strconv.Itoa(total))
+	for _, n := range names {
+		fmt.Fprintf(w, "  %-*s  %*d\n", width, n, digits, m[n])
 	}
-	return strings.Join(parts, ", ")
 }
 
 // structural is the structural object class of e: the last value of structuralObjectClass, which OpenLDAP gives as

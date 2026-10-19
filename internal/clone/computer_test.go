@@ -162,7 +162,10 @@ func TestSummariesCountWhatWasClonedFromOutsideAndWhatWasNot(t *testing.T) {
 	}
 	var out bytes.Buffer
 	rep.WriteSummary(&out)
-	for _, want := range []string{"referenced objects outside the scope cloned: 1 (computer 1)", "not cloned (matches no kind): msFVE-RecoveryInformation 1, serviceConnectionPoint 1"} {
+	for _, want := range []string{
+		"referenced objects outside the scope cloned: 1\n  computer  1\n",
+		"not cloned (matches no kind): 2\n  msFVE-RecoveryInformation  1\n  serviceConnectionPoint     1\n",
+	} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("missing %q in\n%s", want, out.String())
 		}
@@ -174,7 +177,7 @@ func TestSummariesCountWhatWasClonedFromOutsideAndWhatWasNot(t *testing.T) {
 	}
 	out.Reset()
 	diff.WriteSummary(&out, job, sum, nil)
-	if !strings.Contains(out.String(), "not compared (matches no kind, so clone does not copy it): msFVE-RecoveryInformation 1, serviceConnectionPoint 1") {
+	if !strings.Contains(out.String(), "not compared (matches no kind, so clone does not copy it): 2\n  msFVE-RecoveryInformation  1\n  serviceConnectionPoint     1\n") {
 		t.Fatalf("diff must say what it did not compare:\n%s", out.String())
 	}
 

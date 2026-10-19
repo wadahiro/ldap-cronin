@@ -101,7 +101,7 @@ func TestDiffShowsEveryMemberRemovedOrAddedOnTheTarget(t *testing.T) {
 		}
 		var out bytes.Buffer
 		diff.WriteSummary(&out, job, sum, nil)
-		if !strings.Contains(out.String(), "references not compared") || !strings.Contains(out.String(), "member 1") {
+		if !strings.Contains(out.String(), "references not compared (clone cannot write them: the target lacks their entries): 1\n  member  1\n") {
 			t.Fatalf("the summary must say what was not compared:\n%s", out.String())
 		}
 	})

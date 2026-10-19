@@ -191,9 +191,16 @@ attributes (`sAMAccountName`, `userPrincipalName`, `userAccountControl`, `accoun
 `clone` and `diff` print, in their summaries:
 
 ```
-referenced objects outside the scope cloned: 312 (user 280, group 30, computer 2)
-not cloned (matches no kind): msFVE-RecoveryInformation 120, msExchActiveSyncDevice 14, serviceConnectionPoint 3
-references not compared (could not be cloned): member 20 (trusted-domain principals 18, built-ins missing on the target 2)
+referenced objects outside the scope cloned: 312
+  user      280
+  group      30
+  computer    2
+not cloned (matches no kind): 137
+  msFVE-RecoveryInformation  120
+  msExchActiveSyncDevice      14
+  serviceConnectionPoint       3
+references not compared (could not be cloned): 20
+  member  20
 ```
 
 - The second line is one extra paged search per run (`plan.Unselected`): `(!(|<every kind's filter>))` under
