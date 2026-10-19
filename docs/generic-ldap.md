@@ -3,7 +3,7 @@
 ldap-cronin clones and compares any RFC 4510 directory, not only Active Directory. The `ldap` profile is chosen for every server that is not an AD; how it differs from the `ad` profile is in the [table in the README](../README.md#server-types-profiles).
 
 The profile is `auto` by default. Set `[scope] profile = "ldap"` (or `"ad"`) to override the detection. With `auto` the target is checked too, and a source and target of different types are refused.
-`ldap-cronin list-attrs -profile ldap` prints the default attributes.
+`ldap-cronin list-attrs -profile ldap` prints the default attributes; `list-attrs -config config.toml` reads the source and lists the attributes its entries hold, and which of them `clone` leaves behind.
 
 ## Configuration
 

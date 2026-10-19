@@ -46,6 +46,9 @@ func (e Entry) Values(name string) []string {
 // NoAttrs requests no attributes, so that only the DN is returned (LDAP "1.1").
 const NoAttrs = "1.1"
 
+// AllAttrs requests every user attribute (LDAP "*"); operational ones are left out unless named.
+const AllAttrs = "*"
+
 // Every method takes a context. Implementations check it before sending an operation; an operation already sent
 // runs to completion, because go-ldap cannot abandon an Add or a Modify. A stop therefore costs at most one
 // operation per connection, which is fine for a tool whose operations are small.

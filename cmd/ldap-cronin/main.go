@@ -31,7 +31,8 @@ const usage = `Usage: ldap-cronin <command> [flags]
 Commands:
   clone         Add or update the source directory's OUs, groups, users, computers and contacts in the target (AD or generic LDAP)
   diff          Compare the source and the target (exit code 1 if there are differences)
-  list-attrs    Show the default attributes (allow list) per object type (-profile ad|ldap)
+  list-attrs    Show the default attributes (allow list) per object type (-profile ad|ldap); with -config, read the
+                source and list the attributes its entries hold, copied or not (-target: and the target's schema)
   lab           Start an AD-compatible Samba4 on docker for verification, and take and restore snapshots (lab help)
   version       Show the version
 
@@ -82,7 +83,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	case "diff":
 		code, err = runDiff(ctx, args[1:], stdout)
 	case "list-attrs":
-		err = listAttrs(args[1:], stdout)
+		err = listAttrs(ctx, args[1:], stdout)
 	case "lab":
 		err = runLab(ctx, args[1:], stdout, stderr)
 	case "version", "-version", "--version":
@@ -186,11 +187,25 @@ func runDiff(ctx context.Context, args []string, out io.Writer) (int, error) {
 	return s.Diff(ctx, app.DiffOutput{JSON: *format == "json", MaxValues: *maxValues}, out)
 }
 
-func listAttrs(args []string, out io.Writer) error {
+func listAttrs(ctx context.Context, args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("list-attrs", flag.ContinueOnError)
-	name := fs.String("profile", profile.NameAD, "server type: ad or ldap")
+	name := fs.String("profile", profile.NameAD, "server type: ad or ldap (without -config)")
+	cfgPath := fs.String("config", "", "config file: read the source and list the attributes its entries hold")
+	target := fs.Bool("target", false, "with -config: also read the target's schema")
+	all := fs.Bool("all", false, "with -config: also list the attributes of the allow lists that no entry holds")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *cfgPath != "" {
+		s, err := openSession(ctx, *cfgPath)
+		if err != nil {
+			return err
+		}
+		defer s.Close()
+		return s.ListAttrs(ctx, *target, *all, out)
+	}
+	if *target {
+		return errors.New("-target needs -config")
 	}
 	p, err := profile.ByName(*name)
 	if err != nil {

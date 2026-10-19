@@ -92,9 +92,27 @@ Notes on the choices:
 ## 3. Look before writing
 
 ```sh
-./bin/ldap-cronin list-attrs -profile ad                     # the default attributes per kind
+./bin/ldap-cronin list-attrs -config config.toml             # what the source's entries hold, and what clone copies
 ./bin/ldap-cronin clone -config config.toml -dry-run > clone.ldif
 ```
+
+`list-attrs -config` reads the entries under `base_dn` (no values are printed) and lists, per kind, each attribute
+with the number of entries holding it:
+
+```
+[user] 1150 entries under OU=IDM,DC=ad,DC=example,DC=com
+  not copied  acmeEmployeeCode         1102
+  not copied  extensionAttribute3       870
+  copied      sAMAccountName           1150
+  masked      mail                      980
+  never       objectGUID               1150  managed by the server
+  never       objectSid                1150  managed by the server
+  (and 12 attributes of the allow list that no entry holds; -all lists them)
+```
+
+`not copied` is what the clone would leave behind: add the ones your applications read to `extra_include`. Run it
+again with `-target` once the target exists, to see which of them its schema lacks (`clone` refuses to start in
+that case, naming them).
 
 The dry-run connects only to the source. `clone.ldif` is what `clone` would write, as LDIF; the progress and the
 counts go to the terminal:

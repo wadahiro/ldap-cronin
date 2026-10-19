@@ -346,6 +346,12 @@ func (d *Dir) isRoot(s string) bool {
 func project(e directory.Entry, attrs []string) directory.Entry {
 	out := directory.Entry{DN: e.DN, Attrs: map[string][]string{}}
 	for _, a := range attrs {
+		if a == directory.AllAttrs {
+			for n, v := range e.Attrs {
+				out.Attrs[n] = append([]string(nil), v...)
+			}
+			continue
+		}
 		if v := e.Values(a); len(v) > 0 {
 			out.Attrs[a] = append([]string(nil), v...)
 		}
