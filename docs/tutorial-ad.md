@@ -112,7 +112,8 @@ with the number of entries holding it:
 
 `not copied` is what the clone would leave behind: add the ones your applications read to `extra_include`. Run it
 again with `-target` once the target exists, to see which of them its schema lacks (`clone` refuses to start in
-that case, naming them).
+that case, naming them). How to carry an attribute of your own over is in
+[Attributes of your own](#attributes-of-your-own-schema-extensions).
 
 The dry-run connects only to the source. `clone.ldif` is what `clone` would write, as LDIF; the progress and the
 counts go to the terminal:
@@ -296,12 +297,134 @@ Run it outside business hours: every object is several writes, replicated to eve
 domain; to start a test over, re-run `clone`, which puts back what was changed (it does not remove what the
 program added: `diff` lists those as `ONLY_TARGET`).
 
+## Attributes of your own (schema extensions)
+
+Production ADs often carry attributes of their own (an employee code, a cost center) or of a product. The tool
+copies only what an allow list names, so these stay behind until you ask for them, and the target needs them in
+its schema.
+
+### Find them
+
+```sh
+./bin/ldap-cronin list-attrs -config config.toml
+```
+
+Every `not copied` line is an attribute your entries hold that the clone leaves behind, with the number of entries
+holding it. `extensionAttribute1`-`15` and `msExch*` come from the Exchange schema, which the lab already has; any
+other name is a schema extension to carry over.
+
+### Read how production defines them
+
+Give the target the same definitions as the source: the same names and OIDs, so values compare and a later schema
+update of production applies to the lab too. Read them from the source's schema (here for `acmeEmployeeCode`):
+
+```sh
+SRC='ldaps://dc01.ad.example.com'; BIND='CN=svc-ldap-cronin,OU=Service Accounts,DC=ad,DC=example,DC=com'
+SCHEMA='CN=Schema,CN=Configuration,DC=ad,DC=example,DC=com'
+# the attribute
+ldapsearch -H "$SRC" -D "$BIND" -W -b "$SCHEMA" '(lDAPDisplayName=acmeEmployeeCode)' \
+  cn lDAPDisplayName attributeID attributeSyntax oMSyntax isSingleValued rangeLower rangeUpper searchFlags
+# the class that allows it, and the classes that class is attached to
+ldapsearch -H "$SRC" -D "$BIND" -W -b "$SCHEMA" '(&(objectClass=classSchema)(mayContain=acmeEmployeeCode))' \
+  cn lDAPDisplayName governsID objectClassCategory subClassOf mayContain
+ldapsearch -H "$SRC" -D "$BIND" -W -b "$SCHEMA" '(auxiliaryClass=acmePerson)' lDAPDisplayName
+```
+
+An attribute is usable only through a class that allows it (`mayContain`): usually an auxiliary class of your own
+(`objectClassCategory: 3`) attached to `user` in the schema (`auxiliaryClass`), as below. Sometimes it is added to
+`user` itself; then copy that instead.
+
+### Add them to the lab
+
+Write what you read as LDIF. Each part ends with `schemaUpdateNow`, so the next part sees it:
+
+```ldif
+dn: CN=acme-Employee-Code,CN=Schema,CN=Configuration,DC=ad,DC=example,DC=com
+changetype: add
+objectClass: attributeSchema
+cn: acme-Employee-Code
+lDAPDisplayName: acmeEmployeeCode
+attributeID: 1.3.6.1.4.1.99999.1.1
+attributeSyntax: 2.5.5.12
+oMSyntax: 64
+isSingleValued: TRUE
+
+dn:
+changetype: modify
+add: schemaUpdateNow
+schemaUpdateNow: 1
+-
+
+dn: CN=acme-Person,CN=Schema,CN=Configuration,DC=ad,DC=example,DC=com
+changetype: add
+objectClass: classSchema
+cn: acme-Person
+lDAPDisplayName: acmePerson
+governsID: 1.3.6.1.4.1.99999.2.1
+objectClassCategory: 3
+subClassOf: top
+mayContain: acmeEmployeeCode
+
+dn:
+changetype: modify
+add: schemaUpdateNow
+schemaUpdateNow: 1
+-
+
+dn: CN=User,CN=Schema,CN=Configuration,DC=ad,DC=example,DC=com
+changetype: modify
+add: auxiliaryClass
+auxiliaryClass: acmePerson
+-
+
+dn:
+changetype: modify
+add: schemaUpdateNow
+schemaUpdateNow: 1
+-
+```
+
+```sh
+LDAPTLS_REQCERT=never ldapmodify -H ldaps://localhost:12636 -x \
+  -D 'CN=Administrator,CN=Users,DC=ad,DC=example,DC=com' -W -f acme-schema.ldif
+```
+
+The lab accepts schema changes over LDAP. Do it **before the first `clone`**, then take the snapshot as usual: a
+snapshot carries the schema, and every restore or second instance has it. Without `ldapmodify` on your machine, copy
+the file into the lab container (`docker cp acme-schema.ldif ldap-cronin-ad:/tmp/`) and run `ldapmodify` there
+against `ldaps://localhost`.
+
+For a real AD test domain (part 2), the same LDIF goes in as a member of Schema Admins, on the schema master.
+**A schema change cannot be undone in AD** (an attribute or class can only be made defunct), so add exactly what
+production has, and nothing to try things out.
+
+### Copy and compare them
+
+```toml
+[attributes]
+extra_include = ["acmeEmployeeCode"]        # every kind; or [attributes.include] user = [...] for one kind
+```
+
+```sh
+./bin/ldap-cronin list-attrs -config config.toml -target   # acmeEmployeeCode: copied, no "not in the target schema"
+./bin/ldap-cronin clone -config config.toml
+./bin/ldap-cronin diff -config config.toml                  # compares acmeEmployeeCode too
+```
+
+- If the target still lacks one, `clone` refuses to start and names it; nothing is written.
+- An attribute that holds DNs (`attributeSyntax: 2.5.5.1`, a custom `sponsor`, say) is found in the source schema
+  and handled as a reference: applied after every object exists, compared like `member`.
+- Personal data in a string attribute can be masked (`[mask] attributes`); an attribute that must stay unique or
+  that holds DNs cannot.
+- An auxiliary class attached to single objects (not to `user` in the schema) shows in their `objectClass`, which
+  `clone` always copies: the target needs that class even when none of its attributes is in an allow list.
+
 ## When something goes wrong
 
 | Message | What to do |
 |---|---|
 | `set password (LDAPS is required; ...)` | Use `ldaps://` (or `start_tls = true`) for the target, and a fixed password the target's policy accepts. Re-run `clone`: it sets the password of the users created without one |
-| `the target schema lacks attributes that the source defines and the allow lists name: ...` | Nothing was written. Add the attributes to the target's schema (on the lab, `ldapmodify` an `attributeSchema` entry), or leave them out with `[attributes] exclude` |
+| `the target schema lacks attributes that the source defines and the allow lists name: ...` | Nothing was written. Add the attributes to the target's schema ([Attributes of your own](#attributes-of-your-own-schema-extensions)), or leave them out with `[attributes] exclude` |
 | `base_dn ... must be below the root` | `base_dn` is the domain root, or not in the domain; clone an OU |
 | `... already exists on the target but its ... differs` | Only with `clone -native`: the lab holds another object at that DN. Use a fresh lab |
 | `warning: [mapping] attribute adminDisplayName is not indexed on the target` | Index it (step 9); the lab does this itself |
