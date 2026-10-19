@@ -9,6 +9,7 @@ package diff
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/wadahiro/ldap-cronin/internal/dn"
 	"github.com/wadahiro/ldap-cronin/internal/identity"
 	"github.com/wadahiro/ldap-cronin/internal/plan"
+	"github.com/wadahiro/ldap-cronin/internal/workpool"
 )
 
 type Kind string
@@ -70,6 +72,11 @@ type Summary struct {
 	Matching   string
 	Implied    int // number not reported as RENAMED because a parent OU move or rename explains them
 	Duplicates int // number of objects found more than once by identifier or marker (the first was used)
+	// NotCompared counts, per reference attribute, the source values clone cannot write (they name an entry the
+	// target lacks, on a server that needs it), so diff does not compare them.
+	NotCompared map[string]int
+	// Referenced is the number of entries outside the scope compared because a reference names them.
+	Referenced int
 }
 
 // Options are the run-time settings of a comparison.
@@ -82,12 +89,12 @@ type Options struct {
 
 // Run reports each difference to emit one at a time. emit is not called from multiple goroutines.
 // Masked attributes are not compared, since their values are expected to differ.
-// For DN reference attributes, out-of-plan values (built-ins, etc.) are excluded from both sides before comparing.
+// DN reference attributes are compared in full, except for the source values clone cannot write (see Summary.NotCompared).
 //
 // With a Lookup, objects whose source DN is missing on the target are looked up by identifier, and reported as
 // RENAMED if found at a different DN. This verifies changes made by another program that renamed or moved objects on the target.
 func Run(ctx context.Context, src, dst directory.Directory, job plan.Job, o Options, emit func(Difference)) (Summary, error) {
-	r := &runner{job: job, emit: emit, sum: Summary{Compared: map[string]int{}, Differences: map[Kind]int{}}}
+	r := &runner{job: job, emit: emit, outside: map[string]string{}, sum: Summary{Compared: map[string]int{}, Differences: map[Kind]int{}, NotCompared: map[string]int{}}}
 	if o.Resolver != nil {
 		r.sum.Matching = o.Resolver.Describe()
 	}
@@ -105,6 +112,7 @@ func Run(ctx context.Context, src, dst directory.Directory, job plan.Job, o Opti
 		if n.Kind != nil {
 			names = n.Kind.Attrs
 			r.compared(n.Kind.Name)
+			r.noteOutside(n.Entry, names)
 		}
 		return r.check(ctx, n.Entry, names, n.Kind, true)
 	}); err != nil {
@@ -112,11 +120,19 @@ func Run(ctx context.Context, src, dst directory.Directory, job plan.Job, o Opti
 	}
 	if err := p.EachLeaf(ctx, o.Workers, func(ctx context.Context, k *plan.Kind, want directory.Entry) error {
 		r.compared(k.Name)
+		r.noteOutside(want, k.Attrs)
 		return r.check(ctx, want, k.Attrs, k, false)
 	}); err != nil {
 		return r.sum, err
 	}
-	r.resolveRefs()
+	refs := p.Classifier(dst)
+	// Referenced objects first: a rename of one on the target must be known before the references are compared.
+	if err := r.checkReferenced(ctx, refs, o.Workers); err != nil {
+		return r.sum, err
+	}
+	if err := r.resolveRefs(ctx, refs); err != nil {
+		return r.sum, err
+	}
 	r.sum.Duplicates = r.loc.duplicates
 
 	for _, k := range job.Kinds {
@@ -145,7 +161,55 @@ type runner struct {
 	sum Summary
 
 	pendMu  sync.Mutex
-	pending []pendingRef // reference attributes judged after every object is matched
+	pending []pendingRef      // reference attributes judged after every object is matched
+	outside map[string]string // normalized DN -> DN of every reference value outside the scope (guarded by pendMu)
+}
+
+// noteOutside records the reference values of want that name entries outside the scope: those of a kind are
+// referenced objects, which clone creates and diff compares (checkReferenced).
+func (r *runner) noteOutside(want directory.Entry, names []string) {
+	r.pendMu.Lock()
+	defer r.pendMu.Unlock()
+	for _, n := range names {
+		if !r.p.IsRef(n) {
+			continue
+		}
+		for _, v := range want.Values(n) {
+			if !r.p.Scope.Has(v) {
+				r.outside[dn.Normalize(v)] = v
+			}
+		}
+	}
+}
+
+// checkReferenced compares the referenced objects (plan.RefReferenced) as their kind, without their own references,
+// which clone does not apply either.
+func (r *runner) checkReferenced(ctx context.Context, refs *plan.Classifier, workers int) error {
+	values := make([]string, 0, len(r.outside))
+	for _, v := range r.outside {
+		values = append(values, v)
+	}
+	sort.Strings(values)
+	return workpool.Each(ctx, workers, values, func(ctx context.Context, v string) error {
+		k, err := refs.Referenced(ctx, v)
+		if err != nil || k == nil {
+			return err
+		}
+		e, err := r.p.ReadReferenced(ctx, v, k)
+		if err != nil || e == nil {
+			return err
+		}
+		var names []string
+		for _, n := range k.Attrs {
+			if !r.p.IsRef(n) {
+				names = append(names, n)
+			}
+		}
+		r.mu.Lock()
+		r.sum.Referenced++
+		r.mu.Unlock()
+		return r.check(ctx, *e, names, k, false)
+	})
 }
 
 func (r *runner) report(d Difference) {

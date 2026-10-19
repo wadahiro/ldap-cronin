@@ -17,24 +17,26 @@ import (
 var AD = Profile{
 	Name: NameAD,
 	Kinds: []KindSpec{
-		{Name: KindOU, Role: RoleContainer, Filter: "(objectClass=organizationalUnit)", Default: []string{
+		{Name: KindOU, Role: RoleContainer, Filter: "(objectClass=organizationalUnit)", Is: classIs("organizationalUnit"), Default: []string{
 			"description", "displayName", "street", "l", "st", "postalCode", "co", "c", "managedBy",
 		}},
-		{Name: KindGroup, Role: RoleLeaf, Order: 0, Filter: "(objectClass=group)", Default: []string{
+		{Name: KindGroup, Role: RoleLeaf, Order: 0, Filter: "(objectClass=group)", Is: classIs("group"), Default: []string{
 			"sAMAccountName", "groupType", "description", "displayName", "info", "mail",
 			"managedBy", "member", "adminDescription", "gidNumber",
 		}},
 		// user excludes computer, which also has objectClass=user.
-		{Name: KindUser, Role: RoleLeaf, Order: 1, Account: true, Filter: "(&(objectCategory=person)(objectClass=user))", Default: []string{
-			"sAMAccountName", "userPrincipalName", "userAccountControl", "accountExpires",
-			"givenName", "sn", "initials", "middleName", "displayName", "description",
-			"mail", "telephoneNumber", "mobile", "homePhone", "pager", "ipPhone",
-			"facsimileTelephoneNumber", "title", "department", "company", "division",
-			"physicalDeliveryOfficeName", "manager", "employeeID", "employeeNumber", "employeeType",
-			"streetAddress", "postOfficeBox", "l", "st", "postalCode", "co", "c",
-			"wWWHomePage", "url", "info", "homeDirectory", "homeDrive", "scriptPath", "profilePath",
-			"uidNumber", "gidNumber", "loginShell", "unixHomeDirectory",
-		}},
+		{Name: KindUser, Role: RoleLeaf, Order: 1, Account: true, Filter: "(&(objectCategory=person)(objectClass=user))",
+			// objectCategory=person and objectClass=user: a user or inetOrgPerson, not a computer (a subclass of user).
+			Is: func(c []string) bool { return hasClass(c, []string{"user"}, "computer") }, Default: []string{
+				"sAMAccountName", "userPrincipalName", "userAccountControl", "accountExpires",
+				"givenName", "sn", "initials", "middleName", "displayName", "description",
+				"mail", "telephoneNumber", "mobile", "homePhone", "pager", "ipPhone",
+				"facsimileTelephoneNumber", "title", "department", "company", "division",
+				"physicalDeliveryOfficeName", "manager", "employeeID", "employeeNumber", "employeeType",
+				"streetAddress", "postOfficeBox", "l", "st", "postalCode", "co", "c",
+				"wWWHomePage", "url", "info", "homeDirectory", "homeDrive", "scriptPath", "profilePath",
+				"uidNumber", "gidNumber", "loginShell", "unixHomeDirectory",
+			}},
 	},
 	Required:      []string{"objectClass", "cn", "ou"},
 	AncestorAttrs: []string{"objectClass", "cn", "ou", "description"},
@@ -54,10 +56,13 @@ var AD = Profile{
 	PasswordAttrs: []string{"unicodePwd", "dBCSPwd", "ntPwdHistory", "lmPwdHistory", "supplementalCredentials"},
 	// A safeguard so that Administrator, krbtgt and the like are not overwritten even if base_dn is CN=Users.
 	SystemFilter: "(!(isCriticalSystemObject=TRUE))",
+	SystemAttr:   "isCriticalSystemObject",
+	Principal:    wellKnownPrincipal,
 	BuiltinRefs:  map[string]RefInfo{"member": {}, "manager": {Single: true}, "managedby": {Single: true}},
 	// AD splits a large member into ranges by itself, Samba does not. Always asking for ranges puts both through the
 	// same retrieval path, so the multi-fetch code runs against Samba in CI too.
-	Ranged: []string{"member"},
+	Ranged:        []string{"member"},
+	RefsNeedEntry: true,
 	Values: map[string]compare.Normalizer{
 		"useraccountcontrol": SanitizeUAC,
 		// "never" has two representations: 0 and 2^63-1.
@@ -205,4 +210,28 @@ func (adNative) Domain(ctx context.Context, src directory.Directory, root string
 		return Domain{}, err
 	}
 	return Domain{Root: d.Root, Realm: d.Realm, NetBIOS: d.NetBIOS, SID: d.SID, GUID: d.GUID}, nil
+}
+
+// wellKnownSIDs are the identities every domain has, whose foreign security principals a DC creates when one is
+// added as a member by SID (Everyone, Authenticated Users, Interactive, Network, ...). A SID of another domain is
+// not here: a test domain does not trust it.
+var wellKnownSIDs = map[string]bool{
+	"S-1-1-0": true, "S-1-5-1": true, "S-1-5-2": true, "S-1-5-3": true, "S-1-5-4": true, "S-1-5-6": true,
+	"S-1-5-7": true, "S-1-5-8": true, "S-1-5-9": true, "S-1-5-10": true, "S-1-5-11": true, "S-1-5-12": true,
+	"S-1-5-13": true, "S-1-5-14": true, "S-1-5-15": true, "S-1-5-17": true, "S-1-5-18": true, "S-1-5-19": true,
+	"S-1-5-20": true, "S-1-5-1000": true,
+}
+
+// wellKnownPrincipal recognizes CN=<well-known SID>,CN=ForeignSecurityPrincipals,<domain> and returns the
+// <SID=...> form a DC turns into its own principal.
+func wellKnownPrincipal(entryDN string) (string, bool) {
+	rdns := dn.Split(entryDN)
+	if len(rdns) < 3 || !strings.EqualFold(strings.TrimSpace(rdns[1]), "CN=ForeignSecurityPrincipals") {
+		return "", false
+	}
+	typ, sid, ok := dn.FirstRDN(entryDN)
+	if !ok || !strings.EqualFold(typ, "cn") || !wellKnownSIDs[strings.ToUpper(sid)] {
+		return "", false
+	}
+	return "<SID=" + strings.ToUpper(sid) + ">", true
 }

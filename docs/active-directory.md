@@ -28,6 +28,11 @@ base_dn = "OU=IDM,DC=ad,DC=example,DC=com"   # not the domain root: it would rea
 - **Built-in objects are never touched**: everything with `isCriticalSystemObject=TRUE` (Administrator, krbtgt, ...) is excluded, even when `base_dn` is `CN=Users`.
 - **Users** are `(&(objectCategory=person)(objectClass=user))`, which leaves computers out; **groups** are `(objectClass=group)`.
 - **Never cloned**: identifiers and server-managed attributes (`objectGUID`, `objectSid`, `sIDHistory`, `whenCreated`, `uSNChanged`, `memberOf`, `pwdLastSet`, the password hashes, ...). Listing one in `[attributes]` is an error.
+- **Every member is reproduced where AD allows it.** A linked attribute such as `member` can only name an object the target holds, so for each value outside the scope clone:
+  - clones the object if it is of a kind (a user or group outside `base_dn`), without its own references (`[scope] references = "clone"`, the default);
+  - references a built-in the target holds as it is (`Domain Admins` of the same domain), but never creates one;
+  - adds a well-known principal (Everyone, Authenticated Users, ...) by SID (`<SID=S-1-5-11>`), so the target's DC creates its own foreign security principal;
+  - skips anything else with a warning (a principal of a trusted domain, which a test domain does not trust; a built-in the target lacks); `diff` counts these instead of comparing them.
 - **DN-valued attributes** are found in the source schema (`attributeSyntax=2.5.5.1`), so an attribute added with `extra_include` is handled too. `member` is always read in explicit ranges, as AD splits large groups ([operations.md](operations.md#large-data-sets)).
 - **Comparison** normalizes `userAccountControl` (server-managed bits) and `accountExpires` (`0` and `9223372036854775807` both mean "never"); see [diff.md](diff.md#what-is-compared).
 - **Rename and move detection.** AD refuses a client-set `objectGUID` over LDAP, so `clone` writes a marker of the source object into `adminDisplayName` (`ldap-cronin:<source root>:<source key>`); how `diff` uses it is in [diff.md](diff.md#how-rename-and-move-detection-works-and-its-configuration). `clone -native` keeps the `objectGUID` itself, but only into the Samba lab ([lab.md](lab.md#importing-with-the-same-objectguid-and-objectsid-clone--native-samba-only)).

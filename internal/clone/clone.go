@@ -48,8 +48,10 @@ const maxWarnings = 1000
 
 type Report struct {
 	Added, Updated, Unchanged int
-	WarningCount              int
-	Warnings                  []string // first maxWarnings only
+	// Referenced counts the entries outside the scope cloned because a reference names them.
+	Referenced   int
+	WarningCount int
+	Warnings     []string // first maxWarnings only
 }
 
 type runner struct {
@@ -62,6 +64,8 @@ type runner struct {
 	mu      sync.Mutex // guards report, out and skipped
 	report  Report
 	skipped map[string]bool // normalized DNs not created (see upsert); the reference pass leaves them alone
+	refs    *plan.Classifier
+	done    map[string]*onceErr // see once
 }
 
 // errSkipped means an entry was not created and a warning says why; the run goes on.
@@ -81,7 +85,7 @@ func Run(ctx context.Context, src, dst directory.Directory, job plan.Job, opt Op
 	if err != nil {
 		return nil, err
 	}
-	r := &runner{dst: dst, opt: opt, out: out, prof: job.Profile, skipped: map[string]bool{}}
+	r := &runner{dst: dst, opt: opt, out: out, prof: job.Profile, skipped: map[string]bool{}, done: map[string]*onceErr{}}
 	if err := r.run(ctx, p); err != nil {
 		return &r.report, err
 	}
@@ -89,7 +93,7 @@ func Run(ctx context.Context, src, dst directory.Directory, job plan.Job, opt Op
 }
 
 func (r *runner) run(ctx context.Context, p *plan.Plan) error {
-	r.plan = p
+	r.plan, r.refs = p, p.Classifier(r.dst)
 	if err := p.EachLevel(ctx, r.opt.Workers, r.ensure); err != nil {
 		return err
 	}
@@ -181,12 +185,15 @@ func (r *runner) upsert(ctx context.Context, e directory.Entry, account profile.
 	err = r.add(ctx, add)
 	if errors.Is(err, directory.ErrSchemaViolation) {
 		// A group class such as groupOfNames requires a member at creation, which the deferred reference pass cannot give.
-		// Retrying with the in-scope references keeps the common case (AD, where nothing is required) on the cheaper path.
-		withRefs := r.withScopedRefs(e, add)
+		// Retrying with the references keeps the common case (AD, where nothing is required) on the cheaper path.
+		withRefs, rerr := r.withRefs(ctx, e, add)
+		if rerr != nil {
+			return false, nil, rerr
+		}
 		if len(withRefs.Attrs) == len(add.Attrs) && r.hasRefs(e) {
-			// None of its references is cloned, so the schema's required member cannot be given: like a reference
+			// None of its references can be written, so the schema's required member cannot be given: like a reference
 			// to an object outside the scope, it is skipped with a warning instead of stopping the run.
-			r.warn("skip %s: the target requires a reference to create it, and none of its references is cloned (%v)", e.DN, err)
+			r.warn("skip %s: the target requires a reference to create it, and none of its references can be written (%v)", e.DN, err)
 			r.mu.Lock()
 			r.skipped[dn.Normalize(e.DN)] = true
 			r.mu.Unlock()
@@ -253,8 +260,8 @@ func (r *runner) hasRefs(e directory.Entry) bool {
 	return false
 }
 
-// withScopedRefs returns desired plus the DN reference values of e that point into the plan's scope.
-func (r *runner) withScopedRefs(e, desired directory.Entry) directory.Entry {
+// withRefs returns desired plus the DN reference values of e that clone can write (see plan.RefClass).
+func (r *runner) withRefs(ctx context.Context, e, desired directory.Entry) (directory.Entry, error) {
 	out := directory.Entry{DN: desired.DN, Attrs: make(map[string][]string, len(desired.Attrs)+1)}
 	for n, v := range desired.Attrs {
 		out.Attrs[n] = v
@@ -263,11 +270,15 @@ func (r *runner) withScopedRefs(e, desired directory.Entry) directory.Entry {
 		if !r.plan.IsRef(n) {
 			continue
 		}
-		if inScope := r.plan.InScope(values); len(inScope) > 0 {
-			out.Attrs[n] = inScope
+		usable, _, err := r.refs.Reproducible(ctx, values)
+		if err != nil {
+			return out, err
+		}
+		if len(usable) > 0 {
+			out.Attrs[n] = usable
 		}
 	}
-	return out
+	return out, nil
 }
 
 // guidAttr is the attribute to include in the target read when recording the mapping or preserving objectGUID.
@@ -358,44 +369,9 @@ func first(values []string) string {
 	return values[0]
 }
 
-// Upper bound of the existence-check cache that avoids querying out-of-scope reference targets every time. Beyond it, nothing more is recorded.
-const existsCacheLimit = 100_000
-
 // references re-reads only the DN reference attributes from the source and applies them once all objects exist.
 // Reads increase by the amount re-fetched, but memory does not, because creation does not keep and carry every entry.
 func (r *runner) references(ctx context.Context, p *plan.Plan) error {
-	type check struct {
-		once sync.Once
-		ok   bool
-		err  error
-	}
-	var (
-		cacheMu sync.Mutex
-		exists  = map[string]*check{}
-	)
-	resolvable := func(v string) (bool, error) {
-		if p.Scope.Has(v) {
-			return true, nil
-		}
-		key := dn.Normalize(v)
-		cacheMu.Lock()
-		c, seen := exists[key]
-		if !seen {
-			c = &check{}
-			if len(exists) < existsCacheLimit {
-				exists[key] = c
-			}
-		}
-		cacheMu.Unlock()
-		// Workers asking for the same DN at once wait for the one read instead of each reading it.
-		c.once.Do(func() {
-			var cur *directory.Entry
-			cur, c.err = r.dst.Get(ctx, v, []string{"objectClass"})
-			c.ok = cur != nil
-		})
-		return c.ok, c.err
-	}
-
 	job := p.Job()
 	for i := range job.Kinds {
 		k := &job.Kinds[i]
@@ -419,13 +395,18 @@ func (r *runner) references(ctx context.Context, p *plan.Plan) error {
 				}
 				var usable []string
 				for _, v := range values {
-					ok, err := resolvable(v)
+					class, err := r.refs.Class(ctx, v)
 					if err != nil {
 						return err
 					}
-					if !ok {
+					switch class {
+					case plan.RefUnreproducible:
 						r.warn("skip %s of %s: %s does not exist on target", name, e.DN, v)
 						continue
+					case plan.RefReferenced:
+						if err := r.referenced(ctx, v); err != nil {
+							return err
+						}
 					}
 					usable = append(usable, v)
 				}
@@ -460,7 +441,11 @@ func (r *runner) applyReference(ctx context.Context, target, name string, values
 		if r.plan.Equal(name, have, values) {
 			return nil
 		}
-		return r.dst.Replace(ctx, target, map[string][]string{name: values})
+		w, err := r.writeForm(ctx, values)
+		if err != nil {
+			return err
+		}
+		return r.dst.Replace(ctx, target, map[string][]string{name: w})
 	}
 	haveSet := map[string]bool{}
 	for _, v := range have {
@@ -472,6 +457,10 @@ func (r *runner) applyReference(ctx context.Context, target, name string, values
 			missing = append(missing, v)
 		}
 	}
+	missing, err = r.writeForm(ctx, missing)
+	if err != nil {
+		return err
+	}
 	for len(missing) > 0 {
 		n := min(memberChunk, len(missing))
 		if err := r.dst.AddValues(ctx, target, name, missing[:n]); err != nil {
@@ -480,6 +469,82 @@ func (r *runner) applyReference(ctx context.Context, target, name string, values
 		missing = missing[n:]
 	}
 	return nil
+}
+
+// writeForm returns values as clone writes them: a well-known principal by SID, so the target creates its own.
+// The target then holds the principal's DN, which is the source's (the clone keeps the domain name).
+func (r *runner) writeForm(ctx context.Context, values []string) ([]string, error) {
+	out := make([]string, len(values))
+	for i, v := range values {
+		w, err := r.refs.Write(ctx, v)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = w
+	}
+	return out, nil
+}
+
+// referenced creates, once, an entry outside the scope that a reference names (plan.RefReferenced): its missing
+// ancestors as create-only, then the entry as its kind, without its own references (depth one: following them
+// would pull the directory in through company-wide groups).
+func (r *runner) referenced(ctx context.Context, v string) error {
+	return r.once(ctx, "ref:"+dn.Normalize(v), func() error {
+		k, err := r.refs.Referenced(ctx, v)
+		if err != nil || k == nil {
+			return err
+		}
+		ancestors := dn.Ancestors(v, r.plan.Root)
+		for i := len(ancestors) - 1; i >= 0; i-- {
+			a := ancestors[i]
+			if r.plan.Scope.Has(a) {
+				continue
+			}
+			if err := r.once(ctx, "anc:"+dn.Normalize(a), func() error {
+				e, err := r.plan.ReadAncestor(ctx, a)
+				if err != nil {
+					return err
+				}
+				if e == nil {
+					return fmt.Errorf("ancestor %s of %s does not exist on source", a, v)
+				}
+				return r.ensure(ctx, plan.Node{Entry: *e, CreateOnly: true})
+			}); err != nil {
+				return err
+			}
+		}
+		e, err := r.plan.ReadReferenced(ctx, v, k)
+		if err != nil || e == nil {
+			return err
+		}
+		if k.Role == profile.RoleContainer {
+			err = r.ensure(ctx, plan.Node{Entry: *e, Kind: k})
+		} else {
+			err = r.leaf(ctx, k, *e)
+		}
+		if err == nil {
+			r.count(func(rep *Report) { rep.Referenced++ })
+		}
+		return err
+	})
+}
+
+// once runs fn for key at most once in the run; callers for the same key wait for it and get its result.
+func (r *runner) once(_ context.Context, key string, fn func() error) error {
+	r.mu.Lock()
+	o, ok := r.done[key]
+	if !ok {
+		o = &onceErr{}
+		r.done[key] = o
+	}
+	r.mu.Unlock()
+	o.once.Do(func() { o.err = fn() })
+	return o.err
+}
+
+type onceErr struct {
+	once sync.Once
+	err  error
 }
 
 func (r *runner) count(f func(*Report)) {

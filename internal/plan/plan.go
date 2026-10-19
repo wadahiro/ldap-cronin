@@ -27,7 +27,21 @@ type Job struct {
 	// Kinds are the enabled kinds in the profile's order, with their filters and allow lists resolved.
 	Kinds  []Kind
 	Masker mask.Masker
+	// References says what is done with a reference to an entry outside the scope: RefsClone (the default, also
+	// for ""), RefsExisting or RefsSkip.
+	References string
 }
+
+// The [scope] references settings.
+const (
+	// RefsClone clones a referenced entry of a kind outside the scope (without its own references), so the value
+	// can be written; on a generic server a value naming nothing of a kind is written as it is.
+	RefsClone = "clone"
+	// RefsExisting writes a value only if the target holds its entry (or, on a generic server, as it is).
+	RefsExisting = "existing"
+	// RefsSkip writes only values that name an entry of the scope.
+	RefsSkip = "skip"
+)
 
 // Kind is a kind of the profile as configured for this job.
 type Kind struct {

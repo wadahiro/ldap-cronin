@@ -3,6 +3,7 @@ package diff
 import (
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 
 	"github.com/wadahiro/ldap-cronin/internal/plan"
@@ -37,6 +38,21 @@ func WriteSummary(w io.Writer, job plan.Job, sum Summary, excluded []string) {
 		fmt.Fprintf(w, "rename/move check: on (%s)\n", sum.Matching)
 	} else {
 		fmt.Fprintln(w, "rename/move check: off ([mapping] mode is off, or nothing to match by)")
+	}
+	if sum.Referenced > 0 {
+		fmt.Fprintf(w, "referenced objects outside the scope compared: %d (without their own references)\n", sum.Referenced)
+	}
+	if len(sum.NotCompared) > 0 {
+		names := make([]string, 0, len(sum.NotCompared))
+		for n := range sum.NotCompared {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		parts := make([]string, 0, len(names))
+		for _, n := range names {
+			parts = append(parts, fmt.Sprintf("%s %d", n, sum.NotCompared[n]))
+		}
+		fmt.Fprintf(w, "references not compared (clone cannot write them: the target lacks their entries): %s\n", strings.Join(parts, ", "))
 	}
 	fmt.Fprintln(w, "compared attributes:")
 	var masked []string

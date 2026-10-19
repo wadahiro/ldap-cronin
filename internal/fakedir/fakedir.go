@@ -218,6 +218,32 @@ func (d *Dir) Add(ctx context.Context, e directory.Entry, controls ...directory.
 	return nil
 }
 
+// principals turns <SID=...> values into the DN of a foreign security principal, creating it, as a DC does when a
+// member is added by SID.
+func (d *Dir) principals(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, v := range values {
+		sid, ok := strings.CutPrefix(v, "<SID=")
+		if !ok || len(d.roots) == 0 {
+			out = append(out, v)
+			continue
+		}
+		sid = strings.TrimSuffix(sid, ">")
+		parent := "CN=ForeignSecurityPrincipals," + d.roots[0]
+		if _, ok := d.Entries[dn.Normalize(parent)]; !ok {
+			d.Entries[dn.Normalize(parent)] = &directory.Entry{DN: parent, Attrs: map[string][]string{"objectClass": {"top", "container"}}}
+		}
+		p := "CN=" + sid + "," + parent
+		if _, ok := d.Entries[dn.Normalize(p)]; !ok {
+			attrs := map[string][]string{"objectClass": {"top", "foreignSecurityPrincipal"}, "cn": {sid}}
+			d.assignGUID(attrs)
+			d.Entries[dn.Normalize(p)] = &directory.Entry{DN: p, Attrs: attrs}
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
 func (d *Dir) Replace(ctx context.Context, dnStr string, attrs map[string][]string) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -232,7 +258,7 @@ func (d *Dir) Replace(ctx context.Context, dnStr string, attrs map[string][]stri
 		return err
 	}
 	for n, v := range attrs {
-		e.Attrs[n] = append([]string(nil), v...)
+		e.Attrs[n] = d.principals(v)
 		d.Ops = append(d.Ops, "replace "+n+" "+dnStr)
 		if strings.EqualFold(n, "unicodePwd") && isADUser(*e) {
 			e.Attrs["pwdLastSet"] = []string{"133000000000000000"}
@@ -261,6 +287,7 @@ func (d *Dir) AddValues(ctx context.Context, dnStr, attr string, values []string
 	if !ok {
 		return fmt.Errorf("modify %s: no such object", dnStr)
 	}
+	values = d.principals(values)
 	if err := d.checkRefs(dnStr, map[string][]string{attr: values}); err != nil {
 		return err
 	}

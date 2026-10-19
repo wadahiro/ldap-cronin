@@ -49,6 +49,9 @@ type Scope struct {
 	BaseDN  string            `toml:"base_dn"`
 	Objects []string          `toml:"objects"`
 	Filters map[string]string `toml:"filters"`
+	// References is what is done with a reference to an entry outside the scope: clone (default), existing or
+	// skip (see plan.RefsClone).
+	References string `toml:"references"`
 }
 
 // Run holds the run-time settings shared by clone and diff.
@@ -165,6 +168,11 @@ func Parse(raw []byte) (*Config, error) {
 }
 
 func (c *Config) validate() error {
+	switch c.Scope.References {
+	case "", plan.RefsClone, plan.RefsExisting, plan.RefsSkip:
+	default:
+		return fmt.Errorf("[scope] references must be %q, %q or %q, got %q", plan.RefsClone, plan.RefsExisting, plan.RefsSkip, c.Scope.References)
+	}
 	for name, ep := range map[string]Endpoint{"source": c.Source, "target": c.Target} {
 		u, err := url.Parse(ep.URL)
 		if err != nil || (u.Scheme != "ldap" && u.Scheme != "ldaps") || u.Host == "" {
@@ -360,7 +368,8 @@ func (c *Config) JobFor(p profile.Profile) (plan.Job, error) {
 	if _, _, err := c.MappingFor(p); err != nil {
 		return plan.Job{}, err
 	}
-	job := plan.Job{Profile: p, RootDN: c.Scope.RootDN, BaseDN: c.Scope.BaseDN, Masker: mask.New(c.Mask.Value, c.Mask.Attributes)}
+	job := plan.Job{Profile: p, RootDN: c.Scope.RootDN, BaseDN: c.Scope.BaseDN, Masker: mask.New(c.Mask.Value, c.Mask.Attributes),
+		References: c.Scope.References}
 	for _, spec := range p.Kinds { // the profile's order, whatever order the config lists them in
 		if !contains(c.Scope.Objects, spec.Name) {
 			continue

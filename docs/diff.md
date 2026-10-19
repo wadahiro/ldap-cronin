@@ -24,7 +24,7 @@ It is read-only.
 - Values are compared by **exact match** (case-sensitive). The following are normalized before comparing: attributes whose values are DNs (case and escaping),
   `objectClass` (case), `userAccountControl` (excluding server-managed bits) and `accountExpires` (`0` and `9223372036854775807` both mean "never expires" and are treated as equal).
   Multi-valued attributes are compared ignoring order.
-- For DN reference attributes (`member`, `manager` and so on), references outside the scope (built-in objects and the like) are removed from both sides before comparing.
+- DN reference attributes (`member`, `manager` and so on) are **compared in full**, so a program under test that removes or adds a member shows, whatever the member is (an object of the scope, a built-in group, an object outside `base_dn`). Objects outside the scope that the references name are cloned and compared too, as their kind and without their own references (`referenced objects outside the scope compared: N`). The only values left out are the source's values `clone` cannot write: on AD, a reference to an object the target does not hold and clone cannot create (a built-in the target lacks, a principal of a trusted domain). The summary counts them (`references not compared ...: member 2`).
 - The objects compared are those that match `[scope] objects` and `[scope.filters]`.
 - Use the same configuration file for clone and diff; different settings change the result (an `exclude` added only for diff hides that attribute).
 
@@ -117,7 +117,7 @@ DIFF        CN=Eng,OU=Groups,OU=IDM,DC=example,DC=com
 ```
 
 **1-5. DN reference attributes** (`member`, `manager`, `managedBy`, and anything added through `extra_include` such as `seeAlso`; detected automatically from the source schema):
-DN case and escaping (`\,` versus `\2C`) differences are not reported; out-of-scope DNs are removed from both sides first.
+DN case and escaping (`\,` versus `\2C`) differences are not reported; source values `clone` cannot write are left out first (see [What is compared](#what-is-compared)).
 
 ### 2. Presence of objects (`ONLY_SOURCE` / `ONLY_TARGET`)
 

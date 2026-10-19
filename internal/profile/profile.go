@@ -55,6 +55,47 @@ type KindSpec struct {
 	Order int
 	// Account marks kinds whose entries are accounts: they are created through the profile's Account strategy.
 	Account bool
+	// Is tells, from an entry's object classes, whether it is of this kind, as Filter would without its
+	// configured narrowing. It classifies an entry outside the scope that a reference names.
+	Is func(objectClasses []string) bool
+}
+
+// hasClass reports whether classes holds every name of want and none of not (case-insensitively).
+func hasClass(classes []string, want []string, not ...string) bool {
+	has := func(n string) bool {
+		for _, c := range classes {
+			if strings.EqualFold(c, n) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, w := range want {
+		if !has(w) {
+			return false
+		}
+	}
+	for _, n := range not {
+		if has(n) {
+			return false
+		}
+	}
+	return true
+}
+
+func classIs(want ...string) func([]string) bool {
+	return func(c []string) bool { return hasClass(c, want) }
+}
+
+func classIsAny(any ...string) func([]string) bool {
+	return func(c []string) bool {
+		for _, a := range any {
+			if hasClass(c, []string{a}) {
+				return true
+			}
+		}
+		return false
+	}
 }
 
 // RefInfo describes an attribute whose values are DNs.
@@ -128,10 +169,18 @@ type Profile struct {
 	PasswordAttrs []string
 	// SystemFilter excludes built-in objects (AD: isCriticalSystemObject). Empty means no exclusion.
 	SystemFilter string
+	// SystemAttr is the attribute whose value TRUE marks a built-in object, as SystemFilter does (empty: none).
+	SystemAttr string
+	// Principal returns how to write a reference to a principal every domain has (AD: a well-known foreign
+	// security principal, written as <SID=...> so the target's DC creates it). nil: none.
+	Principal func(dn string) (value string, ok bool)
 	// BuiltinRefs are DN-valued attributes known without reading the schema (lowercase name).
 	BuiltinRefs map[string]RefInfo
 	// Ranged attributes are always fetched with the AD range option (member;range=0-N).
 	Ranged []string
+	// RefsNeedEntry is true when the server accepts a DN reference only to an existing entry (AD's linked
+	// attributes). A generic server takes any DN, so a value naming nothing cloned is still written as it is.
+	RefsNeedEntry bool
 	// Values holds per-attribute value normalizers (lowercase name) beyond the generic rules.
 	Values map[string]compare.Normalizer
 

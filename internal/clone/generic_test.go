@@ -68,12 +68,13 @@ func TestGenericCloneCreatesGroupsThatRequireAMemberAtCreation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A generic server takes any DN, so the member outside the scope is written too: every member is there.
 	members := dst.Lookup(gEng).Values("member")
-	if len(members) != 2 {
-		t.Fatalf("both in-scope members must be present and the outsider skipped: %v", members)
+	if len(members) != 3 {
+		t.Fatalf("every member of the source must be present: %v", members)
 	}
-	if rep.WarningCount != 1 || !strings.Contains(rep.Warnings[0], "outsider") {
-		t.Fatalf("the out-of-scope member must be reported: %+v", rep)
+	if rep.WarningCount != 0 {
+		t.Fatalf("nothing is skipped: %+v", rep)
 	}
 }
 
@@ -339,14 +340,18 @@ func TestGenericPreserveStopsWhenTheTargetRefusesTheControl(t *testing.T) {
 	}
 }
 
-// A groupOfNames whose members are all outside the scope cannot be created (the schema needs a member, and none
-// is cloned). Like a reference outside the scope, it is skipped with a warning, and the rest is cloned.
-func TestAGroupWhoseMembersAreAllOutsideIsSkippedWithAWarning(t *testing.T) {
+// On a server that needs a reference's entry, a groupOfNames whose members all name entries the target lacks
+// cannot be created (the schema needs a member, and none can be written). Like such a reference, it is skipped with
+// a warning, and the rest is cloned.
+func TestAGroupWhoseMembersCannotBeWrittenIsSkippedWithAWarning(t *testing.T) {
+	strict := profile.LDAP
+	strict.RefsNeedEntry = true
+	job := jobFor(t, strict, gBase, strict.KindNames(), profile.Override{})
 	src, dst := genericSource(), fakedir.New(gRoot)
 	dst.RequireAttr = map[string]string{"groupofnames": "member"}
 	far := "cn=Far,ou=Groups," + gBase
 	src.Put(far, map[string][]string{"objectClass": {"top", "groupOfNames"}, "cn": {"Far"}, "member": {"uid=outsider,ou=Elsewhere," + gRoot}})
-	rep, err := Run(context.Background(), src, dst, genericOptions(t), Options{UserPassword: "x", Workers: 2}, &bytes.Buffer{})
+	rep, err := Run(context.Background(), src, dst, job, Options{UserPassword: "x", Workers: 2}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatalf("the rest must be cloned: %v", err)
 	}
@@ -361,7 +366,7 @@ func TestAGroupWhoseMembersAreAllOutsideIsSkippedWithAWarning(t *testing.T) {
 		t.Fatalf("the skip must be a warning: %v", rep.Warnings)
 	}
 	var kinds []string
-	for _, d := range runDiff(t, src, dst, genericOptions(t)) {
+	for _, d := range runDiff(t, src, dst, job) {
 		kinds = append(kinds, string(d.Kind)+" "+d.DN)
 	}
 	if !slices.Equal(kinds, []string{"ONLY_SOURCE " + far}) {

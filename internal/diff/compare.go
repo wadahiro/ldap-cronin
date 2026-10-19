@@ -1,10 +1,12 @@
 package diff
 
 import (
+	"context"
 	"strings"
 
 	"github.com/wadahiro/ldap-cronin/internal/compare"
 	"github.com/wadahiro/ldap-cronin/internal/directory"
+	"github.com/wadahiro/ldap-cronin/internal/plan"
 )
 
 // compareEntry reports the attribute differences of one matched entry. Masked attributes are not compared, since
@@ -52,14 +54,26 @@ type pendingRef struct {
 	want, got []string
 }
 
-// resolveRefs compares the deferred DN reference attributes. Among the target values, the new DNs of renamed or moved objects
-// are translated back to the original (source) DNs, then filtered by the plan scope and compared.
-func (r *runner) resolveRefs() {
+// resolveRefs compares the deferred DN reference attributes. Among the target values, the new DNs of renamed or
+// moved objects are translated back to the original (source) DNs. Every value is compared except the source's
+// values clone cannot write (plan.RefUnreproducible), which are counted instead: a member removed or added on the
+// target shows, whatever it names.
+func (r *runner) resolveRefs(ctx context.Context, refs *plan.Classifier) error {
 	for _, pr := range r.pending {
-		w, g := r.p.InScope(pr.want), r.p.InScope(r.loc.translateBack(pr.got))
+		w, skipped, err := refs.Reproducible(ctx, pr.want)
+		if err != nil {
+			return err
+		}
+		if skipped > 0 {
+			r.mu.Lock()
+			r.sum.NotCompared[pr.name] += skipped
+			r.mu.Unlock()
+		}
+		g := r.loc.translateBack(pr.got)
 		if r.p.Equal(pr.name, w, g) {
 			continue
 		}
 		r.report(makeDifference(pr.dn, pr.name, w, g, r.p.Normalizer(pr.name), true))
 	}
+	return nil
 }

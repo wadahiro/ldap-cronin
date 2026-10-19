@@ -20,6 +20,9 @@ insecure_skip_verify = true
 # Parent OUs / containers above the starting point are created automatically if they do not exist on the target.
 base_dn = "OU=IDM,DC=ad,DC=example,DC=com"
 objects = ["ou", "group", "user"]   # all of them if omitted
+# references = "clone"               # an entry outside the scope that a reference names (a member outside base_dn):
+#                                    # clone (default) creates it as its kind, without its own references, so every
+#                                    # member is on the target; existing writes only what the target holds; skip
 
 # [scope.filters]                    # override the search filter per object type
 # user = "(&(objectCategory=person)(objectClass=user)(department=IT))"

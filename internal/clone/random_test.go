@@ -48,7 +48,16 @@ func randomTree(rng *rand.Rand) *fakedir.Dir {
 		src.Put(d, map[string][]string{"objectClass": {"top", "organizationalUnit"}, "ou": {v}, "description": {"部署 " + v}})
 		ous = append(ous, d)
 	}
+	// Outside the scope: a built-in the target lacks, a DN of nothing, and users that exist on the source
+	// (referenced objects, cloned because they are referenced).
+	src.Put("OU=Elsewhere,"+domain, map[string][]string{"objectClass": {"top", "organizationalUnit"}, "ou": {"Elsewhere"}})
 	outside := []string{"CN=Domain Admins,CN=Users," + domain, "CN=gone,OU=Elsewhere," + domain}
+	for i, n := 0, rng.Intn(3); i < n; i++ {
+		d, v := child("CN", "OU=Elsewhere,"+domain)
+		src.Put(d, map[string][]string{"objectClass": {"top", "person", "organizationalPerson", "user"}, "cn": {v},
+			"sAMAccountName": {fmt.Sprintf("x%03d", i)}, "userAccountControl": {"512"}})
+		outside = append(outside, d)
+	}
 	var users, groups []string
 	for i, n := 0, 3+rng.Intn(20); i < n; i++ {
 		d, v := child("CN", ous[rng.Intn(len(ous))])
@@ -169,7 +178,13 @@ func randomGenericTree(rng *rand.Rand) *fakedir.Dir {
 		src.Put(d, map[string][]string{"objectClass": {"top", "organizationalUnit"}, "ou": {v}})
 		ous = append(ous, d)
 	}
-	outside := []string{"uid=outsider,ou=Elsewhere," + gRoot}
+	src.Put("ou=Elsewhere,"+gRoot, map[string][]string{"objectClass": {"top", "organizationalUnit"}, "ou": {"Elsewhere"}})
+	outside := []string{"uid=outsider,ou=Elsewhere," + gRoot} // names nothing: written as it is
+	for i, n := 0, rng.Intn(3); i < n; i++ {
+		d, v := child("cn", "ou=Elsewhere,"+gRoot)
+		src.Put(d, map[string][]string{"objectClass": {"top", "inetOrgPerson"}, "cn": {v}, "sn": {"X"}, "uid": {fmt.Sprintf("x%03d", i)}})
+		outside = append(outside, d)
+	}
 	var users []string
 	for i, n := 0, 2+rng.Intn(15); i < n; i++ {
 		d, v := child("cn", ous[rng.Intn(len(ous))])
