@@ -248,6 +248,60 @@ func (p *Plan) Ancestor(ctx context.Context, a string) (Node, error) {
 	return Node{Entry: p.job.Masker.Apply(*e), CreateOnly: true}, nil
 }
 
+// Unselected counts, by structural object class, the entries under base_dn that clone does not copy: those of no
+// enabled kind (BitLocker recovery information, ActiveSync devices, a kind left out of [scope] objects) and the
+// built-in ones. The parents it creates are not counted. It is one more paged search, reading only the classes.
+func (p *Plan) Unselected(ctx context.Context) (map[string]int, error) {
+	var any strings.Builder
+	for _, k := range p.job.Kinds {
+		any.WriteString(k.Filter)
+	}
+	out := map[string]int{}
+	err := p.src.Walk(ctx, p.job.BaseDN, "(!(|"+any.String()+"))", []string{"objectClass", "structuralObjectClass"}, func(e directory.Entry) error {
+		if !p.Scope.Has(e.DN) {
+			out[structural(e)]++
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("count the entries of no kind: %w", err)
+	}
+	return out, nil
+}
+
+// Counts prints counts per name, the largest first ("msFVE-RecoveryInformation 120, contact 3"), for the
+// summaries of clone and diff.
+func Counts(m map[string]int) string {
+	names := make([]string, 0, len(m))
+	for n := range m {
+		names = append(names, n)
+	}
+	sort.Slice(names, func(i, j int) bool {
+		if m[names[i]] != m[names[j]] {
+			return m[names[i]] > m[names[j]]
+		}
+		return names[i] < names[j]
+	})
+	parts := make([]string, len(names))
+	for i, n := range names {
+		parts[i] = fmt.Sprintf("%s %d", n, m[n])
+	}
+	return strings.Join(parts, ", ")
+}
+
+// structural is the structural object class of e: the last value of structuralObjectClass, which OpenLDAP gives as
+// one value and AD as the chain from top down to the structural class; otherwise the last objectClass value, which
+// AD lists the same way.
+func structural(e directory.Entry) string {
+	if v := e.Values("structuralObjectClass"); len(v) > 0 {
+		return v[len(v)-1]
+	}
+	if v := e.Values("objectClass"); len(v) > 0 {
+		return v[len(v)-1]
+	}
+	return "(no objectClass)"
+}
+
 // withRead adds the attributes Read asks for to names.
 func (p *Plan) withRead(names []string) []string {
 	var extra []string

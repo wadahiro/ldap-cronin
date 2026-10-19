@@ -1,6 +1,7 @@
 # Membership fidelity: every member on the target, and diff sees every change to it
 
-Status: in progress. Steps 1 to 4 (3.1 to 3.8) are implemented; step 5 follows: the counts (3.9).
+Status: implemented (steps 1 to 5, 3.1 to 3.9). The reasons in the third line of 3.9 (trusted-domain principals,
+missing built-ins) are not split out; the warnings of clone name each value.
 
 ## 1. Goal
 
@@ -190,13 +191,15 @@ attributes (`sAMAccountName`, `userPrincipalName`, `userAccountControl`, `accoun
 `clone` and `diff` print, in their summaries:
 
 ```
-referenced objects cloned: 312 (user 280, group 30, computer 2)
+referenced objects outside the scope cloned: 312 (user 280, group 30, computer 2)
 not cloned (matches no kind): msFVE-RecoveryInformation 120, msExchActiveSyncDevice 14, serviceConnectionPoint 3
 references not compared (could not be cloned): member 20 (trusted-domain principals 18, built-ins missing on the target 2)
 ```
 
-- The second line is one extra paged search per run: `(!(|<every kind's filter>))` under `base_dn`, reading only
-  `objectCategory` (AD) or `structuralObjectClass` (generic). Counts only.
+- The second line is one extra paged search per run (`plan.Unselected`): `(!(|<every kind's filter>))` under
+  `base_dn`, reading only the last value of `structuralObjectClass` (OpenLDAP gives one value; AD and Samba the chain
+  from `top` down to the structural class), or the last `objectClass` value where it is missing. Counts only. diff prints it as
+  `not compared (matches no kind, ...)`.
 - Create-only ancestors (CN= containers) are created, so they are not counted. A kind left out with
   `[scope] objects` is counted.
 

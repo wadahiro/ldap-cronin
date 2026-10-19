@@ -57,26 +57,20 @@ var AD = Profile{
 	},
 	Required:      []string{"objectClass", "cn", "ou"},
 	AncestorAttrs: []string{"objectClass", "cn", "ou", "description"},
-	NeverClone: []string{
+	NeverClone: append([]string{
 		"objectGUID", "objectSid", "sIDHistory", "whenCreated", "whenChanged", "uSNCreated", "uSNChanged",
 		"distinguishedName", "name", "pwdLastSet", "badPwdCount", "badPasswordTime", "lastLogon",
 		"lastLogoff", "lastLogonTimestamp", "logonCount", "lockoutTime", "memberOf", "unicodePwd",
 		"dBCSPwd", "ntPwdHistory", "lmPwdHistory", "supplementalCredentials", "sAMAccountType",
 		"objectCategory", "instanceType", "nTSecurityDescriptor", "isCriticalSystemObject",
 		"systemFlags", "dSCorePropagationData", "primaryGroupID", "msDS-KeyVersionNumber",
-		// Credentials of computers: LAPS (legacy and Windows LAPS), Windows Hello / shadow credentials, resource-based
-		// delegation (who may act as the computer), the gMSA password.
-		"ms-Mcs-AdmPwd", "ms-Mcs-AdmPwdExpirationTime", "msLAPS-Password", "msLAPS-EncryptedPassword",
-		"msLAPS-EncryptedPasswordHistory", "msLAPS-EncryptedDSRMPassword", "msLAPS-EncryptedDSRMPasswordHistory",
-		"msLAPS-PasswordExpirationTime", "msDS-KeyCredentialLink", "msDS-AllowedToActOnBehalfOfOtherIdentity",
-		"msDS-ManagedPassword",
-	},
+	}, computerCredentials...),
 	NoMask: []string{
 		"objectClass", "cn", "ou", "sAMAccountName", "userPrincipalName", "servicePrincipalName",
 		"member", "manager", "managedBy", "userAccountControl", "groupType", "accountExpires",
 		"countryCode", "c", "uidNumber", "gidNumber",
 	},
-	PasswordAttrs: []string{"unicodePwd", "dBCSPwd", "ntPwdHistory", "lmPwdHistory", "supplementalCredentials"},
+	PasswordAttrs: append([]string{"unicodePwd", "dBCSPwd", "ntPwdHistory", "lmPwdHistory", "supplementalCredentials"}, computerCredentials...),
 	// A safeguard so that Administrator, krbtgt and the like are not overwritten even if base_dn is CN=Users.
 	SystemFilter: "(!(isCriticalSystemObject=TRUE))",
 	SystemAttr:   "isCriticalSystemObject",
@@ -107,6 +101,15 @@ var AD = Profile{
 	Root:        adRoot{},
 	Account:     adAccount{},
 	Native:      adNative{},
+}
+
+// computerCredentials are never cloned, compared or printed: LAPS (legacy and Windows LAPS), Windows Hello / shadow
+// credentials, resource-based delegation (who may act as the computer), the gMSA password.
+var computerCredentials = []string{
+	"ms-Mcs-AdmPwd", "ms-Mcs-AdmPwdExpirationTime", "msLAPS-Password", "msLAPS-EncryptedPassword",
+	"msLAPS-EncryptedPasswordHistory", "msLAPS-EncryptedDSRMPassword", "msLAPS-EncryptedDSRMPasswordHistory",
+	"msLAPS-PasswordExpirationTime", "msDS-KeyCredentialLink", "msDS-AllowedToActOnBehalfOfOtherIdentity",
+	"msDS-ManagedPassword",
 }
 
 const (

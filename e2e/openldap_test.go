@@ -61,6 +61,10 @@ cn: Eng
 member: uid=alice,ou=People,ou=IDM,dc=example,dc=org
 member: uid=bob,ou=People,ou=IDM,dc=example,dc=org
 
+dn: cn=batch,ou=IDM,dc=example,dc=org
+objectClass: applicationProcess
+cn: batch
+
 dn: cn=Devices,uid=alice,ou=People,ou=IDM,dc=example,dc=org
 objectClass: groupOfNames
 cn: Devices
@@ -188,6 +192,10 @@ base_dn = %q
 	// is (OpenLDAP refuses an inetOrgPerson without sn), and logs in with the fixed password below.
 	if rep.Added != 7 {
 		t.Fatalf("expected 7 objects: %+v\n%s", *rep, out.String())
+	}
+	// The application entry is of no kind: not cloned, and counted by its structuralObjectClass.
+	if fmt.Sprint(rep.NotCloned) != "map[applicationProcess:1]" {
+		t.Fatalf("not cloned: %v", rep.NotCloned)
 	}
 
 	diffs, err := runDiffWith(opt, src, dst, nil)

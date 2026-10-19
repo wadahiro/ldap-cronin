@@ -359,6 +359,16 @@ func matches(e directory.Entry, filter string) bool {
 	classes := strings.ToLower(strings.Join(e.Values("objectClass"), ","))
 	lower := strings.ToLower(filter)
 	switch {
+	case strings.HasPrefix(filter, "(!(|") && strings.HasSuffix(filter, ")"):
+		// The negation of the kinds' filters (plan.Unselected).
+		return !matches(e, filter[2:len(filter)-1])
+	case strings.HasPrefix(filter, "(|(&"):
+		for _, f := range terms(filter[2 : len(filter)-1]) {
+			if matches(e, f) {
+				return true
+			}
+		}
+		return false
 	case strings.HasPrefix(filter, "(|(") && !strings.Contains(lower, "objectclass=") && !strings.Contains(lower, "objectcategory="):
 		// An OR of equality filters, as a mapping file builds for an object cloned more than once.
 		for _, f := range strings.SplitAfter(strings.TrimSuffix(strings.TrimPrefix(filter, "(|"), ")"), ")") {
@@ -387,6 +397,27 @@ func matches(e directory.Entry, filter string) bool {
 		return strings.Contains(classes, "group")
 	}
 	return true
+}
+
+// terms splits a run of parenthesized filters into its top-level terms.
+func terms(s string) []string {
+	var out []string
+	depth, start := 0, 0
+	for i, c := range s {
+		switch c {
+		case '(':
+			if depth == 0 {
+				start = i
+			}
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				out = append(out, s[start:i+1])
+			}
+		}
+	}
+	return out
 }
 
 func clone(m map[string][]string) map[string][]string {

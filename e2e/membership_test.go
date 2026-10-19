@@ -70,6 +70,9 @@ func TestEveryKindOfMemberIsClonedAndItsRemovalShows(t *testing.T) {
 		computer(pcOut, fmt.Sprintf("m%06dpc2", runID)),
 		{DN: contact, Attrs: map[string][]string{"objectClass": {"contact"}, "cn": {"Partner"}, "sn": {"Partner"},
 			"mail": {"partner@other.example"}, "company": {"Other"}}},
+		// Of no kind: not cloned, and counted.
+		{DN: "CN=Agent," + pc, Attrs: map[string][]string{"objectClass": {"serviceConnectionPoint"}, "cn": {"Agent"},
+			"serviceBindingInformation": {"https://pc1.ad.example.com:8443"}}},
 	} {
 		must(src.Add(ctx, e))
 	}
@@ -99,6 +102,12 @@ func TestEveryKindOfMemberIsClonedAndItsRemovalShows(t *testing.T) {
 	must(err)
 	if rep.Referenced != 2 || rep.WarningCount != 0 {
 		t.Fatalf("carl and PC2 must be cloned as referenced objects and nothing skipped: %+v", rep)
+	}
+	if fmt.Sprint(rep.ReferencedKinds) != "map[computer:1 user:1]" || fmt.Sprint(rep.NotCloned) != "map[serviceConnectionPoint:1]" {
+		t.Fatalf("the counts: referenced %v, not cloned %v", rep.ReferencedKinds, rep.NotCloned)
+	}
+	if e, _ := dst.Get(ctx, "CN=Agent,"+pc, []string{"cn"}); e != nil {
+		t.Fatal("the service connection point must not be cloned")
 	}
 	// The computers are workstation trust accounts on the target too, with a password, and the same flags.
 	for _, d := range []string{pc, pcOut} {

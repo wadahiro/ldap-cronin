@@ -3,10 +3,12 @@ package clone
 import (
 	"bytes"
 	"context"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/wadahiro/ldap-cronin/internal/diff"
 	"github.com/wadahiro/ldap-cronin/internal/dn"
 	"github.com/wadahiro/ldap-cronin/internal/fakedir"
 	"github.com/wadahiro/ldap-cronin/internal/profile"
@@ -135,5 +137,53 @@ func TestComputerCredentialsCannotBeAllowListed(t *testing.T) {
 		if _, err := profile.AD.Attrs(profile.KindComputer, profile.Override{Extra: []string{a}}); err == nil {
 			t.Errorf("%s must be refused in an allow list", a)
 		}
+	}
+}
+
+// The summaries say what the target holds beyond the scope and what it lacks: the referenced objects per kind, and
+// the entries under base_dn of no kind (BitLocker recovery information under a computer), which neither clone
+// copies nor diff compares. A create-only parent (CN=Staff) is created, so it is not counted; a kind left out of
+// [scope] objects is.
+func TestSummariesCountWhatWasClonedFromOutsideAndWhatWasNot(t *testing.T) {
+	src := computerSource()
+	src.Put("CN=2026-01-01T00:00:00-09:00{1},"+pc01, map[string][]string{"objectClass": {"top", "msFVE-RecoveryInformation"},
+		"msFVE-RecoveryPassword": {"production-recovery-key"}})
+	// AD and Samba give structuralObjectClass as the chain down to the structural class, in any objectClass order.
+	src.Put("CN=Agent,"+pc01, map[string][]string{"objectClass": {"serviceConnectionPoint", "top", "connectionPoint", "leaf"},
+		"structuralObjectClass": {"top", "leaf", "connectionPoint", "serviceConnectionPoint"}})
+	dst := fakedir.New(domain)
+	job := options(t, allKinds()...)
+	rep, err := Run(context.Background(), src, dst, job, Options{UserPassword: "Fixed1!", Workers: 2}, &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !maps.Equal(rep.ReferencedKinds, map[string]int{profile.KindComputer: 1}) || !maps.Equal(rep.NotCloned, map[string]int{"msFVE-RecoveryInformation": 1, "serviceConnectionPoint": 1}) {
+		t.Fatalf("referenced %v not cloned %v", rep.ReferencedKinds, rep.NotCloned)
+	}
+	var out bytes.Buffer
+	rep.WriteSummary(&out)
+	for _, want := range []string{"referenced objects outside the scope cloned: 1 (computer 1)", "not cloned (matches no kind): msFVE-RecoveryInformation 1, serviceConnectionPoint 1"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("missing %q in\n%s", want, out.String())
+		}
+	}
+
+	sum, err := diff.Run(context.Background(), src, dst, job, diff.Options{Workers: 2}, func(d diff.Difference) { t.Errorf("unexpected %+v", d) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	diff.WriteSummary(&out, job, sum, nil)
+	if !strings.Contains(out.String(), "not compared (matches no kind, so clone does not copy it): msFVE-RecoveryInformation 1, serviceConnectionPoint 1") {
+		t.Fatalf("diff must say what it did not compare:\n%s", out.String())
+	}
+
+	noContacts := options(t, profile.KindOU, profile.KindGroup, profile.KindUser, profile.KindComputer)
+	rep, err = Run(context.Background(), src, fakedir.New(domain), noContacts, Options{UserPassword: "Fixed1!", Workers: 2}, &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.NotCloned["contact"] != 1 {
+		t.Fatalf("a kind left out is counted: %v", rep.NotCloned)
 	}
 }

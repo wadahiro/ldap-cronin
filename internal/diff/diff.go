@@ -77,6 +77,9 @@ type Summary struct {
 	NotCompared map[string]int
 	// Referenced is the number of entries outside the scope compared because a reference names them.
 	Referenced int
+	// NotCloned counts the entries under base_dn of no enabled kind, per structural object class: clone does not
+	// copy them, so diff does not compare them either (plan.Unselected).
+	NotCloned map[string]int
 }
 
 // Options are the run-time settings of a comparison.
@@ -127,6 +130,9 @@ func Run(ctx context.Context, src, dst directory.Directory, job plan.Job, o Opti
 		r.noteOutside(want, k.Attrs)
 		return r.check(ctx, want, k.Attrs, k, false)
 	}); err != nil {
+		return r.sum, err
+	}
+	if r.sum.NotCloned, err = p.Unselected(ctx); err != nil {
 		return r.sum, err
 	}
 	refs := p.Classifier(dst)

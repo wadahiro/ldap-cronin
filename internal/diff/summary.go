@@ -42,6 +42,9 @@ func WriteSummary(w io.Writer, job plan.Job, sum Summary, excluded []string) {
 	if sum.Referenced > 0 {
 		fmt.Fprintf(w, "referenced objects outside the scope compared: %d (without their own references)\n", sum.Referenced)
 	}
+	if len(sum.NotCloned) > 0 {
+		fmt.Fprintf(w, "not compared (matches no kind, so clone does not copy it): %s\n", plan.Counts(sum.NotCloned))
+	}
 	if len(sum.NotCompared) > 0 {
 		names := make([]string, 0, len(sum.NotCompared))
 		for n := range sum.NotCompared {
@@ -68,10 +71,22 @@ func WriteSummary(w io.Writer, job plan.Job, sum Summary, excluded []string) {
 		fmt.Fprintf(w, "  %-5s: %s\n", k.Name, strings.Join(names, ", "))
 	}
 	fmt.Fprintln(w, "not compared:")
-	fmt.Fprintf(w, "  masked (config [mask])        : %s\n", orNone(masked))
-	fmt.Fprintf(w, "  excluded (config exclude)     : %s\n", orNone(excluded))
-	fmt.Fprintf(w, "  never compared                : password attributes (%s),\n", strings.Join(job.Profile.PasswordAttrs, ", "))
-	fmt.Fprintln(w, "                                  and any attribute not listed above")
+	writeList(w, "masked (config [mask])", masked)
+	writeList(w, "excluded (config exclude)", excluded)
+	writeList(w, "credentials (clone never copies them)", job.Profile.PasswordAttrs)
+	fmt.Fprintln(w, "  and any attribute not listed above")
+}
+
+// writeList prints one attribute per line under a heading, so a long list stays readable.
+func writeList(w io.Writer, heading string, names []string) {
+	if len(names) == 0 {
+		fmt.Fprintf(w, "  %s: (none)\n", heading)
+		return
+	}
+	fmt.Fprintf(w, "  %s:\n", heading)
+	for _, n := range names {
+		fmt.Fprintf(w, "    %s\n", n)
+	}
 }
 
 func kindCounts(job plan.Job, sum Summary) string {
@@ -89,11 +104,4 @@ func appendUnique(list []string, v string) []string {
 		}
 	}
 	return append(list, v)
-}
-
-func orNone(list []string) string {
-	if len(list) == 0 {
-		return "(none)"
-	}
-	return strings.Join(list, ", ")
 }

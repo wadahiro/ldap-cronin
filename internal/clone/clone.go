@@ -48,10 +48,26 @@ const maxWarnings = 1000
 
 type Report struct {
 	Added, Updated, Unchanged int
-	// Referenced counts the entries outside the scope cloned because a reference names them.
-	Referenced   int
+	// Referenced counts the entries outside the scope cloned because a reference names them (or, as parents,
+	// because entries to clone are under them); ReferencedKinds splits it per kind.
+	Referenced      int
+	ReferencedKinds map[string]int
+	// NotCloned counts the entries under base_dn of no enabled kind, per structural object class (plan.Unselected).
+	NotCloned    map[string]int
 	WarningCount int
 	Warnings     []string // first maxWarnings only
+}
+
+// WriteSummary prints the counts of a run: what was written, and what was cloned from outside the scope or not
+// cloned at all, so a tester knows what the target holds.
+func (rep *Report) WriteSummary(w io.Writer) {
+	fmt.Fprintf(w, "\nadded=%d updated=%d unchanged=%d warnings=%d\n", rep.Added, rep.Updated, rep.Unchanged, rep.WarningCount)
+	if rep.Referenced > 0 {
+		fmt.Fprintf(w, "referenced objects outside the scope cloned: %d (%s)\n", rep.Referenced, plan.Counts(rep.ReferencedKinds))
+	}
+	if len(rep.NotCloned) > 0 {
+		fmt.Fprintf(w, "not cloned (matches no kind): %s\n", plan.Counts(rep.NotCloned))
+	}
 }
 
 type runner struct {
@@ -85,11 +101,14 @@ func Run(ctx context.Context, src, dst directory.Directory, job plan.Job, opt Op
 	if err != nil {
 		return nil, err
 	}
-	r := &runner{dst: dst, opt: opt, out: out, prof: job.Profile, skipped: map[string]bool{}, done: map[string]*onceErr{}}
+	r := &runner{dst: dst, opt: opt, out: out, prof: job.Profile, skipped: map[string]bool{}, done: map[string]*onceErr{},
+		report: Report{ReferencedKinds: map[string]int{}}}
 	if err := r.run(ctx, p); err != nil {
 		return &r.report, err
 	}
-	return &r.report, nil
+	nc, err := p.Unselected(ctx)
+	r.report.NotCloned = nc
+	return &r.report, err
 }
 
 func (r *runner) run(ctx context.Context, p *plan.Plan) error {
@@ -142,7 +161,7 @@ func (r *runner) ensure(ctx context.Context, n plan.Node) error {
 		if err := r.leaf(ctx, n.Kind, n.Entry); err != nil || !n.Outside {
 			return err
 		}
-		r.count(func(rep *Report) { rep.Referenced++ })
+		r.referencedOne(n.Kind)
 		return nil
 	}
 	if !n.CreateOnly {
@@ -528,9 +547,16 @@ func (r *runner) referenced(ctx context.Context, v string) error {
 			err = r.leaf(ctx, k, *e)
 		}
 		if err == nil {
-			r.count(func(rep *Report) { rep.Referenced++ })
+			r.referencedOne(k)
 		}
 		return err
+	})
+}
+
+func (r *runner) referencedOne(k *plan.Kind) {
+	r.count(func(rep *Report) {
+		rep.Referenced++
+		rep.ReferencedKinds[k.Name]++
 	})
 }
 

@@ -167,7 +167,8 @@ type Profile struct {
 	NeverClone []string
 	// NoMask attributes would break the tool or violate a constraint if replaced by a fixed string.
 	NoMask []string
-	// PasswordAttrs are never copied, never compared and never printed.
+	// PasswordAttrs are the credentials (passwords, and on AD the computers' LAPS passwords, shadow credentials and
+	// delegation): never copied, never compared and never printed. diff's summary names them.
 	PasswordAttrs []string
 	// SystemFilter excludes built-in objects (AD: isCriticalSystemObject). Empty means no exclusion.
 	SystemFilter string

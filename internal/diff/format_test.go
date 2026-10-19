@@ -95,8 +95,8 @@ func TestWriteSummaryListsWhatIsNotCompared(t *testing.T) {
 	got := b.String()
 	for _, want := range []string{
 		"ou=3 user=5", "DIFF        : 2", "user : objectClass, title", // mail is masked, so it is excluded from the comparison
-		"masked (config [mask])        : mail", "excluded (config exclude)     : telephoneNumber",
-		"password attributes (unicodePwd, dBCSPwd, ntPwdHistory, lmPwdHistory, supplementalCredentials)",
+		"  masked (config [mask]):\n    mail\n", "  excluded (config exclude):\n    telephoneNumber\n",
+		"  credentials (clone never copies them):\n    unicodePwd\n    dBCSPwd\n", "    ms-Mcs-AdmPwd\n",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q in\n%s", want, got)

@@ -25,6 +25,7 @@ It is read-only.
   `objectClass` (case), `userAccountControl` (excluding server-managed bits) and `accountExpires` (`0` and `9223372036854775807` both mean "never expires" and are treated as equal).
   Multi-valued attributes are compared ignoring order.
 - DN reference attributes (`member`, `manager` and so on) are **compared in full**, so a program under test that removes or adds a member shows, whatever the member is (an object of the scope, a built-in group, an object outside `base_dn`). Objects outside the scope that the references name are cloned and compared too, as their kind and without their own references (`referenced objects outside the scope compared: N`). The only values left out are the source's values `clone` cannot write: on AD, a reference to an object the target does not hold and clone cannot create (a built-in the target lacks, a principal of a trusted domain). The summary counts them (`references not compared ...: member 2`).
+- Entries under `base_dn` of no kind (BitLocker recovery information, a service connection point, a kind left out of `[scope] objects`) are not cloned, so they are not compared either; the summary counts them per object class (`not compared (matches no kind, ...): msFVE-RecoveryInformation 120`). `clone` prints the same count (`not cloned (matches no kind): ...`), and the objects it cloned from outside the scope per kind (`referenced objects outside the scope cloned: 3 (user 2, computer 1)`).
 - The objects compared are those that match `[scope] objects` and `[scope.filters]`.
 - Use the same configuration file for clone and diff; different settings change the result (an `exclude` added only for diff hides that attribute).
 
@@ -247,20 +248,39 @@ differences:
   UNMARKED    : 1   (same DN, no marker: recreated, or added to the source after the clone)
                     not listed: 12 entries moved along with a renamed/moved parent OU
 rename/move check: on (markers in adminDisplayName)
+not compared (matches no kind, so clone does not copy it): msFVE-RecoveryInformation 120, serviceConnectionPoint 3
 compared attributes:
   ou   : objectClass, cn, ou, description
   group: objectClass, cn, sAMAccountName, member
   user : objectClass, cn, sAMAccountName, title, department
 not compared:
-  masked (config [mask])        : mail
-  excluded (config exclude)     : telephoneNumber
-  never compared                : password attributes (unicodePwd, dBCSPwd, ntPwdHistory, lmPwdHistory, supplementalCredentials),
-                                  and any attribute not listed above
+  masked (config [mask]):
+    mail
+  excluded (config exclude):
+    telephoneNumber
+  credentials (clone never copies them):
+    unicodePwd
+    dBCSPwd
+    ntPwdHistory
+    lmPwdHistory
+    supplementalCredentials
+    ms-Mcs-AdmPwd
+    ms-Mcs-AdmPwdExpirationTime
+    msLAPS-Password
+    msLAPS-EncryptedPassword
+    msLAPS-EncryptedPasswordHistory
+    msLAPS-EncryptedDSRMPassword
+    msLAPS-EncryptedDSRMPasswordHistory
+    msLAPS-PasswordExpirationTime
+    msDS-KeyCredentialLink
+    msDS-AllowedToActOnBehalfOfOtherIdentity
+    msDS-ManagedPassword
+  and any attribute not listed above
 ```
 
 - `compared objects`: objects compared, per type.
 - `RENAMED` / `REPLACED` / `UNMARKED` appear only when objects are matched (`rename/move check: on`; `REPLACED` and `UNMARKED` only when there are any). `not listed` is the number of entries left out because they merely moved along with their parent OU. A line saying objects were found more than once means a marker (or, on OpenLDAP, an `entryUUID`) was copied onto another object; the first one found was used.
-- `compared attributes`: the attributes that were compared (excluding masked ones). `not compared`: what was not compared (masked, `exclude`d, password-related, and attributes not in the allow list).
+- `compared attributes`: the attributes that were compared (excluding masked ones). `not compared`: what was not compared (masked, `exclude`d, the credentials, and attributes not in the allow list).
 
 ## References that point to renamed objects
 

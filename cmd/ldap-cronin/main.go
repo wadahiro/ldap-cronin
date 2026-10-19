@@ -161,8 +161,7 @@ func runClone(ctx context.Context, args []string, out io.Writer) error {
 		report, err = s.Clone(ctx, *dryRun, out, log)
 	}
 	if report != nil {
-		fmt.Fprintf(log, "\nadded=%d updated=%d unchanged=%d warnings=%d\n",
-			report.Added, report.Updated, report.Unchanged, report.WarningCount)
+		report.WriteSummary(log)
 	}
 	return err
 }
