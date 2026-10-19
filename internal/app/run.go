@@ -83,10 +83,18 @@ func (s *Session) Clone(ctx context.Context, dryRun bool, out, log io.Writer) (*
 	return report, err
 }
 
+// DiffOutput is how diff writes its result.
+type DiffOutput struct {
+	// JSON writes JSON Lines (one object per difference, then the summary) instead of text.
+	JSON bool
+	// MaxValues caps the values shown per direction in the text output; 0 shows all. JSON never cuts values.
+	MaxValues int
+}
+
 // Diff compares source and target, writes the differences and the summary to out, and returns ExitSame or ExitDiff.
 // An interrupted comparison returns the error and no summary: a partial result would read as "no differences" in
 // the part it did not reach.
-func (s *Session) Diff(ctx context.Context, maxValues int, out io.Writer) (int, error) {
+func (s *Session) Diff(ctx context.Context, o DiffOutput, out io.Writer) (int, error) {
 	dst, closeTarget, err := s.Target(ctx)
 	if err != nil {
 		return 0, err
@@ -98,8 +106,21 @@ func (s *Session) Diff(ctx context.Context, maxValues int, out io.Writer) (int, 
 		return 0, err
 	}
 	defer closeRes()
-	sum, err := diff.Run(ctx, s.Src, dst, s.Job, diff.Options{Workers: s.Cfg.Run.Workers, Resolver: res},
-		func(d diff.Difference) { diff.Format(out, d, maxValues) })
+	var js *diff.JSON
+	var werr error // a failed write (a closed pipe) fails the run instead of being taken for "no differences"
+	emit := func(d diff.Difference) { diff.Format(out, d, o.MaxValues) }
+	if o.JSON {
+		js = diff.NewJSON(out)
+		emit = func(d diff.Difference) {
+			if err := js.Difference(d); err != nil && werr == nil {
+				werr = err
+			}
+		}
+	}
+	sum, err := diff.Run(ctx, s.Src, dst, s.Job, diff.Options{Workers: s.Cfg.Run.Workers, Resolver: res}, emit)
+	if err == nil {
+		err = werr
+	}
 	if err != nil {
 		return 0, err
 	}
@@ -109,10 +130,16 @@ func (s *Session) Diff(ctx context.Context, maxValues int, out io.Writer) (int, 
 	for _, n := range sum.Differences {
 		total += n
 	}
-	if total == 0 {
-		fmt.Fprintln(out, "no differences")
+	if js != nil {
+		if err := js.Summary(s.Job, sum, s.Cfg.Attributes.Exclude); err != nil {
+			return 0, err
+		}
+	} else {
+		if total == 0 {
+			fmt.Fprintln(out, "no differences")
+		}
+		diff.WriteSummary(out, s.Job, sum, s.Cfg.Attributes.Exclude)
 	}
-	diff.WriteSummary(out, s.Job, sum, s.Cfg.Attributes.Exclude)
 	if total == 0 {
 		return ExitSame, nil
 	}

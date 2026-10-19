@@ -29,7 +29,7 @@ const (
 const usage = `Usage: ldap-cronin <command> [flags]
 
 Commands:
-  clone         Add or update the source directory's OUs, groups and users in the target (AD or generic LDAP)
+  clone         Add or update the source directory's OUs, groups, users, computers and contacts in the target (AD or generic LDAP)
   diff          Compare the source and the target (exit code 1 if there are differences)
   list-attrs    Show the default attributes (allow list) per object type (-profile ad|ldap)
   lab           Start an AD-compatible Samba4 on docker for verification, and take and restore snapshots (lab help)
@@ -40,7 +40,8 @@ Flags (clone/diff):
   -dry-run         (clone only) Do not connect to the target; print what would be done as LDIF
   -native          (clone only) Import into the lab's Samba keeping the source's objectGUID and objectSid (Samba only. lab help)
   -lab-prefix <p>, -lab-instance <name>   (clone -native) The lab to import into
-  -max-values <n>  (diff only) How many multi-valued attribute differences to show per direction (default: 10, 0 for all)
+  -format <f>      (diff only) text (default), or json: JSON Lines, one object per difference, then the summary
+  -max-values <n>  (diff only, text) Show at most n values per direction of a multi-valued difference (default: 0, all)
 `
 
 // version is embedded at build time with -ldflags "-X main.version=...".
@@ -169,16 +170,20 @@ func runClone(ctx context.Context, args []string, out io.Writer) error {
 func runDiff(ctx context.Context, args []string, out io.Writer) (int, error) {
 	fs := flag.NewFlagSet("diff", flag.ContinueOnError)
 	cfgPath := fs.String("config", "config.toml", "config file")
-	maxValues := fs.Int("max-values", diff.DefaultMaxValues, "max values shown per direction for multi-valued attributes (0 = all)")
+	maxValues := fs.Int("max-values", diff.DefaultMaxValues, "max values shown per direction for multi-valued attributes in the text output (0 = all, the default)")
+	format := fs.String("format", "text", "output format: text, or json (JSON Lines: one object per difference, then the summary)")
 	if err := fs.Parse(args); err != nil {
 		return 0, err
+	}
+	if *format != "text" && *format != "json" {
+		return 0, fmt.Errorf("-format %q: use text or json", *format)
 	}
 	s, err := openSession(ctx, *cfgPath)
 	if err != nil {
 		return 0, err
 	}
 	defer s.Close()
-	return s.Diff(ctx, *maxValues, out)
+	return s.Diff(ctx, app.DiffOutput{JSON: *format == "json", MaxValues: *maxValues}, out)
 }
 
 func listAttrs(args []string, out io.Writer) error {

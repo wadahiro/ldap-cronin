@@ -169,3 +169,21 @@ func TestWriteSummaryShowsCaseOnlyCountOnlyWhenPresent(t *testing.T) {
 		t.Fatalf("with:\n%s\nwithout:\n%s", with.String(), without.String())
 	}
 }
+
+// By default the text output shows every value too: a cut list could hide the one removal a test looks for.
+func TestTextShowsEveryValueByDefault(t *testing.T) {
+	var many []string
+	for i := range 25 {
+		many = append(many, fmt.Sprintf("CN=u%02d,DC=x", i))
+	}
+	var b bytes.Buffer
+	Format(&b, Difference{Kind: Differ, DN: "CN=g,DC=x", Attr: "member", Multi: true, OnlySource: many}, DefaultMaxValues)
+	if !strings.Contains(b.String(), "CN=u24,DC=x") || strings.Contains(b.String(), "more") {
+		t.Fatalf("%s", b.String())
+	}
+	b.Reset()
+	Format(&b, Difference{Kind: Differ, DN: "CN=g,DC=x", Attr: "member", Multi: true, OnlySource: many}, 10)
+	if !strings.Contains(b.String(), "+15 more") {
+		t.Fatalf("-max-values still cuts on request, and says so:\n%s", b.String())
+	}
+}

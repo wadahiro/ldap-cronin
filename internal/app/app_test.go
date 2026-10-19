@@ -107,7 +107,7 @@ func cloneThenDiff(t *testing.T, mapping, check string) {
 	if err != nil || report.Added == 0 {
 		t.Fatalf("%+v %v", report, err)
 	}
-	if code, err := s.Diff(ctx, 10, &bytes.Buffer{}); err != nil || code != ExitSame {
+	if code, err := s.Diff(ctx, DiffOutput{MaxValues: 10}, &bytes.Buffer{}); err != nil || code != ExitSame {
 		t.Fatalf("a fresh clone must have no differences: %d %v", code, err)
 	}
 
@@ -118,7 +118,7 @@ func cloneThenDiff(t *testing.T, mapping, check string) {
 	e.Attrs["cn"] = []string{"Alice Renamed"}
 	w.dst.Put(renamed, e.Attrs)
 	var out bytes.Buffer
-	code, err := s.Diff(ctx, 10, &out)
+	code, err := s.Diff(ctx, DiffOutput{MaxValues: 10}, &out)
 	if err != nil || code != ExitDiff {
 		t.Fatalf("%d %v\n%s", code, err, out.String())
 	}
@@ -143,7 +143,7 @@ func TestARenameAloneMakesDiffExitWith1(t *testing.T) {
 	e.Attrs["cn"] = []string{"Alice Renamed"}
 	w.dst.Put("CN=Alice Renamed,OU=Users,"+base, e.Attrs)
 	var out bytes.Buffer
-	code, err := s.Diff(ctx, 10, &out)
+	code, err := s.Diff(ctx, DiffOutput{MaxValues: 10}, &out)
 	if err != nil || code != ExitDiff || strings.Contains(out.String(), "no differences") || !strings.Contains(out.String(), "RENAMED") {
 		t.Fatalf("%d %v\n%s", code, err, out.String())
 	}
@@ -222,7 +222,7 @@ func TestOneMappingFileServesASecondTarget(t *testing.T) {
 	}
 	for i, w := range []*world{first, second} {
 		var out bytes.Buffer
-		if code, err := w.open(t, mapping).Diff(ctx, 10, &out); err != nil || code != ExitSame {
+		if code, err := w.open(t, mapping).Diff(ctx, DiffOutput{MaxValues: 10}, &out); err != nil || code != ExitSame {
 			t.Fatalf("target %d: %d %v\n%s", i+1, code, err, out.String())
 		}
 	}
@@ -265,7 +265,7 @@ func TestDiffWithAnUnusableMappingFileSaysWhy(t *testing.T) {
 			s := w.open(t, mapping)
 			var warn, out bytes.Buffer
 			s.Warn = &warn
-			code, err := s.Diff(ctx, 10, &out)
+			code, err := s.Diff(ctx, DiffOutput{MaxValues: 10}, &out)
 			if err != nil || code != ExitDiff {
 				t.Fatalf("%d %v", code, err)
 			}

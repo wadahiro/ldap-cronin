@@ -6,8 +6,9 @@
 It is read-only.
 
 ```sh
-./bin/ldap-cronin diff -config config.toml            # exit code 1 if there are differences
-./bin/ldap-cronin diff -config config.toml -max-values 0   # show all values of multi-valued differences
+./bin/ldap-cronin diff -config config.toml                  # exit code 1 if there are differences
+./bin/ldap-cronin diff -config config.toml -format json > diff.jsonl   # for a program: JSON Lines (see below)
+./bin/ldap-cronin diff -config config.toml -max-values 10   # shorter: at most 10 values per direction
 ```
 
 - Exit codes: no differences **0** / differences found **1** / error **2**.
@@ -106,7 +107,7 @@ DIFF        CN=Alice,OU=Users,OU=IDM,DC=example,DC=com
                 - smtp:alice.admin@example.com
 ```
 
-At most 10 values are shown per direction, and the rest is shown as `... (+N more; ...)`. `-max-values <n>` changes the limit (`0` shows all). Example with `-max-values 2`:
+Every value is shown by default: a cut list could hide the one removal a test looks for. `-max-values <n>` shows at most `n` per direction and the rest as `... (+N more; ...)`. Example with `-max-values 2`:
 
 ```
 DIFF        CN=Eng,OU=Groups,OU=IDM,DC=example,DC=com
@@ -283,6 +284,44 @@ not compared:
 - `compared objects`: objects compared, per type.
 - `RENAMED` / `REPLACED` / `UNMARKED` appear only when objects are matched (`rename/move check: on`; `REPLACED` and `UNMARKED` only when there are any). `not listed` is the number of entries left out because they merely moved along with their parent OU. A line saying objects were found more than once means a marker (or, on OpenLDAP, an `entryUUID`) was copied onto another object; the first one found was used.
 - `compared attributes`: the attributes that were compared (excluding masked ones). `not compared`: what was not compared (masked, `exclude`d, the credentials, and attributes not in the allow list).
+
+## JSON output (`-format json`)
+
+For a test program that checks the result, `-format json` writes [JSON Lines](https://jsonlines.org/): one JSON
+object per line, a line per difference as it is found, then one summary line. Standard output holds nothing else
+(password prompts and warnings go to standard error), the exit codes are the same, and values are never cut short
+(`-max-values` applies to the text output only).
+
+```json
+{"kind":"DIFF","dn":"CN=Eng,OU=Groups,OU=IDM,DC=example,DC=com","attr":"member","only_source":["CN=Bob,OU=Users,OU=IDM,DC=example,DC=com"],"only_target":[]}
+{"kind":"DIFF","dn":"CN=Alice,OU=Users,OU=IDM,DC=example,DC=com","attr":"department","source":["Sales Dept"],"target":["Sales Div"]}
+{"kind":"RENAMED","dn":"CN=Cid,OU=Users,OU=IDM,DC=example,DC=com","target_dn":"CN=Cid Renamed,OU=Users,OU=IDM,DC=example,DC=com","renamed":true}
+{"kind":"ONLY_SOURCE","dn":"CN=Dave,OU=Users,OU=IDM,DC=example,DC=com"}
+{"kind":"SUMMARY","version":1,"compared":{"group":40,"ou":12,"user":1150},"differences":{"DIFF":2,"ONLY_SOURCE":1,"ONLY_TARGET":0,"RENAMED":1,"REPLACED":0,"UNMARKED":0},"case_only":0,"rename_check":"markers in adminDisplayName","implied":0,"duplicates":0,"referenced":3,"not_cloned":{"msFVE-RecoveryInformation":12},"references_not_compared":{"member":2},"compared_attributes":{"group":["objectClass","cn","sAMAccountName","member"],"...":[]},"masked":["mail"],"excluded":[],"credentials":["unicodePwd","..."]}
+```
+
+| Field | On | Meaning |
+|---|---|---|
+| `kind` | every line | `DIFF`, `ONLY_SOURCE`, `ONLY_TARGET`, `RENAMED`, `REPLACED`, `UNMARKED`, or `SUMMARY` on the last line |
+| `dn` | differences | The source DN; for a `DIFF` of a renamed object, its DN on the target (as in the text output) |
+| `attr` | `DIFF` | The attribute |
+| `source`, `target` | `DIFF` of a single-valued attribute | The value on each side, as a list (`[]` when that side has none) |
+| `only_source`, `only_target` | `DIFF` of a multi-valued attribute | The values only that side holds (`[]` when none); for `member`, the members removed and added on the target |
+| `case_only` | `DIFF` | `true` when the values differ only in letter case |
+| `base64` | `DIFF` | `true` when a value is not UTF-8 (a binary attribute): every value of that line is then base64 |
+| `target_dn`, `renamed`, `moved` | `RENAMED` | The DN on the target, and whether the RDN changed and whether the parent did |
+| `version` | `SUMMARY` | The format version (1). It changes when a field changes meaning or goes away; new fields may be added without it |
+
+The other `SUMMARY` fields are the [summary](#how-to-read-the-summary) as data: `compared` and `differences` per
+kind (every kind present, `0` included), `not_cloned` per object class, `references_not_compared` per attribute,
+`compared_attributes` per kind, and `masked`, `excluded` and `credentials`. `rename_check` is empty when
+renames are not detected. Fields of a line that do not apply are left out, so read them as optional.
+
+A program reads it line by line, for example with `jq`:
+
+```sh
+ldap-cronin diff -format json | jq -c 'select(.kind == "DIFF" and .attr == "member") | {dn, removed: .only_source, added: .only_target}'
+```
 
 ## References that point to renamed objects
 

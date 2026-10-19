@@ -204,6 +204,15 @@ other member.
 deleted, and renames and moves (`RENAMED`, found through the markers). How to read each line is in
 [diff.md](diff.md).
 
+For a test that checks the result in code, `diff -format json` writes one JSON object per difference and a summary
+line ([diff.md](diff.md#json-output--format-json)). For example, the members a program removed from or added to
+groups:
+
+```sh
+./bin/ldap-cronin diff -config config.toml -format json \
+  | jq -c 'select(.kind == "DIFF" and .attr == "member") | {dn, removed: .only_source, added: .only_target}'
+```
+
 To run two tests side by side, start a second lab from the snapshot on other ports:
 `lab restore baseline --instance dev2` ([lab.md](lab.md#starting-another-lab-from-a-snapshot-on-a-different-port)).
 

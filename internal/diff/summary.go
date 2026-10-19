@@ -48,9 +48,22 @@ func WriteSummary(w io.Writer, job plan.Job, sum Summary, excluded []string) {
 		plan.WriteCounts(w, "references not compared (clone cannot write them: the target lacks their entries)", sum.NotCompared)
 	}
 	fmt.Fprintln(w, "compared attributes:")
-	var masked []string
+	compared, masked := comparedAttributes(job)
 	for _, k := range job.Kinds {
-		var names []string
+		fmt.Fprintf(w, "  %-5s: %s\n", k.Name, strings.Join(compared[k.Name], ", "))
+	}
+	fmt.Fprintln(w, "not compared:")
+	writeList(w, "masked (config [mask])", masked)
+	writeList(w, "excluded (config exclude)", excluded)
+	writeList(w, "credentials (clone never copies them)", job.Profile.PasswordAttrs)
+	fmt.Fprintln(w, "  and any attribute not listed above")
+}
+
+// comparedAttributes returns the attributes compared per kind, and the masked ones left out of them.
+func comparedAttributes(job plan.Job) (compared map[string][]string, masked []string) {
+	compared = map[string][]string{}
+	for _, k := range job.Kinds {
+		names := []string{}
 		for _, n := range k.Attrs {
 			if job.Masker.Masked(n) {
 				masked = appendUnique(masked, n)
@@ -58,13 +71,9 @@ func WriteSummary(w io.Writer, job plan.Job, sum Summary, excluded []string) {
 			}
 			names = append(names, n)
 		}
-		fmt.Fprintf(w, "  %-5s: %s\n", k.Name, strings.Join(names, ", "))
+		compared[k.Name] = names
 	}
-	fmt.Fprintln(w, "not compared:")
-	writeList(w, "masked (config [mask])", masked)
-	writeList(w, "excluded (config exclude)", excluded)
-	writeList(w, "credentials (clone never copies them)", job.Profile.PasswordAttrs)
-	fmt.Fprintln(w, "  and any attribute not listed above")
+	return compared, masked
 }
 
 // writeList prints one attribute per line under a heading, so a long list stays readable.

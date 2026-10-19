@@ -6,8 +6,9 @@ import (
 	"strings"
 )
 
-// DefaultMaxValues is the default cap on values shown per attribute and direction for a multi-valued difference.
-const DefaultMaxValues = 10
+// DefaultMaxValues is the default cap on values shown per attribute and direction for a multi-valued difference:
+// none. A cut list could hide the one removal a test is looking for; -max-values shortens it on request.
+const DefaultMaxValues = 0
 
 // Format prints one difference. Multi-valued attributes list one value per line.
 // maxValues is the display cap per direction; 0 or less shows everything.
