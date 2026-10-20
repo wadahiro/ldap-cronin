@@ -32,6 +32,7 @@ The name is a pun on "clone" and "ronin", a masterless samurai: cRONIN is a **c*
 | `diff [-config f] [-format text\|json] [-max-values n]` | Compare the source and the target. Exit code 1 if there are differences (2 on error). `-format json` writes JSON Lines for a program to read. For how to read the output see [docs/diff.md](docs/diff.md) |
 | `list-attrs [-profile ad\|ldap]` | Show the default attributes (allow list) per object type |
 | `list-attrs -config f [-target] [-all]` | Read the source and list, per object type, the attributes its entries hold with how many hold each, and whether `clone` copies them; a schema extension of your own shows as `not copied`. `-target` also notes the attributes the target's schema lacks |
+| `schema -config f [-apply]` | **AD**: compare the source's schema with the target's and print what the target lacks (attributes, classes, what a class both have allows) as LDIF for `ldapmodify` or `ldifde`; `-apply` writes it. For a lab before its first clone, or as a file to review for a test AD |
 | `lab up / down / reset / status` | Start and stop a test lab on docker: Samba4 AD, or OpenLDAP with `--profile ldap`. See [docs/lab.md](docs/lab.md) |
 | `lab snapshot / snapshots / restore` | Take, list and restore snapshots of the lab data |
 | `version` | Print the version |
@@ -83,7 +84,8 @@ Details per server type: [docs/active-directory.md](docs/active-directory.md) an
 ## How attributes are handled
 
 - **Allow-list based.** Only the listed attributes are copied. Adjust the defaults with `extra_include` (add), `exclude` (remove) and `include.<type>` (replace) in `[attributes]`.
-- Attributes that cannot be migrated (`objectGUID`, `objectSid`, `unicodePwd`, ...) are an error if you list them.
+- **Or every attribute** (AD): with `[attributes] mode = "all"`, every attribute the source's schema lets a client write on the class of each object type is copied and compared, your own extensions included; `exclude` still applies, and what the target's schema lacks is left out with a note. `ldap-cronin schema` gives the target the source's extensions first.
+- Attributes that cannot be migrated (`objectGUID`, `objectSid`, `unicodePwd`, `userPassword`, ...) are an error if you list them.
 - **Masking**: attributes in `[mask] attributes` are replaced with a fixed string on the target, and `diff` does not compare them. Identity, unique, DN-valued and non-string attributes cannot be masked.
 - **Passwords** are never copied. Cloned users get the fixed password you enter, set when they are created and never reset by a re-run; how it is set depends on the server type (see the server docs).
 - **DN-valued attributes** (`member`, `manager`, `managedBy`, and anything you add such as `seeAlso`) are detected from the source schema, not from a fixed list.

@@ -38,6 +38,8 @@ workers = 8                          # parallel connections to the target, for c
 
 [attributes]
 # By default only the attributes Samba4 has out of the box are copied (see `ldap-cronin list-attrs`; add -profile ldap for generic servers).
+# mode = "all"   # AD: every attribute a client can write on each type's class, your schema extensions included
+#                # (no include/extra_include then; exclude still applies). `ldap-cronin schema` carries the extensions.
 # extra_include = ["extensionAttribute1", "mailNickname"]   # add to all types
 # exclude = ["telephoneNumber"]                             # remove from all types
 # [attributes.include]                                      # replace the default per type

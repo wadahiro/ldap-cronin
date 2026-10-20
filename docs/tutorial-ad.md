@@ -69,7 +69,8 @@ attribute = "adminDisplayName"              # tells a renamed or recreated objec
 
 [attributes]
 # The defaults (ldap-cronin list-attrs -profile ad) are the attributes Samba4 has out of the box. Add the ones
-# your applications read; anything not listed is neither copied nor compared.
+# your applications read; anything not listed is neither copied nor compared. To copy every attribute instead,
+# see "Copy everything" below.
 extra_include = ["extensionAttribute1", "extensionAttribute2"]
 exclude = ["homeDirectory", "homeDrive", "profilePath", "scriptPath"]   # file server paths of production
 
@@ -110,9 +111,9 @@ with the number of entries holding it:
   (and 12 attributes of the allow list that no entry holds; -all lists them)
 ```
 
-`not copied` is what the clone would leave behind: add the ones your applications read to `extra_include`. Run it
-again with `-target` once the target exists, to see which of them its schema lacks (`clone` refuses to start in
-that case, naming them). How to carry an attribute of your own over is in
+`not copied` is what the clone would leave behind: add the ones your applications read to `extra_include`, or copy
+them all with [`mode = "all"`](#copy-everything-mode--all). Run it again with `-target` once the target exists, to
+see which of them its schema lacks (`clone` refuses to start in that case, naming them). How to carry an attribute of your own over is in
 [Attributes of your own](#attributes-of-your-own-schema-extensions).
 
 The dry-run connects only to the source. `clone.ldif` is what `clone` would write, as LDIF; the progress and the
@@ -269,7 +270,8 @@ snapshots here: restoring a test domain is your backup's job, and `clone` never 
   ```
 
   Without it `clone` warns and still works.
-- The schema extensions your allow lists need (the Exchange schema for `extensionAttribute1`).
+- The source's schema extensions your allow lists need (the Exchange schema for `extensionAttribute1`):
+  `ldap-cronin schema` writes them as a file to review ([Give the target their definitions](#give-the-target-their-definitions)).
 
 ### 10. Point the configuration at it
 
@@ -299,44 +301,52 @@ program added: `diff` lists those as `ONLY_TARGET`).
 
 ## Attributes of your own (schema extensions)
 
-Production ADs often carry attributes of their own (an employee code, a cost center) or of a product. The tool
-copies only what an allow list names, so these stay behind until you ask for them, and the target needs them in
-its schema.
+Production ADs often carry attributes of their own (an employee code, a cost center) or of a product. The target
+needs their definitions in its schema, and the clone copies them once an allow list names them (or with
+[`mode = "all"`](#copy-everything-mode--all)).
 
 ### Find them
 
 ```sh
-./bin/ldap-cronin list-attrs -config config.toml
+./bin/ldap-cronin list-attrs -config config.toml -target
 ```
 
 Every `not copied` line is an attribute your entries hold that the clone leaves behind, with the number of entries
-holding it. `extensionAttribute1`-`15` and `msExch*` come from the Exchange schema, which the lab already has; any
-other name is a schema extension to carry over.
+holding it; `not in the target schema` marks the ones the target cannot hold yet. `extensionAttribute1`-`15` and
+`msExch*` come from the Exchange schema, which the lab already has.
 
-### Read how production defines them
-
-Give the target the same definitions as the source: the same names and OIDs, so values compare and a later schema
-update of production applies to the lab too. Read them from the source's schema (here for `acmeEmployeeCode`):
+### Give the target their definitions
 
 ```sh
-SRC='ldaps://dc01.ad.example.com'; BIND='CN=svc-ldap-cronin,OU=Service Accounts,DC=ad,DC=example,DC=com'
-SCHEMA='CN=Schema,CN=Configuration,DC=ad,DC=example,DC=com'
-# the attribute
-ldapsearch -H "$SRC" -D "$BIND" -W -b "$SCHEMA" '(lDAPDisplayName=acmeEmployeeCode)' \
-  cn lDAPDisplayName attributeID attributeSyntax oMSyntax isSingleValued rangeLower rangeUpper searchFlags
-# the class that allows it, and the classes that class is attached to
-ldapsearch -H "$SRC" -D "$BIND" -W -b "$SCHEMA" '(&(objectClass=classSchema)(mayContain=acmeEmployeeCode))' \
-  cn lDAPDisplayName governsID objectClassCategory subClassOf mayContain
-ldapsearch -H "$SRC" -D "$BIND" -W -b "$SCHEMA" '(auxiliaryClass=acmePerson)' lDAPDisplayName
+./bin/ldap-cronin schema -config config.toml > schema.ldif
 ```
 
-An attribute is usable only through a class that allows it (`mayContain`): usually an auxiliary class of your own
-(`objectClassCategory: 3`) attached to `user` in the schema (`auxiliaryClass`), as below. Sometimes it is added to
-`user` itself; then copy that instead.
+`schema` reads the schema of `[source]` and of `[target]` and writes what the target lacks as LDIF; the summary goes
+to the terminal:
 
-### Add them to the lab
+```
+attributes to add: 2
+  acmeEmployeeCode
+  acmeSponsor
+classes to add: 1
+  acmePerson
+classes to extend: 1
+  user: auxiliaryClass acmePerson
+left out: 1
+  attribute msDS-Example: part of a newer Windows Server base schema than the target's
+```
 
-Write what you read as LDIF. Each part ends with `schemaUpdateNow`, so the next part sees it:
+- The definitions are the source's: the same names, OIDs, `schemaIDGUID` and `linkID`, so values compare and a
+  later schema update of production applies to the target too.
+- **classes to extend** is what makes an attribute usable: the class that allows it (`mayContain`), usually an
+  auxiliary class of your own, attached to `user` in the schema (`auxiliaryClass`).
+- **left out** names what cannot be carried and why. A definition of a newer Windows Server base schema than the
+  target's is one: which level a server has is chosen when it is installed, not added piece by piece. A name or OID
+  the target uses for something else is another.
+- It writes nothing without `-apply`, and reads nothing but the two schemas.
+
+The LDIF is plain `ldapmodify` input. Each step ends with `schemaUpdateNow`, so the next one can name what the step
+before added:
 
 ```ldif
 dn: CN=acme-Employee-Code,CN=Schema,CN=Configuration,DC=ad,DC=example,DC=com
@@ -348,6 +358,7 @@ attributeID: 1.3.6.1.4.1.99999.1.1
 attributeSyntax: 2.5.5.12
 oMSyntax: 64
 isSingleValued: TRUE
+schemaIDGUID:: 3rC5vDEJO0uFVO624K0WLg==
 
 dn:
 changetype: modify
@@ -358,45 +369,27 @@ schemaUpdateNow: 1
 dn: CN=acme-Person,CN=Schema,CN=Configuration,DC=ad,DC=example,DC=com
 changetype: add
 objectClass: classSchema
-cn: acme-Person
-lDAPDisplayName: acmePerson
-governsID: 1.3.6.1.4.1.99999.2.1
-objectClassCategory: 3
-subClassOf: top
-mayContain: acmeEmployeeCode
-
-dn:
-changetype: modify
-add: schemaUpdateNow
-schemaUpdateNow: 1
--
-
-dn: CN=User,CN=Schema,CN=Configuration,DC=ad,DC=example,DC=com
-changetype: modify
-add: auxiliaryClass
-auxiliaryClass: acmePerson
--
-
-dn:
-changetype: modify
-add: schemaUpdateNow
-schemaUpdateNow: 1
--
+...
 ```
+
+**The lab.** Apply it **before the first `clone`**, then take the snapshot as usual: a snapshot carries the schema,
+and every restore or second instance has it.
 
 ```sh
-LDAPTLS_REQCERT=never ldapmodify -H ldaps://localhost:12636 -x \
-  -D 'CN=Administrator,CN=Users,DC=ad,DC=example,DC=com' -W -f acme-schema.ldif
+./bin/ldap-cronin schema -config config.toml -apply
+./bin/ldap-cronin schema -config config.toml          # now: the target schema has every attribute and class ...
 ```
 
-The lab accepts schema changes over LDAP. Do it **before the first `clone`**, then take the snapshot as usual: a
-snapshot carries the schema, and every restore or second instance has it. Without `ldapmodify` on your machine, copy
-the file into the lab container (`docker cp acme-schema.ldif ldap-cronin-ad:/tmp/`) and run `ldapmodify` there
-against `ldaps://localhost`.
+**A test AD** (part 2). **A schema change cannot be undone in AD**: an attribute or class can only be made defunct.
+Review `schema.ldif`, then apply it as a member of Schema Admins, against the schema master:
 
-For a real AD test domain (part 2), the same LDIF goes in as a member of Schema Admins, on the schema master.
-**A schema change cannot be undone in AD** (an attribute or class can only be made defunct), so add exactly what
-production has, and nothing to try things out.
+```sh
+ldapmodify -H ldaps://dc01.test.ad.example.com -D 'CN=Administrator,CN=Users,DC=ad,DC=example,DC=com' -W -f schema.ldif
+# or on the DC: ldifde -i -f schema.ldif
+```
+
+`schema -apply` does the same when `[target] url` is the schema master and `bind_dn` a Schema Admin; another DC
+refuses the change.
 
 ### Copy and compare them
 
@@ -418,13 +411,46 @@ extra_include = ["acmeEmployeeCode"]        # every kind; or [attributes.include
   that holds DNs cannot.
 - An auxiliary class attached to single objects (not to `user` in the schema) shows in their `objectClass`, which
   `clone` always copies: the target needs that class even when none of its attributes is in an allow list.
+  `schema` carries it like any other class.
+
+## Copy everything (mode = "all")
+
+When the test needs the objects as production has them, rather than the attributes your applications read, copy
+every attribute instead of listing them:
+
+```toml
+[attributes]
+mode = "all"
+exclude = ["homeDirectory", "homeDrive", "profilePath", "scriptPath"]   # still applies
+```
+
+```sh
+./bin/ldap-cronin schema -config config.toml -apply        # the lab: your extensions first (see above)
+./bin/ldap-cronin list-attrs -config config.toml -target   # what each kind's entries hold, and what is copied
+./bin/ldap-cronin clone -config config.toml
+./bin/ldap-cronin diff -config config.toml
+```
+
+- "Every attribute" is what the source's schema lets a client write on the class of each kind (`user`, `group`,
+  `computer`, ...): what the class, the classes it derives from and their auxiliary classes may contain, your
+  extensions and `proxyAddresses`, `mS-DS-ConsistencyGuid` or `msDS-cloudExtensionAttribute*` included.
+- Never copied all the same: what only the server writes (`systemOnly`, constructed attributes, back links such as
+  `memberOf`), identifiers, every credential (`unicodePwd`, `userPassword`, LAPS, ...), and the marker attribute.
+- An attribute the target's schema lacks is left out with a note at the start of `clone` and `diff`, instead of
+  stopping the run: give the target your extensions with `schema` first. A dry-run reads no target, so its LDIF has
+  them all.
+- `diff` counts the compared attributes per kind instead of naming hundreds; `list-attrs -config -all` names them.
+- Some attributes a client may write are refreshed by the server or the machine itself (`msDS-SupportedEncryptionTypes`
+  of a live computer, say): they are copied once and may show as `DIFF` on a later diff. `exclude` them if they get
+  in the way.
+- `include` and `extra_include` do not go with `mode = "all"`; it is either the lists or everything.
 
 ## When something goes wrong
 
 | Message | What to do |
 |---|---|
 | `set password (LDAPS is required; ...)` | Use `ldaps://` (or `start_tls = true`) for the target, and a fixed password the target's policy accepts. Re-run `clone`: it sets the password of the users created without one |
-| `the target schema lacks attributes that the source defines and the allow lists name: ...` | Nothing was written. Add the attributes to the target's schema ([Attributes of your own](#attributes-of-your-own-schema-extensions)), or leave them out with `[attributes] exclude` |
+| `the target schema lacks attributes that the source defines and the allow lists name: ...` | Nothing was written. Give the target their definitions with `ldap-cronin schema` ([Attributes of your own](#attributes-of-your-own-schema-extensions)), or leave them out with `[attributes] exclude` |
 | `base_dn ... must be below the root` | `base_dn` is the domain root, or not in the domain; clone an OU |
 | `... already exists on the target but its ... differs` | Only with `clone -native`: the lab holds another object at that DN. Use a fresh lab |
 | `warning: [mapping] attribute adminDisplayName is not indexed on the target` | Index it (step 9); the lab does this itself |
