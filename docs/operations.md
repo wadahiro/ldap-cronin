@@ -47,6 +47,16 @@ Measured: about 10 MB for 200,000 users (holding every entry took about 660 MB).
 - Only the first 1000 warnings are shown and kept; the rest are only counted.
 - Two things are bounded: the number of OUs and parent containers (a few KB each) and the number of members in a single group (the DNs of that group are held temporarily).
 
+## How long a run takes
+
+`clone` and `diff` count what they will go through before they start (a search of DNs only), so their progress
+(see the [README](../README.md#usage)) gives every phase a total: the OUs and parents, each kind, then the
+references (`clone` counts the entries holding one with one more search of DNs). The time left is the phase's own,
+at the rate it has had so far, and appears after two seconds of it. Phases go at different rates: parents and
+groups are few, users are the bulk, and the reference pass costs one modify per 500 members, so a large group
+holds it up. For a first estimate of a whole run, use the [figures below](#performance-figures-measured-with-samba4-as-the-target)
+or a dry-run, which goes through the same phases without writing.
+
 ## Stopping a run and hung servers
 
 - **Ctrl-C** (or SIGTERM) stops `clone` and `diff` at their next LDAP operation; what is already sent finishes. A mapping file (`mode = "file"`) is still written, so a re-run continues where `clone` stopped (it is idempotent). An interrupted `diff` prints no summary, since a partial comparison would read as "no differences" in the part it did not reach. A second Ctrl-C ends the process at once. The exit code is 2.

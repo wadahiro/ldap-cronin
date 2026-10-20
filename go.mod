@@ -3,6 +3,7 @@ module github.com/wadahiro/ldap-cronin
 go 1.26.0
 
 require (
+	github.com/creack/pty v1.1.24
 	github.com/go-ldap/ldap/v3 v3.4.15
 	github.com/pelletier/go-toml/v2 v2.4.3
 	golang.org/x/term v0.47.0

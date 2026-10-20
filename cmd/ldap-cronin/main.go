@@ -16,6 +16,7 @@ import (
 	"github.com/wadahiro/ldap-cronin/internal/diff"
 	"github.com/wadahiro/ldap-cronin/internal/lab"
 	"github.com/wadahiro/ldap-cronin/internal/profile"
+	"github.com/wadahiro/ldap-cronin/internal/progress"
 	"github.com/wadahiro/ldap-cronin/internal/prompt"
 )
 
@@ -48,6 +49,8 @@ Flags (clone/diff):
   -lab-prefix <p>, -lab-instance <name>   (clone -native) The lab to import into
   -format <f>      (diff only) text (default), or json: JSON Lines, one object per difference, then the summary
   -max-values <n>  (diff only, text) Show at most n values per direction of a multi-valued difference (default: 0, all)
+  -progress <m>    auto (default): on a terminal a status kept at the bottom of the screen (phase, count, rate, time
+                   left) while the log scrolls above it, elsewhere a line every 10s; plain: the lines; off
 
 Flags (schema):
   -config <file>   TOML config file (default: config.toml); reads the schemas of [source] and [target]
@@ -161,6 +164,7 @@ func runClone(ctx context.Context, args []string, out io.Writer) error {
 	withPassword := fs.Bool("with-password", false, "with -dry-run: the LDIF carries the users' fixed password and what follows it, so ldapmodify alone completes them")
 	native := fs.Bool("native", false, "import into a lab Samba keeping objectGUID/objectSid (Samba only)")
 	yes := yesFlag(fs)
+	progressMode := progressFlag(fs)
 	var labFlags labCommon
 	fs.StringVar(&labFlags.prefix, "lab-prefix", lab.DefaultPrefix, "lab container name prefix (with -native)")
 	fs.StringVar(&labFlags.instance, "lab-instance", "", "lab instance (with -native; default: the main lab)")
@@ -173,6 +177,10 @@ func runClone(ctx context.Context, args []string, out io.Writer) error {
 	if *withPassword && !*dryRun {
 		return errors.New("-with-password is for -dry-run: clone itself always sets the password")
 	}
+	mode, err := progress.ParseMode(*progressMode)
+	if err != nil {
+		return err
+	}
 	s, err := openSession(ctx, *cfgPath)
 	if err != nil {
 		return err
@@ -181,26 +189,40 @@ func runClone(ctx context.Context, args []string, out io.Writer) error {
 	askBeforeWriting(s, *yes)
 	s.WithPassword = *withPassword
 
-	var report *clone.Report
 	// The dry-run stdout carries only LDIF that can be passed straight to ldapmodify; progress logs go to stderr.
 	log := out
+	title := "clone → " + s.Cfg.Target.URL
 	switch {
 	case *native:
-		l, lerr := newLab(labFlags, out, os.Stderr)
+		title = "clone -native → the lab"
+	case *dryRun:
+		log, title = os.Stderr, "clone -dry-run (LDIF)"
+	}
+	display, bar := progress.Start(mode, os.Stderr, title)
+	defer display.Stop()
+	s.Progress, s.Warn = bar, display.Writer(s.Warn)
+	out, log = display.Writer(out), display.Writer(log)
+
+	var report *clone.Report
+	if *native {
+		l, lerr := newLab(labFlags, out, display.Writer(os.Stderr))
 		if lerr != nil {
 			return lerr
 		}
 		report, err = s.Native(ctx, l, out)
-	default:
-		if *dryRun {
-			log = os.Stderr
-		}
+	} else {
 		report, err = s.Clone(ctx, *dryRun, out, log)
 	}
+	display.Stop()
 	if report != nil {
 		report.WriteSummary(log)
 	}
 	return err
+}
+
+// progressFlag is -progress: how clone and diff show how far they are.
+func progressFlag(fs *flag.FlagSet) *string {
+	return fs.String("progress", string(progress.Auto), "auto (a status kept at the bottom of a terminal, a line every 10s elsewhere), plain (the lines) or off")
 }
 
 // yesFlag is -y (and -yes): write to the target without asking first, for scripts.
@@ -223,18 +245,26 @@ func runDiff(ctx context.Context, args []string, out io.Writer) (int, error) {
 	cfgPath := fs.String("config", "config.toml", "config file")
 	maxValues := fs.Int("max-values", diff.DefaultMaxValues, "max values shown per direction for multi-valued attributes in the text output (0 = all, the default)")
 	format := fs.String("format", "text", "output format: text, or json (JSON Lines: one object per difference, then the summary)")
+	progressMode := progressFlag(fs)
 	if err := fs.Parse(args); err != nil {
 		return 0, err
 	}
 	if *format != "text" && *format != "json" {
 		return 0, fmt.Errorf("-format %q: use text or json", *format)
 	}
+	mode, err := progress.ParseMode(*progressMode)
+	if err != nil {
+		return 0, err
+	}
 	s, err := openSession(ctx, *cfgPath)
 	if err != nil {
 		return 0, err
 	}
 	defer s.Close()
-	return s.Diff(ctx, app.DiffOutput{JSON: *format == "json", MaxValues: *maxValues}, out)
+	display, bar := progress.Start(mode, os.Stderr, "diff "+s.Cfg.Source.URL+" ↔ "+s.Cfg.Target.URL)
+	defer display.Stop()
+	s.Progress, s.Warn = bar, display.Writer(s.Warn)
+	return s.Diff(ctx, app.DiffOutput{JSON: *format == "json", MaxValues: *maxValues}, display.Writer(out))
 }
 
 func runSchema(ctx context.Context, args []string, out, log io.Writer) error {

@@ -206,6 +206,9 @@ It asks for the source password and the **fixed password for cloned users** (unl
 sets it): every cloned user (and computer) gets it, since password hashes are never copied. It must satisfy the target's password policy (the lab's is
 Samba's default complexity).
 
+While it runs, the bottom of the terminal shows the phase, how many of how many, the rate and the time left;
+`clone -config config.toml > clone.log` keeps the log in a file and the screen for the status alone.
+
 Before the first write it shows where it is about to write, and asks:
 
 ```

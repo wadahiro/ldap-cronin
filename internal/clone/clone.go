@@ -17,6 +17,7 @@ import (
 	"github.com/wadahiro/ldap-cronin/internal/identity"
 	"github.com/wadahiro/ldap-cronin/internal/plan"
 	"github.com/wadahiro/ldap-cronin/internal/profile"
+	"github.com/wadahiro/ldap-cronin/internal/progress"
 	"github.com/wadahiro/ldap-cronin/internal/workpool"
 )
 
@@ -41,6 +42,8 @@ type Options struct {
 	// Native passes the source identifiers through (objectGUID, objectSid), for an import into the lab Samba that
 	// keeps them. An existing object with another identifier is then an error instead of an update.
 	Native bool
+	// Progress, when set, is told the phases and how far each is (nil: nothing is shown).
+	Progress *progress.Bar
 }
 
 // maxWarnings caps the warnings kept and shown, so that a flood of out-of-scope reference targets does not exhaust memory with warnings.
@@ -97,6 +100,7 @@ func Run(ctx context.Context, src, dst directory.Directory, job plan.Job, opt Op
 			read.Extra = job.Profile.Preserve.Operational
 		}
 	}
+	opt.Progress.Phase("reading the source", -1)
 	if err := plan.CheckTargetSchema(ctx, src, dst, job); err != nil {
 		return nil, err
 	}
@@ -106,6 +110,11 @@ func Run(ctx context.Context, src, dst directory.Directory, job plan.Job, opt Op
 	}
 	r := &runner{dst: dst, opt: opt, out: out, prof: job.Profile, skipped: map[string]bool{}, done: map[string]*onceErr{},
 		report: Report{ReferencedKinds: map[string]int{}}}
+	opt.Progress.Stats(func() string {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		return fmt.Sprintf("added %d · updated %d · unchanged %d · warnings %d", r.report.Added, r.report.Updated, r.report.Unchanged, r.report.WarningCount)
+	})
 	if err := r.run(ctx, p); err != nil {
 		return &r.report, err
 	}
@@ -116,11 +125,23 @@ func Run(ctx context.Context, src, dst directory.Directory, job plan.Job, opt Op
 
 func (r *runner) run(ctx context.Context, p *plan.Plan) error {
 	r.plan, r.refs = p, p.Classifier(r.dst)
-	if err := p.EachLevel(ctx, r.opt.Workers, r.ensure); err != nil {
+	bar := r.opt.Progress
+	bar.Phases(len(p.Leaves()) + 2) // the parents, each leaf kind, the references
+	bar.Phase("OUs and parents", len(p.Containers))
+	if err := p.EachLevel(ctx, r.opt.Workers, func(ctx context.Context, n plan.Node) error {
+		defer bar.Add(1)
+		return r.ensure(ctx, n)
+	}); err != nil {
 		return err
 	}
-	if err := p.EachLeaf(ctx, r.opt.Workers, r.leaf); err != nil {
-		return err
+	for _, k := range p.Leaves() {
+		bar.Phase(k.Name, p.LeafCount(k))
+		if err := p.EachLeafOf(ctx, r.opt.Workers, k, func(ctx context.Context, k *plan.Kind, e directory.Entry) error {
+			defer bar.Add(1)
+			return r.leaf(ctx, k, e)
+		}); err != nil {
+			return err
+		}
 	}
 	return r.references(ctx, p)
 }
@@ -402,6 +423,19 @@ func first(values []string) string {
 // Reads increase by the amount re-fetched, but memory does not, because creation does not keep and carry every entry.
 func (r *runner) references(ctx context.Context, p *plan.Plan) error {
 	job := p.Job()
+	total := -1
+	if bar := r.opt.Progress; bar != nil {
+		// An extra search of DNs only, for the total; without a display it is not worth the read.
+		total = 0
+		for i := range job.Kinds {
+			n, err := p.CountRefs(ctx, &job.Kinds[i], p.RefNames(&job.Kinds[i]))
+			if err != nil {
+				return err
+			}
+			total += n
+		}
+	}
+	r.opt.Progress.Phase("references (member, manager, ...)", total)
 	for i := range job.Kinds {
 		k := &job.Kinds[i]
 		names := p.RefNames(k)
@@ -411,6 +445,7 @@ func (r *runner) references(ctx context.Context, p *plan.Plan) error {
 		err := workpool.Feed(ctx, r.opt.Workers, func(ctx context.Context, emit func(directory.Entry) error) error {
 			return p.WalkRefs(ctx, k, names, emit)
 		}, func(ctx context.Context, e directory.Entry) error {
+			defer r.opt.Progress.Add(1)
 			r.mu.Lock()
 			skipped := r.skipped[dn.Normalize(e.DN)]
 			r.mu.Unlock()

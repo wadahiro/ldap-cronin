@@ -133,6 +133,8 @@ type Plan struct {
 	// parentLeaves are the normalized DNs of the leaves of the scope that are also ancestors, handled in
 	// Containers instead of by EachLeaf.
 	parentLeaves map[string]bool
+	// leaves counts the entries of each leaf kind EachLeaf streams (by kind name), for the progress of a run.
+	leaves map[string]int
 }
 
 // Job returns the job the plan was built for.
@@ -147,7 +149,7 @@ func Build(ctx context.Context, src directory.Directory, job Job, read Read) (*P
 	if err != nil {
 		return nil, err
 	}
-	p := &Plan{Root: root, Scope: NewScope(), src: src, job: job, read: read}
+	p := &Plan{Root: root, Scope: NewScope(), src: src, job: job, read: read, leaves: map[string]int{}}
 	if dn.Equal(job.BaseDN, root) || !dn.IsDescendant(job.BaseDN, root) {
 		return nil, fmt.Errorf("base_dn %q must be below the root %q: cloning a whole naming context would overwrite built-in entries", job.BaseDN, root)
 	}
@@ -185,6 +187,7 @@ func Build(ctx context.Context, src directory.Directory, job Job, read Read) (*P
 			})
 		} else {
 			err = src.Walk(ctx, job.BaseDN, k.Filter, []string{directory.NoAttrs}, func(e directory.Entry) error {
+				p.leaves[k.Name]++
 				p.Scope.Add(e.DN)
 				noteAncestors(e.DN)
 				return nil
@@ -207,6 +210,7 @@ func Build(ctx context.Context, src directory.Directory, job Job, read Read) (*P
 		p.Containers = append(p.Containers, n)
 		if n.Kind != nil && !n.Outside {
 			p.parentLeaves[key] = true
+			p.leaves[n.Kind.Name]-- // EachLevel handles it
 		}
 		p.Scope.Add(a)
 	}
@@ -472,12 +476,29 @@ func (p *Plan) WalkRefs(ctx context.Context, k *Kind, names []string, fn func(di
 	if len(names) == 0 {
 		return nil
 	}
+	return p.src.Walk(ctx, p.job.BaseDN, refsFilter(k, names), names, fn)
+}
+
+// CountRefs counts the entries of k that have one of the DN reference attributes names, as WalkRefs streams them,
+// reading their DNs only.
+func (p *Plan) CountRefs(ctx context.Context, k *Kind, names []string) (int, error) {
+	if len(names) == 0 {
+		return 0, nil
+	}
+	n := 0
+	err := p.src.Walk(ctx, p.job.BaseDN, refsFilter(k, names), []string{directory.NoAttrs}, func(directory.Entry) error {
+		n++
+		return nil
+	})
+	return n, err
+}
+
+func refsFilter(k *Kind, names []string) string {
 	var alts strings.Builder
 	for _, n := range names {
 		alts.WriteString("(" + n + "=*)")
 	}
-	filter := "(&" + k.Filter + "(|" + alts.String() + "))"
-	return p.src.Walk(ctx, p.job.BaseDN, filter, names, fn)
+	return "(&" + k.Filter + "(|" + alts.String() + "))"
 }
 
 // Walk streams the entries of k page by page with masking applied and what Read asks for added to names.

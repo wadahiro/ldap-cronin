@@ -16,6 +16,7 @@ import (
 	"github.com/wadahiro/ldap-cronin/internal/ldapdir"
 	"github.com/wadahiro/ldap-cronin/internal/plan"
 	"github.com/wadahiro/ldap-cronin/internal/profile"
+	"github.com/wadahiro/ldap-cronin/internal/progress"
 )
 
 // Secrets supplies passwords when they are needed, so a dry-run never asks for the target's.
@@ -76,6 +77,8 @@ type Session struct {
 	// WithPassword makes a dry-run's LDIF carry the users' fixed password (Secrets.UserPassword) and the writes that
 	// follow it, instead of comments.
 	WithPassword bool
+	// Progress, when set, is told how far clone and diff are.
+	Progress *progress.Bar
 
 	secrets Secrets
 	dial    Dialer

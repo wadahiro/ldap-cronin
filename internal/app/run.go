@@ -25,7 +25,7 @@ const (
 // Clone adds and updates the target. With dryRun it connects nowhere but the source and writes LDIF to out.
 // Progress goes to log (standard error for a dry-run, so its standard output can be passed to ldapmodify).
 func (s *Session) Clone(ctx context.Context, dryRun bool, out, log io.Writer) (*clone.Report, error) {
-	opt := clone.Options{UserPassword: "<fixed-password>", Workers: s.Cfg.Run.Workers}
+	opt := clone.Options{UserPassword: "<fixed-password>", Workers: s.Cfg.Run.Workers, Progress: s.Progress}
 	mode, attr, err := s.Cfg.MappingFor(s.Job.Profile)
 	if err != nil {
 		return nil, err
@@ -139,7 +139,7 @@ func (s *Session) Diff(ctx context.Context, o DiffOutput, out io.Writer) (int, e
 			}
 		}
 	}
-	sum, err := diff.Run(ctx, s.Src, dst, job, diff.Options{Workers: s.Cfg.Run.Workers, Resolver: res}, emit)
+	sum, err := diff.Run(ctx, s.Src, dst, job, diff.Options{Workers: s.Cfg.Run.Workers, Resolver: res, Progress: s.Progress}, emit)
 	if err == nil {
 		err = werr
 	}

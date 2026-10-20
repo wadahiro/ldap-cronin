@@ -76,7 +76,7 @@ func (s *Session) Native(ctx context.Context, l *lab.Lab, out io.Writer) (report
 		fmt.Fprintf(s.Warn, "note: a native import keeps the identifiers, so no mapping (%s) is recorded; diff matches them directly\n", s.Cfg.Mapping.File)
 	}
 	// One worker: the helper handles one request at a time anyway.
-	report, err = clone.Run(ctx, s.Src, n, s.Job, clone.Options{UserPassword: password, Workers: 1, Native: true}, out)
+	report, err = clone.Run(ctx, s.Src, n, s.Job, clone.Options{UserPassword: password, Workers: 1, Native: true, Progress: s.Progress}, out)
 	if err != nil {
 		return report, err
 	}

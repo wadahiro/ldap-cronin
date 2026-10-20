@@ -27,9 +27,9 @@ The name is a pun on "clone" and "ronin", a masterless samurai: cRONIN is a **c*
 
 | Command | Description |
 |---|---|
-| `clone [-config f] [-dry-run [-with-password]] [-y]` | Add and update. Before the first write it shows the target (and the server name its root DSE gives) and the source, and asks `[y/N]`: only `y` writes, and without a terminal it stops unless `-y`. `-dry-run` does not connect to the target; it writes LDIF to standard output (progress logs go to standard error); `-with-password` puts the users' fixed password in it, so `ldapmodify` alone completes them |
+| `clone [-config f] [-dry-run [-with-password]] [-y] [-progress m]` | Add and update. Before the first write it shows the target (and the server name its root DSE gives) and the source, and asks `[y/N]`: only `y` writes, and without a terminal it stops unless `-y`. `-dry-run` does not connect to the target; it writes LDIF to standard output (progress logs go to standard error); `-with-password` puts the users' fixed password in it, so `ldapmodify` alone completes them |
 | `clone -native [-lab-prefix p] [-lab-instance n]` | **Samba lab only**: import with the same `objectGUID` and `objectSid` as the source (into a lab created with `lab up --like-source`). Uses unsupported internals. For the limitations see [docs/lab.md](docs/lab.md#importing-with-the-same-objectguid-and-objectsid-clone--native-samba-only) |
-| `diff [-config f] [-format text\|json] [-max-values n]` | Compare the source and the target. Exit code 1 if there are differences (2 on error). `-format json` writes JSON Lines for a program to read. For how to read the output see [docs/diff.md](docs/diff.md) |
+| `diff [-config f] [-format text\|json] [-max-values n] [-progress m]` | Compare the source and the target. Exit code 1 if there are differences (2 on error). `-format json` writes JSON Lines for a program to read. For how to read the output see [docs/diff.md](docs/diff.md) |
 | `list-attrs [-profile ad\|ldap]` | Show the default attributes (allow list) per object type |
 | `list-attrs -config f [-target] [-all]` | Read the source and list, per object type, the attributes its entries hold with how many hold each, and whether `clone` copies them; a schema extension of your own shows as `not copied`. `-target` also notes the attributes the target's schema lacks |
 | `schema -config f [-apply [-y]]` | **AD**: compare the source's schema with the target's and print what the target lacks (attributes, classes, what a class both have allows) as LDIF for `ldapmodify` or `ldifde`; `-apply` writes it, after the same `[y/N]` question as `clone`. For a lab before its first clone, or as a file to review for a test AD |
@@ -59,6 +59,8 @@ Bind passwords are never kept in the configuration file; they are prompted for a
 
 The source is only read. Its connection refuses every write before anything is sent, whatever the command; still,
 bind to it with an account that can only read, so the server refuses too.
+
+`clone` and `diff` show how far they are on standard error. On a terminal a status stays at the bottom of the screen while the log scrolls above it: the phase (`[3/5] user`), the count and a bar, the rate and the time left, and the counts so far. Elsewhere (a CI log, `2> file`) a plain line is printed every 10 seconds. `-progress plain` asks for the lines, `-progress off` for nothing. With `clone > clone.log` the log goes to the file and the screen shows only the status. The time left is the current phase's, at its rate so far; the reference pass slows down on large groups.
 
 Ctrl-C stops a run at its next LDAP operation and still finishes its cleanup (a mapping file is written, a lab stopped for an import is resumed); a re-run of `clone` continues from there. See [docs/operations.md](docs/operations.md#stopping-a-run-and-hung-servers).
 

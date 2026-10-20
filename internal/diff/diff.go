@@ -17,6 +17,7 @@ import (
 	"github.com/wadahiro/ldap-cronin/internal/dn"
 	"github.com/wadahiro/ldap-cronin/internal/identity"
 	"github.com/wadahiro/ldap-cronin/internal/plan"
+	"github.com/wadahiro/ldap-cronin/internal/progress"
 	"github.com/wadahiro/ldap-cronin/internal/workpool"
 )
 
@@ -88,6 +89,8 @@ type Options struct {
 	// Resolver finds the target object of a source object by identifier or marker, so renames and moves made on
 	// the target are reported as RENAMED. nil: off.
 	Resolver identity.Resolver
+	// Progress, when set, is told the phases and how far each is (nil: nothing is shown).
+	Progress *progress.Bar
 }
 
 // Run reports each difference to emit one at a time. emit is not called from multiple goroutines.
@@ -101,16 +104,33 @@ func Run(ctx context.Context, src, dst directory.Directory, job plan.Job, o Opti
 	if o.Resolver != nil {
 		r.sum.Matching = o.Resolver.Describe()
 	}
+	bar := o.Progress
+	bar.Phase("reading the source", -1)
 	p, err := plan.Build(ctx, src, job, plan.Read{Identity: o.Resolver != nil})
 	if err != nil {
 		return r.sum, err
 	}
 	r.p = p
+	bar.Stats(func() string {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		compared, differences := 0, 0
+		for _, n := range r.sum.Compared {
+			compared += n
+		}
+		for _, n := range r.sum.Differences {
+			differences += n
+		}
+		return fmt.Sprintf("compared %d · differences %d", compared, differences)
+	})
+	bar.Phases(len(p.Leaves()) + 2) // the parents, each leaf kind, the references and the target
+	bar.Phase("OUs and parents", len(p.Containers))
 	r.loc = &locator{scheme: job.Profile.Identity, dst: dst, domain: p.Root, res: o.Resolver,
 		targetOf: map[string]string{}, found: plan.NewScope(), renamedBack: map[string]string{}}
 	// Containers and parent leaves go shallowest first: to know the expected parent DN of a child, where its parent
 	// lives on the target (whether it moved) must already be known.
 	if err := p.EachLevel(ctx, o.Workers, func(ctx context.Context, n plan.Node) error {
+		defer bar.Add(1)
 		names := []string{"objectClass"}
 		switch {
 		case n.Outside:
@@ -125,13 +145,18 @@ func Run(ctx context.Context, src, dst directory.Directory, job plan.Job, o Opti
 	}); err != nil {
 		return r.sum, err
 	}
-	if err := p.EachLeaf(ctx, o.Workers, func(ctx context.Context, k *plan.Kind, want directory.Entry) error {
-		r.compared(k.Name)
-		r.noteOutside(want, k.Attrs)
-		return r.check(ctx, want, k.Attrs, k, false)
-	}); err != nil {
-		return r.sum, err
+	for _, k := range p.Leaves() {
+		bar.Phase(k.Name, p.LeafCount(k))
+		if err := p.EachLeafOf(ctx, o.Workers, k, func(ctx context.Context, k *plan.Kind, want directory.Entry) error {
+			defer bar.Add(1)
+			r.compared(k.Name)
+			r.noteOutside(want, k.Attrs)
+			return r.check(ctx, want, k.Attrs, k, false)
+		}); err != nil {
+			return r.sum, err
+		}
 	}
+	bar.Phase("references, and what only the target has", -1)
 	if r.sum.NotCloned, err = p.Unselected(ctx); err != nil {
 		return r.sum, err
 	}

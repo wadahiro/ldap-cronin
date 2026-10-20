@@ -52,22 +52,30 @@ func (p *Plan) EachLevel(ctx context.Context, workers int, fn func(context.Conte
 // afterwards), which is what makes the parallelism safe.
 func (p *Plan) EachLeaf(ctx context.Context, workers int, fn func(ctx context.Context, k *Kind, e directory.Entry) error) error {
 	for _, k := range p.Leaves() {
-		err := workpool.Feed(ctx, workers, func(ctx context.Context, emit func(directory.Entry) error) error {
-			return p.Walk(ctx, k, k.Attrs, func(e directory.Entry) error {
-				if p.parentLeaves[dn.Normalize(e.DN)] {
-					return nil // handled by EachLevel
-				}
-				return emit(e)
-			})
-		}, func(ctx context.Context, e directory.Entry) error {
-			return fn(ctx, k, e)
-		})
-		if err != nil {
+		if err := p.EachLeafOf(ctx, workers, k, fn); err != nil {
 			return err
 		}
 	}
 	return nil
 }
+
+// EachLeafOf is EachLeaf for one kind, for a caller that marks where each kind starts.
+func (p *Plan) EachLeafOf(ctx context.Context, workers int, k *Kind, fn func(ctx context.Context, k *Kind, e directory.Entry) error) error {
+	return workpool.Feed(ctx, workers, func(ctx context.Context, emit func(directory.Entry) error) error {
+		return p.Walk(ctx, k, k.Attrs, func(e directory.Entry) error {
+			if p.parentLeaves[dn.Normalize(e.DN)] {
+				return nil // handled by EachLevel
+			}
+			return emit(e)
+		})
+	}, func(ctx context.Context, e directory.Entry) error {
+		return fn(ctx, k, e)
+	})
+}
+
+// LeafCount is how many entries EachLeafOf streams for k, as counted when the plan was built (the source may have
+// changed since).
+func (p *Plan) LeafCount(k *Kind) int { return p.leaves[k.Name] }
 
 // Leaves returns the enabled leaf kinds in creation order.
 func (p *Plan) Leaves() []*Kind {
