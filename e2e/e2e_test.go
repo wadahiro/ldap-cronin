@@ -107,7 +107,7 @@ bind_dn = "` + adminDN + `"
 [scope]
 base_dn = "` + base + `"
 [attributes]
-extra_include = ["otherTelephone", "seeAlso"]
+extra_include = ["carLicense", "seeAlso"]
 [mask]
 attributes = ["mail"]
 `
@@ -219,7 +219,7 @@ func TestCloneThenDiffThenIdempotentThenDetectTamper(t *testing.T) {
 		if v := get(aliceDN, "mail").first("mail"); v != "********" {
 			t.Errorf("mail not masked: %s", v)
 		}
-		if v := get(aliceDN, "otherTelephone").first("otherTelephone"); v != "03-9876-5432" {
+		if v := get(aliceDN, "carLicense").first("carLicense"); v != "ALICE-001" {
 			t.Errorf("extra_include attribute: %s", v)
 		}
 		if v := get(bobDN, "manager").first("manager"); !strings.EqualFold(v, aliceDN) {

@@ -81,7 +81,7 @@ mode = "auto"                               # on AD: a marker of the source obje
 attribute = "adminDisplayName"              # tells a renamed or recreated object from the cloned one
 
 [attributes]
-# The defaults (ldap-cronin list-attrs -profile ad) are the attributes Samba4 has out of the box. Add the ones
+# The defaults (ldap-cronin list-attrs -profile ad) are what Active Directory Users and Computers shows. Add the ones
 # your applications read; anything not listed is neither copied nor compared. To copy every attribute instead,
 # see "Copy everything" below.
 extra_include = ["extensionAttribute1", "extensionAttribute2"]

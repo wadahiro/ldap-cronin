@@ -17,42 +17,69 @@ import (
 var AD = Profile{
 	Name: NameAD,
 	Kinds: []KindSpec{
+		// The default allow lists are what Active Directory Users and Computers shows on its property sheets, as
+		// Microsoft maps them (https://learn.microsoft.com/windows/win32/ad/mappings-for-the-active-directory-users-and-computers-snap-in),
+		// without what clone never writes (what the server keeps: whenCreated, uSN*, lockoutTime, pwdLastSet; the
+		// back links memberOf and directReports; primaryGroupID; Terminal Services' private data) and with, after
+		// "beyond the mapping:", what the mapping leaves out that production directories use, each with why.
+		// Contacts have no mapping: they show the General, Address, Telephones and Organization sheets of a user.
 		{Name: KindOU, Class: "organizationalUnit", Role: RoleContainer, Filter: "(objectClass=organizationalUnit)", Is: classIs("organizationalUnit"), Default: []string{
-			"description", "displayName", "street", "l", "st", "postalCode", "co", "c", "managedBy",
+			"description", "street", "l", "st", "postalCode", "c", "managedBy",
+			// beyond the mapping: the display name and the country's name (c's companion, as on a user)
+			"displayName", "co",
 		}},
 		{Name: KindGroup, Class: "group", Role: RoleLeaf, Order: 0, Filter: "(objectClass=group)", Is: classIs("group"), Default: []string{
-			"sAMAccountName", "groupType", "description", "displayName", "info", "mail",
-			"managedBy", "member", "adminDescription", "gidNumber",
+			"sAMAccountName", "description", "mail", "groupType", "info", "member", "managedBy",
+			// beyond the mapping: the display name; adminDescription, Entra Connect's default filter; gidNumber, the
+			// UNIX Attributes sheet of Identity Management for UNIX
+			"displayName", "adminDescription", "gidNumber",
 		}},
 		// user excludes computer, which also has objectClass=user.
 		{Name: KindUser, Class: "user", Role: RoleLeaf, Order: 1, Account: true, Filter: "(&(objectCategory=person)(objectClass=user))",
 			// objectCategory=person and objectClass=user: a user or inetOrgPerson, not a computer (a subclass of user).
 			Is: func(c []string) bool { return hasClass(c, []string{"user"}, "computer") }, Default: []string{
-				"sAMAccountName", "userPrincipalName", "userAccountControl", "accountExpires",
-				"givenName", "sn", "initials", "middleName", "displayName", "description",
-				"mail", "telephoneNumber", "mobile", "homePhone", "pager", "ipPhone",
-				"facsimileTelephoneNumber", "title", "department", "company", "division",
-				"physicalDeliveryOfficeName", "manager", "employeeID", "employeeNumber", "employeeType",
-				"streetAddress", "postOfficeBox", "l", "st", "postalCode", "co", "c",
-				"wWWHomePage", "url", "info", "homeDirectory", "homeDrive", "scriptPath", "profilePath",
+				// General
+				"givenName", "sn", "initials", "displayName", "description", "physicalDeliveryOfficeName",
+				"telephoneNumber", "otherTelephone", "mail", "wWWHomePage", "url",
+				// Account
+				"userPrincipalName", "sAMAccountName", "logonHours", "userWorkstations", "userAccountControl", "accountExpires",
+				// Address
+				"streetAddress", "postOfficeBox", "l", "st", "postalCode", "c", "co", "countryCode",
+				// Organization
+				"title", "department", "company", "manager",
+				// Profile
+				"profilePath", "scriptPath", "homeDirectory", "homeDrive",
+				// Telephones
+				"homePhone", "otherHomePhone", "pager", "otherPager", "mobile", "otherMobile",
+				"facsimileTelephoneNumber", "otherFacsimileTelephoneNumber", "ipPhone", "otherIpPhone", "info",
+				// beyond the mapping: the employee identifiers IdM products key on, the rest of the name and the
+				// organization, and the UNIX Attributes sheet of Identity Management for UNIX
+				"employeeID", "employeeNumber", "employeeType", "middleName", "division",
 				"uidNumber", "gidNumber", "loginShell", "unixHomeDirectory",
 			}},
 		// Computers are what groups hold most besides users. A computer is an account too: it gets the fixed
 		// password, as a joined computer has one (a pre-staged computer without it is not what production holds).
 		// Service accounts (msDS-ManagedServiceAccount) have their own objectCategory and stay out.
 		{Name: KindComputer, Class: "computer", Role: RoleLeaf, Order: 2, Account: true, Filter: "(objectCategory=computer)", Is: classIs("computer"), Default: []string{
-			"sAMAccountName", "userAccountControl", "dNSHostName", "description", "displayName", "location",
-			"managedBy", "operatingSystem", "operatingSystemVersion", "operatingSystemServicePack",
-			"servicePrincipalName", "info",
+			"sAMAccountName", "dNSHostName", "userAccountControl", "description", "location",
+			"operatingSystem", "operatingSystemVersion", "operatingSystemServicePack",
+			// beyond the mapping: the Managed By sheet the snap-in has had since, servicePrincipalName (Kerberos
+			// finds a service by it), the display name and the notes
+			"managedBy", "servicePrincipalName", "displayName", "info",
 		}},
-		// Contacts: the user list without the account and logon attributes.
 		{Name: KindContact, Class: "contact", Role: RoleLeaf, Order: 3, Filter: "(objectClass=contact)", Is: classIs("contact"), Default: []string{
-			"givenName", "sn", "initials", "middleName", "displayName", "description",
-			"mail", "telephoneNumber", "mobile", "homePhone", "pager", "ipPhone",
-			"facsimileTelephoneNumber", "title", "department", "company", "division",
-			"physicalDeliveryOfficeName", "manager", "employeeID", "employeeNumber", "employeeType",
-			"streetAddress", "postOfficeBox", "l", "st", "postalCode", "co", "c",
-			"wWWHomePage", "url", "info",
+			// General
+			"givenName", "sn", "initials", "displayName", "description", "physicalDeliveryOfficeName",
+			"telephoneNumber", "otherTelephone", "mail", "wWWHomePage", "url",
+			// Address
+			"streetAddress", "postOfficeBox", "l", "st", "postalCode", "c", "co", "countryCode",
+			// Organization
+			"title", "department", "company", "manager",
+			// Telephones
+			"homePhone", "otherHomePhone", "pager", "otherPager", "mobile", "otherMobile",
+			"facsimileTelephoneNumber", "otherFacsimileTelephoneNumber", "ipPhone", "otherIpPhone", "info",
+			// beyond the mapping, as on a user
+			"employeeID", "employeeNumber", "employeeType", "middleName", "division",
 		}},
 	},
 	Required:      []string{"objectClass", "cn", "ou"},
@@ -68,7 +95,7 @@ var AD = Profile{
 	NoMask: []string{
 		"objectClass", "cn", "ou", "sAMAccountName", "userPrincipalName", "servicePrincipalName",
 		"member", "manager", "managedBy", "userAccountControl", "groupType", "accountExpires",
-		"countryCode", "c", "uidNumber", "gidNumber",
+		"countryCode", "c", "uidNumber", "gidNumber", "logonHours",
 	},
 	PasswordAttrs: append(append([]string{"unicodePwd", "dBCSPwd", "ntPwdHistory", "lmPwdHistory", "supplementalCredentials"}, accountSecrets...), computerCredentials...),
 	// A safeguard so that Administrator, krbtgt and the like are not overwritten even if base_dn is CN=Users.

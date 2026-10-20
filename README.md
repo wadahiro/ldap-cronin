@@ -88,7 +88,7 @@ Details per server type: [docs/active-directory.md](docs/active-directory.md) an
 
 ## How attributes are handled
 
-- **Allow-list based.** Only the listed attributes are copied. Adjust the defaults with `extra_include` (add), `exclude` (remove) and `include.<type>` (replace) in `[attributes]`.
+- **Allow-list based.** Only the listed attributes are copied. On AD the defaults are what Active Directory Users and Computers shows on its property sheets, plus a few production directories use ([active-directory.md](docs/active-directory.md)). Adjust the defaults with `extra_include` (add), `exclude` (remove) and `include.<type>` (replace) in `[attributes]`.
 - **Or every attribute** (AD): with `[attributes] mode = "all"`, every attribute the source's schema lets a client write on the class of each object type is copied and compared, your own extensions included; `exclude` still applies, and what the target's schema lacks is left out with a note. `ldap-cronin schema` gives the target the source's extensions first.
 - Attributes that cannot be migrated (`objectGUID`, `objectSid`, `unicodePwd`, `userPassword`, ...) are an error if you list them.
 - **Masking**: attributes in `[mask] attributes` are replaced with a fixed string on the target, and `diff` does not compare them. Identity, unique, DN-valued and non-string attributes cannot be masked.
