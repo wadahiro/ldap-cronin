@@ -76,6 +76,8 @@ type Summary struct {
 	// NotCompared counts, per reference attribute, the source values clone cannot write (they name an entry the
 	// target lacks, on a server that needs it), so diff does not compare them.
 	NotCompared map[string]int
+	// NotComparedWhy is NotCompared per "attribute: why" (plan.Classifier.Why), for the text summary.
+	NotComparedWhy map[string]int
 	// Referenced is the number of entries outside the scope compared because a reference names them.
 	Referenced int
 	// NotCloned counts the entries under base_dn of no enabled kind, per structural object class: clone does not
@@ -100,7 +102,7 @@ type Options struct {
 // With a Lookup, objects whose source DN is missing on the target are looked up by identifier, and reported as
 // RENAMED if found at a different DN. This verifies changes made by another program that renamed or moved objects on the target.
 func Run(ctx context.Context, src, dst directory.Directory, job plan.Job, o Options, emit func(Difference)) (Summary, error) {
-	r := &runner{job: job, emit: emit, outside: map[string]string{}, sum: Summary{Compared: map[string]int{}, Differences: map[Kind]int{}, NotCompared: map[string]int{}}}
+	r := &runner{job: job, emit: emit, outside: map[string]string{}, sum: Summary{Compared: map[string]int{}, Differences: map[Kind]int{}, NotCompared: map[string]int{}, NotComparedWhy: map[string]int{}}}
 	if o.Resolver != nil {
 		r.sum.Matching = o.Resolver.Describe()
 	}

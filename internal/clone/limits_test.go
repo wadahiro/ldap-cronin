@@ -69,8 +69,9 @@ func (g *getCounter) Get(ctx context.Context, d string, a []string) (*directory.
 	return g.Directory.Get(ctx, d, a)
 }
 
-// A reference outside the scope is checked on the target once, however many objects point at it, and each skipped
-// value is a warning. Beyond maxWarnings the warnings are only counted, so a flood of them cannot exhaust memory.
+// A reference outside the scope is checked on the target once, however many objects point at it, and each entry a
+// skipped value names is one warning (every gone DN here is another entry). Beyond maxWarnings the warnings are only
+// counted, so a flood of them cannot exhaust memory.
 func TestOutsideReferencesAreCheckedOnceAndWarningsAreCapped(t *testing.T) {
 	const outside = "CN=Domain Admins,CN=Users," + domain
 	var gone []string
@@ -91,6 +92,7 @@ func TestOutsideReferencesAreCheckedOnceAndWarningsAreCapped(t *testing.T) {
 	if got := dst.gets[dn.Normalize(outside)]; got != 1 {
 		t.Errorf("a reference outside the scope was read %d times, want once", got)
 	}
+	// +3: past the cap the entries warned about are no longer remembered, so each manager value counts.
 	if want := len(gone) + 3; rep.WarningCount != want {
 		t.Errorf("WarningCount = %d, want %d", rep.WarningCount, want)
 	}

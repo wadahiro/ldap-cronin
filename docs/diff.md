@@ -303,7 +303,7 @@ object per line, a line per difference as it is found, then one summary line. St
 {"kind":"DIFF","dn":"CN=Alice,OU=Users,OU=IDM,DC=example,DC=com","attr":"department","source":["Sales Dept"],"target":["Sales Div"]}
 {"kind":"RENAMED","dn":"CN=Cid,OU=Users,OU=IDM,DC=example,DC=com","target_dn":"CN=Cid Renamed,OU=Users,OU=IDM,DC=example,DC=com","renamed":true}
 {"kind":"ONLY_SOURCE","dn":"CN=Dave,OU=Users,OU=IDM,DC=example,DC=com"}
-{"kind":"SUMMARY","version":1,"compared":{"group":40,"ou":12,"user":1150},"differences":{"DIFF":2,"ONLY_SOURCE":1,"ONLY_TARGET":0,"RENAMED":1,"REPLACED":0,"UNMARKED":0},"case_only":0,"rename_check":"markers in adminDisplayName","implied":0,"duplicates":0,"referenced":3,"not_cloned":{"msFVE-RecoveryInformation":12},"references_not_compared":{"member":2},"compared_attributes":{"group":["objectClass","cn","sAMAccountName","member"],"...":[]},"masked":["mail"],"excluded":[],"credentials":["unicodePwd","..."]}
+{"kind":"SUMMARY","version":1,"compared":{"group":40,"ou":12,"user":1150},"differences":{"DIFF":2,"ONLY_SOURCE":1,"ONLY_TARGET":0,"RENAMED":1,"REPLACED":0,"UNMARKED":0},"case_only":0,"rename_check":"markers in adminDisplayName","implied":0,"duplicates":0,"referenced":3,"not_cloned":{"msFVE-RecoveryInformation":12},"references_not_compared":{"member":2},"references_not_compared_why":{"member: names an entry of class foreignSecurityPrincipal, which no kind copies":2},"compared_attributes":{"group":["objectClass","cn","sAMAccountName","member"],"...":[]},"masked":["mail"],"excluded":[],"credentials":["unicodePwd","..."]}
 ```
 
 | Field | On | Meaning |
@@ -319,7 +319,7 @@ object per line, a line per difference as it is found, then one summary line. St
 | `version` | `SUMMARY` | The format version (1). It changes when a field changes meaning or goes away; new fields may be added without it |
 
 The other `SUMMARY` fields are the [summary](#how-to-read-the-summary) as data: `compared` and `differences` per
-kind (every kind present, `0` included), `not_cloned` per object class, `references_not_compared` per attribute,
+kind (every kind present, `0` included), `not_cloned` per object class, `references_not_compared` per attribute (`references_not_compared_why` per attribute and reason),
 `compared_attributes` per kind, and `masked`, `excluded` and `credentials`. `rename_check` is empty when
 renames are not detected. Fields of a line that do not apply are left out, so read them as optional.
 

@@ -197,3 +197,83 @@ func TestSambaRefusesUserParametersAndSaysItIsSamba(t *testing.T) {
 		t.Fatalf("the target is not told to be Samba (root DSE %v): %v", root, refused)
 	}
 }
+
+// With configuration_refs = "clone", a value naming the configuration partition (showInAddressBook naming an address
+// list, under a container of a class of the source's own, as Exchange's are) is written once the lab has what it
+// names: before the class is carried, the container cannot be created and the warning points at ldap-cronin schema;
+// after schema -apply (the class, and addressBookContainer allowed under it), clone creates the container and the
+// list from the source, writes the value, and diff finds nothing.
+func TestConfigurationRefsCreateTheAddressListsOnTheLab(t *testing.T) {
+	runID := time.Now().UnixNano() % 1_000_000
+	ctx := context.Background()
+	src := dial(t, srcURL)
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	schema := "CN=Schema,CN=Configuration," + realmDN
+	refresh := func() { must(src.AddValues(ctx, "", "schemaUpdateNow", []string{"1"})) }
+	class := fmt.Sprintf("acmeLists%06d", runID)
+	must(src.Add(ctx, directory.Entry{DN: "CN=" + class + "," + schema, Attrs: map[string][]string{
+		"objectClass": {"classSchema"}, "cn": {class}, "lDAPDisplayName": {class},
+		"governsID": {fmt.Sprintf("1.3.6.1.4.1.99999.12.%d", runID)}, "objectClassCategory": {"1"}, "subClassOf": {"top"},
+		"possSuperiors": {"container"}, "mayContain": {"adminDisplayName"},
+	}}))
+	refresh()
+	must(src.AddValues(ctx, "CN=Address-Book-Container,"+schema, "possSuperiors", []string{class}))
+	refresh()
+
+	lists := fmt.Sprintf("CN=AcmeEx%06d,CN=Services,CN=Configuration,%s", runID, realmDN)
+	allUsers := "CN=All Users," + lists
+	must(src.Add(ctx, directory.Entry{DN: lists, Attrs: map[string][]string{"objectClass": {class}, "adminDisplayName": {"Acme Exchange"}}}))
+	must(src.Add(ctx, directory.Entry{DN: allUsers, Attrs: map[string][]string{"objectClass": {"addressBookContainer"},
+		"displayName": {"All Users"}, "purportedSearch": {"(&(objectClass=user)(mail=*))"}}}))
+	scope := fmt.Sprintf("OU=Gal%06d,%s", runID, realmDN)
+	must(src.Add(ctx, directory.Entry{DN: scope, Attrs: map[string][]string{"objectClass": {"organizationalUnit"}, "ou": {fmt.Sprintf("Gal%06d", runID)}}}))
+	ann := "CN=Ann," + scope
+	must(src.Add(ctx, directory.Entry{DN: ann, Attrs: map[string][]string{"objectClass": {"user"}, "cn": {"Ann"},
+		"sAMAccountName": {fmt.Sprintf("g%06dann", runID)}, "showInAddressBook": {allUsers}}}))
+
+	cfg, err := config.Parse([]byte(fmt.Sprintf("[source]\nurl = %q\nbind_dn = %q\ninsecure_skip_verify = true\n"+
+		"[target]\nurl = %q\nbind_dn = %q\ninsecure_skip_verify = true\n[scope]\nbase_dn = %q\nconfiguration_refs = \"clone\"\n"+
+		"[attributes]\nextra_include = [\"showInAddressBook\"]\n", srcURL, adminDN, dstURL, adminDN, scope)))
+	must(err)
+	pw := func() (string, error) { return adminPw, nil }
+	s, err := app.Open(ctx, cfg, app.Secrets{SourceBind: pw, TargetBind: pw, UserPassword: func() (string, error) { return fixedPw, nil }}, app.LDAP, &bytes.Buffer{})
+	must(err)
+	t.Cleanup(s.Close)
+
+	var log bytes.Buffer
+	rep, err := s.Clone(ctx, false, &bytes.Buffer{}, &log)
+	must(err)
+	if !strings.Contains(log.String(), "skip showInAddressBook values naming "+allUsers) || !strings.Contains(log.String(), "ldap-cronin schema carries it") ||
+		rep.Unwritten["showInAddressBook: names an entry of the configuration partition clone could not create"] != 1 {
+		t.Fatalf("without the class on the lab the list cannot be created: %+v\n%s", rep, log.String())
+	}
+
+	log.Reset()
+	must(s.Schema(ctx, true, &bytes.Buffer{}, &log))
+	if !strings.Contains(log.String(), class) || !strings.Contains(log.String(), "addressBookContainer: possSuperiors "+class) {
+		t.Fatalf("schema carries the class and lets an address list live under it:\n%s", log.String())
+	}
+
+	log.Reset()
+	rep, err = s.Clone(ctx, false, &bytes.Buffer{}, &log)
+	must(err)
+	if rep.ReferencedKinds["configuration"] != 2 || len(rep.Unwritten) != 0 {
+		t.Fatalf("the container and the list are created: %+v\n%s", rep, log.String())
+	}
+	dst := dial(t, dstURL)
+	if e, err := dst.Get(ctx, allUsers, []string{"displayName", "purportedSearch"}); err != nil || e == nil || strings.Join(e.Values("displayName"), "") != "All Users" {
+		t.Fatalf("the list is on the lab: %v %v", e, err)
+	}
+	if e, err := dst.Get(ctx, ann, []string{"showInAddressBook"}); err != nil || e == nil || len(e.Values("showInAddressBook")) != 1 {
+		t.Fatalf("Ann is shown in it: %v %v", e, err)
+	}
+	var out bytes.Buffer
+	if code, err := s.Diff(ctx, app.DiffOutput{}, &out); err != nil || code != app.ExitSame {
+		t.Fatalf("%d %v\n%s", code, err, out.String())
+	}
+}

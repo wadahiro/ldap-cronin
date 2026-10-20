@@ -60,13 +60,23 @@ type pendingRef struct {
 // target shows, whatever it names.
 func (r *runner) resolveRefs(ctx context.Context, refs *plan.Classifier) error {
 	for _, pr := range r.pending {
-		w, skipped, err := refs.Reproducible(ctx, pr.want)
-		if err != nil {
-			return err
-		}
-		if skipped > 0 {
+		var w []string
+		for _, v := range pr.want {
+			class, err := refs.Class(ctx, v)
+			if err != nil {
+				return err
+			}
+			if class.Reproducible() {
+				w = append(w, v)
+				continue
+			}
+			why, err := refs.Why(ctx, v)
+			if err != nil {
+				return err
+			}
 			r.mu.Lock()
-			r.sum.NotCompared[pr.name] += skipped
+			r.sum.NotCompared[pr.name]++
+			r.sum.NotComparedWhy[pr.name+": "+why]++
 			r.mu.Unlock()
 		}
 		g := r.loc.translateBack(pr.got)

@@ -44,8 +44,8 @@ func WriteSummary(w io.Writer, job plan.Job, sum Summary, excluded []string) {
 	if len(sum.NotCloned) > 0 {
 		plan.WriteCounts(w, "not compared (matches no kind, so clone does not copy it)", sum.NotCloned)
 	}
-	if len(sum.NotCompared) > 0 {
-		plan.WriteCounts(w, "references not compared (clone cannot write them: the target lacks their entries)", sum.NotCompared)
+	if len(sum.NotComparedWhy) > 0 {
+		plan.WriteCounts(w, "references not compared (clone cannot write them: the target lacks what they name)", sum.NotComparedWhy)
 	}
 	fmt.Fprintln(w, "compared attributes:")
 	compared, masked := comparedAttributes(job)

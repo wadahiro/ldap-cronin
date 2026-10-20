@@ -55,22 +55,28 @@ func TestParseReadsTimeouts(t *testing.T) {
 
 func TestParseRejectsInvalid(t *testing.T) {
 	cases := map[string]string{
-		"domain root base":     strings.Replace(valid, "OU=IDM,DC=ad", "DC=ad", 1),
-		"unmaskable attribute": strings.Replace(withProfile("ad"), `["mail"]`, `["sAMAccountName"]`, 1),
-		"unknown field":        valid + "\n[bogus]\nx = 1\n",
-		"same server":          strings.Replace(valid, "ldap://dst:389", "ldaps://src:636", 1),
-		"bad scheme":           strings.Replace(valid, "ldap://dst:389", "http://dst", 1),
-		"unclonable include":   withProfile("ad") + "\n[attributes]\nextra_include = [\"objectGUID\"]\n",
-		"unknown profile":      withProfile("oracle"),
-		"unknown object":       strings.Replace(valid, "[scope]", "[scope]\nobjects = [\"printer\"]", 1),
-		"unknown mode":         valid + "\n[attributes]\nmode = \"everything\"\n",
-		"all with a list":      valid + "\n[attributes]\nmode = \"all\"\nextra_include = [\"proxyAddresses\"]\n",
-		"all with include":     valid + "\n[attributes]\nmode = \"all\"\n[attributes.include]\nuser = [\"mail\"]\n",
+		"domain root base":           strings.Replace(valid, "OU=IDM,DC=ad", "DC=ad", 1),
+		"unmaskable attribute":       strings.Replace(withProfile("ad"), `["mail"]`, `["sAMAccountName"]`, 1),
+		"unknown field":              valid + "\n[bogus]\nx = 1\n",
+		"same server":                strings.Replace(valid, "ldap://dst:389", "ldaps://src:636", 1),
+		"bad scheme":                 strings.Replace(valid, "ldap://dst:389", "http://dst", 1),
+		"unclonable include":         withProfile("ad") + "\n[attributes]\nextra_include = [\"objectGUID\"]\n",
+		"unknown profile":            withProfile("oracle"),
+		"unknown object":             strings.Replace(valid, "[scope]", "[scope]\nobjects = [\"printer\"]", 1),
+		"unknown mode":               valid + "\n[attributes]\nmode = \"everything\"\n",
+		"all with a list":            valid + "\n[attributes]\nmode = \"all\"\nextra_include = [\"proxyAddresses\"]\n",
+		"all with include":           valid + "\n[attributes]\nmode = \"all\"\n[attributes.include]\nuser = [\"mail\"]\n",
+		"unknown configuration_refs": strings.Replace(valid, "[scope]", "[scope]\nconfiguration_refs = \"create\"", 1),
+		"configuration_refs without references = clone": strings.Replace(valid, "[scope]",
+			"[scope]\nreferences = \"existing\"\nconfiguration_refs = \"clone\"", 1),
 	}
 	for name, raw := range cases {
 		if _, err := Parse([]byte(raw)); err == nil {
 			t.Errorf("%s: expected error", name)
 		}
+	}
+	if _, err := Parse([]byte(strings.Replace(valid, "[scope]", "[scope]\nconfiguration_refs = \"clone\"", 1))); err != nil {
+		t.Errorf("configuration_refs = clone with the default references: %v", err)
 	}
 }
 

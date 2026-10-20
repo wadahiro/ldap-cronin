@@ -119,3 +119,12 @@ func TestUserParametersIsLeftOutForASambaTarget(t *testing.T) {
 		})
 	}
 }
+
+// clone -native imports the domain partition only, so it refuses configuration_refs = "clone" before touching the lab.
+func TestNativeRefusesConfigurationRefs(t *testing.T) {
+	s := newWorld().open(t, "")
+	s.Job.ConfigurationRefs = "clone"
+	if _, err := s.Native(context.Background(), nil, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "not supported by clone -native") {
+		t.Fatalf("%v", err)
+	}
+}

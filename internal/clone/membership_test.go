@@ -3,6 +3,7 @@ package clone
 import (
 	"bytes"
 	"context"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -101,7 +102,7 @@ func TestDiffShowsEveryMemberRemovedOrAddedOnTheTarget(t *testing.T) {
 		}
 		var out bytes.Buffer
 		diff.WriteSummary(&out, job, sum, nil)
-		if !strings.Contains(out.String(), "references not compared (clone cannot write them: the target lacks their entries): 1\n  member  1\n") {
+		if !regexp.MustCompile(`references not compared \(clone cannot write them: the target lacks what they name\): 1\n  member: names \S.*  1\n`).MatchString(out.String()) {
 			t.Fatalf("the summary must say what was not compared:\n%s", out.String())
 		}
 	})

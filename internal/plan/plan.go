@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/wadahiro/ldap-cronin/internal/compare"
 	"github.com/wadahiro/ldap-cronin/internal/directory"
@@ -32,6 +33,9 @@ type Job struct {
 	// References says what is done with a reference to an entry outside the scope: RefsClone (the default, also
 	// for ""), RefsExisting or RefsSkip.
 	References string
+	// ConfigurationRefs says what is done with a reference naming the configuration partition (AD):
+	// ConfigurationRefsSkip or ConfigurationRefsClone.
+	ConfigurationRefs string
 	// AllWritable is set when the allow lists are every attribute a client can write on the class of each kind
 	// ([attributes] mode = "all"), so the summaries count them instead of naming hundreds.
 	AllWritable bool
@@ -46,6 +50,12 @@ const (
 	RefsExisting = "existing"
 	// RefsSkip writes only values that name an entry of the scope.
 	RefsSkip = "skip"
+
+	// ConfigurationRefsSkip (the default, also for "") leaves the values naming the configuration partition out.
+	ConfigurationRefsSkip = "skip"
+	// ConfigurationRefsClone creates the entries of the configuration partition such values name, and their parents,
+	// on the target, so the values can be written: for a lab, which has none of production's Exchange objects.
+	ConfigurationRefsClone = "clone"
 )
 
 // Kind is a kind of the profile as configured for this job.
@@ -135,6 +145,13 @@ type Plan struct {
 	parentLeaves map[string]bool
 	// leaves counts the entries of each leaf kind EachLeaf streams (by kind name), for the progress of a run.
 	leaves map[string]int
+	// configNC is the source's configuration partition (AD), "" where there is none.
+	configNC string
+	// unsupported are the attributes holding DN-Binary or DN-String values (lowercase).
+	unsupported map[string]bool
+	// writable caches, per object class, what a client can write on it (for the configuration entries clone creates).
+	writableMu sync.Mutex
+	writable   map[string][]string
 }
 
 // Job returns the job the plan was built for.
@@ -162,6 +179,11 @@ func Build(ctx context.Context, src directory.Directory, job Job, read Read) (*P
 	}
 	if err := p.discoverRefs(ctx); err != nil {
 		return nil, err
+	}
+	if job.Profile.ConfigurationNC != nil {
+		if p.configNC, err = job.Profile.ConfigurationNC(ctx, src); err != nil {
+			return nil, fmt.Errorf("read the configuration partition: %w", err)
+		}
 	}
 
 	ancestors := map[string]string{} // normalized DN -> DN; candidates for create-only parents
@@ -418,6 +440,7 @@ func (p *Plan) discoverRefs(ctx context.Context) error {
 	for k := range schema.BackLinks {
 		delete(p.refs, k)
 	}
+	p.unsupported = schema.Unsupported
 	for _, k := range p.job.Kinds {
 		for _, name := range k.Attrs {
 			key := strings.ToLower(name)

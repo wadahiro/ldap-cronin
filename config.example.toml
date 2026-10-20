@@ -23,6 +23,10 @@ base_dn = "OU=IDM,DC=ad,DC=example,DC=com"
 # references = "clone"               # an entry outside the scope that a reference names (a member outside base_dn):
 #                                    # clone (default) creates it as its kind, without its own references, so every
 #                                    # member is on the target; existing writes only what the target holds; skip
+# configuration_refs = "skip"        # AD: a reference naming the configuration partition (showInAddressBook naming an
+#                                    # Exchange address list): skip (default) leaves the value out, counted with why;
+#                                    # clone creates what it names and the parents it lacks from the source, for a
+#                                    # lab (run ldap-cronin schema first: the lab has none of Exchange's classes)
 
 # [scope.filters]                    # override the search filter per object type
 # user = "(&(objectCategory=person)(objectClass=user)(department=IT))"

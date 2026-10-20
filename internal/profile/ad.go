@@ -103,8 +103,15 @@ var AD = Profile{
 	Writable:    adSchema{},
 	Refusals:    sambaRefusals{},
 	Root:        adRoot{},
-	Account:     adAccount{},
-	Native:      adNative{},
+	ConfigurationNC: func(ctx context.Context, d directory.Directory) (string, error) {
+		root, err := d.Get(ctx, "", []string{"configurationNamingContext"})
+		if err != nil || root == nil {
+			return "", err
+		}
+		return first(root.Values("configurationNamingContext")), nil
+	},
+	Account: adAccount{},
+	Native:  adNative{},
 }
 
 // accountSecrets are the other secrets an account may hold, never cloned, compared or printed: the password a

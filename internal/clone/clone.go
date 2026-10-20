@@ -56,7 +56,9 @@ type Report struct {
 	Referenced      int
 	ReferencedKinds map[string]int
 	// NotCloned counts the entries under base_dn of no enabled kind, per structural object class (plan.Unselected).
-	NotCloned    map[string]int
+	NotCloned map[string]int
+	// Unwritten counts the reference values clone could not write, per "attribute: why" (plan.Classifier.Why).
+	Unwritten    map[string]int
 	WarningCount int
 	Warnings     []string // first maxWarnings only
 }
@@ -71,6 +73,16 @@ func (rep *Report) WriteSummary(w io.Writer) {
 	if len(rep.NotCloned) > 0 {
 		plan.WriteCounts(w, "not cloned (matches no kind)", rep.NotCloned)
 	}
+	if len(rep.Unwritten) > 0 {
+		plan.WriteCounts(w, "reference values not written (the target lacks what they name; diff does not compare them)", rep.Unwritten)
+		fmt.Fprintln(w, "  an attribute the test does not need can be left out with [attributes] exclude")
+		for key := range rep.Unwritten {
+			if strings.HasSuffix(key, plan.WhyConfiguration) {
+				fmt.Fprintln(w, "  [scope] configuration_refs = \"clone\" creates the entries of the configuration partition they name (for a lab)")
+				break
+			}
+		}
+	}
 }
 
 type runner struct {
@@ -83,6 +95,7 @@ type runner struct {
 	mu      sync.Mutex // guards report, out and skipped
 	report  Report
 	skipped map[string]bool // normalized DNs not created (see upsert); the reference pass leaves them alone
+	unwrote map[string]bool // attribute and normalized DN of each value warned about as not written
 	refs    *plan.Classifier
 	done    map[string]*onceErr // see once
 }
@@ -109,7 +122,7 @@ func Run(ctx context.Context, src, dst directory.Directory, job plan.Job, opt Op
 		return nil, err
 	}
 	r := &runner{dst: dst, opt: opt, out: out, prof: job.Profile, skipped: map[string]bool{}, done: map[string]*onceErr{},
-		report: Report{ReferencedKinds: map[string]int{}}}
+		unwrote: map[string]bool{}, report: Report{ReferencedKinds: map[string]int{}, Unwritten: map[string]int{}}}
 	opt.Progress.Stats(func() string {
 		r.mu.Lock()
 		defer r.mu.Unlock()
@@ -465,11 +478,21 @@ func (r *runner) references(ctx context.Context, p *plan.Plan) error {
 					}
 					switch class {
 					case plan.RefUnreproducible:
-						r.warn("skip %s of %s: %s does not exist on target", name, e.DN, v)
+						if err := r.unwritten(ctx, name, e.DN, v); err != nil {
+							return err
+						}
 						continue
 					case plan.RefReferenced:
 						if err := r.referenced(ctx, v); err != nil {
 							return err
+						}
+					case plan.RefConfiguration:
+						if err := r.configuration(ctx, v); err != nil {
+							if ctx.Err() != nil {
+								return err
+							}
+							r.notCreated(name, e.DN, v, err)
+							continue
 						}
 					}
 					usable = append(usable, v)
@@ -483,6 +506,27 @@ func (r *runner) references(ctx context.Context, p *plan.Plan) error {
 		if err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// unwritten counts a reference value clone cannot write, and warns once per value it names: thousands of users
+// listed in the same address list are one warning, and the count in the summary.
+func (r *runner) unwritten(ctx context.Context, name, from, v string) error {
+	why, err := r.refs.Why(ctx, v)
+	if err != nil {
+		return err
+	}
+	key := strings.ToLower(name) + "\x00" + dn.Normalize(v)
+	r.mu.Lock()
+	r.report.Unwritten[name+": "+why]++
+	first := !r.unwrote[key]
+	if first && len(r.unwrote) < maxWarnings {
+		r.unwrote[key] = true
+	}
+	r.mu.Unlock()
+	if first {
+		r.warn("skip %s values naming %s (first of %s): it %s", name, v, from, why)
 	}
 	return nil
 }
@@ -589,6 +633,63 @@ func (r *runner) referenced(ctx context.Context, v string) error {
 		}
 		return err
 	})
+}
+
+// configuration creates the entry of the configuration partition a reference names, and the parents it lacks, top
+// down and each once ([scope] configuration_refs = "clone"). They count as referenced objects of the kind
+// "configuration". The containers right under the partition (CN=Services, CN=Sites, ...) are taken to be there, as
+// every forest has them: a dry-run, which cannot ask the target, would otherwise add them again; were one missing,
+// the add below it fails with the server's reason.
+func (r *runner) configuration(ctx context.Context, v string) error {
+	parent := dn.Parent(v)
+	if dn.Equal(parent, r.plan.ConfigurationNC()) {
+		return nil
+	}
+	return r.once(ctx, "config:"+dn.Normalize(v), func() error {
+		cur, err := r.dst.Get(ctx, v, []string{"objectClass"})
+		if err != nil || cur != nil {
+			return err
+		}
+		if err := r.configuration(ctx, parent); err != nil {
+			return err
+		}
+		e, err := r.plan.ReadConfiguration(ctx, v)
+		if err != nil {
+			return err
+		}
+		if e == nil {
+			return fmt.Errorf("%s is missing on the source", v)
+		}
+		if err := r.dst.Add(ctx, *e); err != nil {
+			return fmt.Errorf("add %s: %w", v, err)
+		}
+		r.logf("add    %s\n", v)
+		r.count(func(rep *Report) {
+			rep.Added++
+			rep.Referenced++
+			rep.ReferencedKinds[configurationKind]++
+		})
+		return nil
+	})
+}
+
+// configurationKind is how the entries of the configuration partition clone creates are counted.
+const configurationKind = "configuration"
+
+// notCreated is unwritten for a value whose configuration entry could not be created: the server's reason (a class
+// the target's schema lacks, most likely) is the warning, once per entry.
+func (r *runner) notCreated(name, from, v string, err error) {
+	key := strings.ToLower(name) + "\x00" + dn.Normalize(v)
+	r.mu.Lock()
+	r.report.Unwritten[name+": names an entry of the configuration partition clone could not create"]++
+	first := !r.unwrote[key]
+	if first && len(r.unwrote) < maxWarnings {
+		r.unwrote[key] = true
+	}
+	r.mu.Unlock()
+	if first {
+		r.warn("skip %s values naming %s (first of %s): %v; if the target's schema lacks the class, ldap-cronin schema carries it", name, v, from, err)
+	}
 }
 
 func (r *runner) referencedOne(k *plan.Kind) {

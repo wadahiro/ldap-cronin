@@ -31,6 +31,10 @@ const (
 	// RefUnreproducible names an entry the target lacks, on a server that needs it (AD): clone skips the value
 	// and diff does not compare it.
 	RefUnreproducible
+	// RefConfiguration names an entry of the configuration partition the target lacks, with
+	// [scope] configuration_refs = "clone": clone creates it and its parents (plan.ReadConfiguration), and diff
+	// compares the value.
+	RefConfiguration
 )
 
 // Reproducible reports whether clone writes values of this class, and diff compares them.
@@ -45,6 +49,10 @@ type Classifier struct {
 	p   *Plan
 	dst directory.Directory
 
+	configOnce sync.Once
+	configNC   string // the target's configuration partition
+	configErr  error
+
 	mu   sync.Mutex
 	seen map[string]*refCheck
 }
@@ -54,7 +62,24 @@ type refCheck struct {
 	class RefClass
 	kind  *Kind  // RefReferenced
 	write string // RefPrincipal
+	why   string // RefUnreproducible: what the value names, so the summaries can say what to do about it
 	err   error
+}
+
+// The reasons a value is RefUnreproducible.
+const (
+	WhyConfiguration = "names an entry of the configuration partition (an Exchange address list, say), which clone does not create"
+	WhyOtherNC       = "names an entry of another naming context (another domain of the forest)"
+	WhyMissing       = "names an entry missing on the source"
+	WhyBuiltin       = "names a built-in object the target lacks"
+	WhySkipped       = "names an entry outside the scope ([scope] references = \"skip\")"
+	WhyNotOnTarget   = "names an entry outside the scope the target lacks ([scope] references = \"existing\")"
+	WhyFenced        = "names a schema definition or a partition of the forest, which clone never creates"
+)
+
+// whyClass is the reason for a value naming an entry of an object class no kind copies.
+func whyClass(class string) string {
+	return "names an entry of class " + class + ", which no kind copies"
 }
 
 // Classifier returns a classifier of reference values against dst.
@@ -78,6 +103,15 @@ func (c *Classifier) Referenced(ctx context.Context, v string) (*Kind, error) {
 		return nil, err
 	}
 	return chk.kind, nil
+}
+
+// Why returns what a RefUnreproducible value names (one of the Why reasons), "" for any other.
+func (c *Classifier) Why(ctx context.Context, v string) (string, error) {
+	chk, err := c.check(ctx, v)
+	if err != nil {
+		return "", err
+	}
+	return chk.why, nil
 }
 
 // Write returns the form in which clone writes v: the principal's form for a RefPrincipal, v otherwise.
@@ -119,8 +153,9 @@ func (c *Classifier) classify(ctx context.Context, v string, chk *refCheck) erro
 	if mode == "" {
 		mode = RefsClone
 	}
-	if mode == RefsClone {
-		k, err := c.p.KindOf(ctx, v)
+	switch mode {
+	case RefsClone:
+		k, why, err := c.p.kindOf(ctx, v)
 		if err != nil {
 			return err
 		}
@@ -128,6 +163,11 @@ func (c *Classifier) classify(ctx context.Context, v string, chk *refCheck) erro
 			chk.class, chk.kind = RefReferenced, k
 			return nil
 		}
+		chk.why = why
+	case RefsSkip:
+		chk.why = WhySkipped
+	default:
+		chk.why = WhyNotOnTarget
 	}
 	if mode != RefsSkip {
 		if !prof.RefsNeedEntry {
@@ -148,8 +188,44 @@ func (c *Classifier) classify(ctx context.Context, v string, chk *refCheck) erro
 				return nil
 			}
 		}
+		if chk.why == WhyConfiguration && job.ConfigurationRefs == ConfigurationRefsClone {
+			return c.configuration(ctx, v, chk)
+		}
 	}
 	chk.class = RefUnreproducible
+	return nil
+}
+
+// configuration classifies a value naming the configuration partition, which clone is to create: it can when the
+// source holds the entry and the target's partition is the source's (a lab made with lab up --like-source), as the
+// value is written as it is.
+func (c *Classifier) configuration(ctx context.Context, v string, chk *refCheck) error {
+	c.configOnce.Do(func() {
+		if f := c.p.job.Profile.ConfigurationNC; f != nil {
+			c.configNC, c.configErr = f(ctx, c.dst)
+		}
+	})
+	if c.configErr != nil {
+		return c.configErr
+	}
+	chk.class = RefUnreproducible
+	if c.p.Fenced(v) {
+		chk.why = WhyFenced
+		return nil
+	}
+	if c.configNC != "" && !dn.Equal(c.configNC, c.p.configNC) {
+		chk.why = "names an entry of the configuration partition, and the target's is another (" + c.configNC + ")"
+		return nil
+	}
+	e, err := c.p.src.Get(ctx, v, []string{"objectClass"})
+	if err != nil {
+		return err
+	}
+	if e == nil {
+		chk.why = WhyMissing
+		return nil
+	}
+	chk.class, chk.why = RefConfiguration, ""
 	return nil
 }
 
@@ -157,28 +233,49 @@ func (c *Classifier) classify(ctx context.Context, v string, chk *refCheck) erro
 // kind's Is says (without the configured narrowing of the filter); nil when it is outside the naming context,
 // missing, built-in, or of no enabled kind.
 func (p *Plan) KindOf(ctx context.Context, entryDN string) (*Kind, error) {
+	k, _, err := p.kindOf(ctx, entryDN)
+	return k, err
+}
+
+// kindOf is KindOf with the reason (one of the Why reasons) when there is no kind.
+func (p *Plan) kindOf(ctx context.Context, entryDN string) (*Kind, string, error) {
 	prof := p.job.Profile
+	// Checked first: CN=Configuration,DC=... is below the domain's DN, but it is another partition.
+	if p.InConfiguration(entryDN) {
+		return nil, WhyConfiguration, nil
+	}
 	if !dn.IsDescendant(entryDN, p.Root) {
-		return nil, nil // another naming context (another domain of the forest): not read
+		return nil, WhyOtherNC, nil // another naming context (another domain of the forest): not read
 	}
 	attrs := []string{"objectClass"}
 	if prof.SystemAttr != "" {
 		attrs = append(attrs, prof.SystemAttr)
 	}
 	e, err := p.src.Get(ctx, entryDN, attrs)
-	if err != nil || e == nil {
-		return nil, err
+	if err != nil {
+		return nil, "", err
+	}
+	if e == nil {
+		return nil, WhyMissing, nil
 	}
 	if prof.SystemAttr != "" && strings.EqualFold(first(e.Values(prof.SystemAttr)), "TRUE") {
-		return nil, nil // a built-in object is never created: the target has its own, or none
+		return nil, WhyBuiltin, nil // a built-in object is never created: the target has its own, or none
 	}
 	classes := e.Values("objectClass")
 	for i := range p.job.Kinds {
 		if k := &p.job.Kinds[i]; k.Is != nil && k.Is(classes) {
-			return k, nil
+			return k, "", nil
 		}
 	}
-	return nil, nil
+	return nil, whyClass(lastOf(classes)), nil
+}
+
+// lastOf is the last value: the structural class of an AD objectClass, which lists the classes from top down.
+func lastOf(v []string) string {
+	if len(v) == 0 {
+		return "(none)"
+	}
+	return v[len(v)-1]
 }
 
 func first(v []string) string {

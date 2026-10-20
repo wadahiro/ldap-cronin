@@ -250,7 +250,10 @@ type Profile struct {
 	// Refusals is nil when every target of the type takes every attribute its schema has.
 	Refusals RefusalReader
 	Root     RootResolver
-	Account  Account
+	// ConfigurationNC returns the DN of the configuration partition from a server's root DSE (AD), so a reference
+	// into it is told apart from one into the domain; nil, or "", where there is none.
+	ConfigurationNC func(ctx context.Context, d directory.Directory) (string, error)
+	Account         Account
 	// Native is nil when clone -native is not possible for this server type.
 	Native NativeSupport
 }

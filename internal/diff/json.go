@@ -105,11 +105,13 @@ type jsonSummary struct {
 	// NotCloned counts the entries of no kind under base_dn, per structural object class.
 	NotCloned map[string]int `json:"not_cloned"`
 	// ReferencesNotCompared counts, per attribute, the source values clone cannot write.
-	ReferencesNotCompared map[string]int      `json:"references_not_compared"`
-	ComparedAttributes    map[string][]string `json:"compared_attributes"`
-	Masked                []string            `json:"masked"`
-	Excluded              []string            `json:"excluded"`
-	Credentials           []string            `json:"credentials"`
+	ReferencesNotCompared map[string]int `json:"references_not_compared"`
+	// ReferencesNotComparedWhy splits them per "attribute: why".
+	ReferencesNotComparedWhy map[string]int      `json:"references_not_compared_why"`
+	ComparedAttributes       map[string][]string `json:"compared_attributes"`
+	Masked                   []string            `json:"masked"`
+	Excluded                 []string            `json:"excluded"`
+	Credentials              []string            `json:"credentials"`
 }
 
 // Summary writes the summary line. excluded is the exclude setting of the config.
@@ -119,7 +121,8 @@ func (j *JSON) Summary(job plan.Job, sum Summary, excluded []string) error {
 		Kind: "SUMMARY", Version: JSONVersion, Compared: map[string]int{}, Differences: map[string]int{},
 		CaseOnly: sum.CaseOnly, RenameCheck: sum.Matching, Implied: sum.Implied, Duplicates: sum.Duplicates,
 		Referenced: sum.Referenced, NotCloned: orEmpty(sum.NotCloned), ReferencesNotCompared: orEmpty(sum.NotCompared),
-		ComparedAttributes: compared, Masked: nonNil(masked), Excluded: nonNil(excluded), Credentials: nonNil(job.Profile.PasswordAttrs),
+		ReferencesNotComparedWhy: orEmpty(sum.NotComparedWhy),
+		ComparedAttributes:       compared, Masked: nonNil(masked), Excluded: nonNil(excluded), Credentials: nonNil(job.Profile.PasswordAttrs),
 	}
 	for _, k := range job.Kinds {
 		out.Compared[k.Name] = sum.Compared[k.Name]

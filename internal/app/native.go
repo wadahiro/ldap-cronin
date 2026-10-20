@@ -52,6 +52,10 @@ func (s *Session) domain(ctx context.Context) (profile.Domain, error) {
 // LDAP. Samba only; it uses internals that are not a supported usage. It does not connect to the target over LDAP.
 // The lab is stopped during the import and resumed afterwards, also when the import fails or is interrupted.
 func (s *Session) Native(ctx context.Context, l *lab.Lab, out io.Writer) (report *clone.Report, err error) {
+	if s.Job.ConfigurationRefs == plan.ConfigurationRefsClone {
+		// The import writes the domain partition of the lab's database; the configuration partition is not tried.
+		return nil, fmt.Errorf("[scope] configuration_refs = %q is not supported by clone -native, which imports the domain partition only", plan.ConfigurationRefsClone)
+	}
 	src, err := s.domain(ctx)
 	if err != nil {
 		return nil, err

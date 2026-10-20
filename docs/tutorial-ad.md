@@ -253,8 +253,8 @@ referenced objects outside the scope compared: 3 (without their own references)
 not compared (matches no kind, so clone does not copy it): 14
   msFVE-RecoveryInformation  12
   serviceConnectionPoint      2
-references not compared (clone cannot write them: the target lacks their entries): 2
-  member  2
+references not compared (clone cannot write them: the target lacks what they name): 2
+  member: names an entry of class foreignSecurityPrincipal, which no kind copies  2
 compared attributes:
   ...
 not compared:
@@ -535,6 +535,9 @@ exclude = ["homeDirectory", "homeDrive", "profilePath", "scriptPath"]   # still 
 - An attribute the target's schema lacks is left out with a note at the start of `clone` and `diff`, instead of
   stopping the run: give the target your extensions with `schema` first. A dry-run reads no target, so its LDIF has
   them all.
+- A reference into the configuration partition (`showInAddressBook` naming Exchange's address lists, `homeMDB`) is
+  skipped with a warning per entry it names. For the lab, `[scope] configuration_refs = "clone"` creates those
+  entries from the source once `schema` has given the lab Exchange's classes; or `exclude` the attributes.
 - An attribute the target refuses over LDAP is left out the same way, with the reason: a Samba lab refuses
   `userParameters` (old RAS and Terminal Services settings), which a real AD takes.
 - `diff` counts the compared attributes per kind instead of naming hundreds; `list-attrs -config` names them.
@@ -555,5 +558,5 @@ exclude = ["homeDirectory", "homeDrive", "profilePath", "scriptPath"]   # still 
 | `... already exists on the target but its ... differs` | Only with `clone -native`: the lab holds another object at that DN. Use a fresh lab |
 | `warning: [mapping] attribute adminDisplayName is not indexed on the target` | Index it (step 10); the lab does this itself |
 | `x509: certificate signed by unknown authority` | Give the CA with `ca_file` |
-| `skip member of ...: ... does not exist on target` | A member clone cannot reproduce (a principal of a trusted domain, a built-in the target lacks); `diff` counts it instead of comparing it |
+| `skip member values naming ...: it names ...` | A reference clone cannot write, with what it names: a principal of a trusted domain (class `foreignSecurityPrincipal`), a built-in the target lacks, an entry of the configuration partition (`showInAddressBook` naming an Exchange address list). One warning per entry named; the summary counts the values per attribute and reason, and `diff` counts them instead of comparing them. `[attributes] exclude` an attribute the test does not need |
 | `lab up` refuses with a different domain | A lab already exists for another domain: `lab reset -y`, or use `--instance` |
