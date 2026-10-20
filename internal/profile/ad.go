@@ -344,17 +344,26 @@ var sambaRefused = map[string]string{
 }
 
 func (sambaRefusals) Refused(ctx context.Context, dst directory.Directory) (map[string]string, error) {
-	root, err := dst.Get(ctx, "", []string{"vendorName"})
+	samba, err := IsSamba(ctx, dst)
+	if err != nil || !samba {
+		return nil, err
+	}
+	return sambaRefused, nil
+}
+
+// IsSamba reports whether d is a Samba AD DC, by the vendorName of its root DSE (Windows publishes none).
+func IsSamba(ctx context.Context, d directory.Directory) (bool, error) {
+	root, err := d.Get(ctx, "", []string{"vendorName"})
 	if err != nil {
-		return nil, fmt.Errorf("read the target's root DSE: %w", err)
+		return false, fmt.Errorf("read the root DSE: %w", err)
 	}
 	if root == nil {
-		return nil, nil
+		return false, nil
 	}
 	for _, v := range root.Values("vendorName") {
 		if strings.Contains(strings.ToLower(v), "samba") {
-			return sambaRefused, nil
+			return true, nil
 		}
 	}
-	return nil, nil
+	return false, nil
 }

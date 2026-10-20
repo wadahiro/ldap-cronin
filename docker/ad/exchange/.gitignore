@@ -1,0 +1,4 @@
+# The schema files of Exchange's setup, put here by make image EXCHANGE_ISO=... for the build only and removed
+# after it: they are Microsoft's and must not be committed.
+*
+!.gitignore

@@ -29,6 +29,19 @@ make image IMAGE_TAG=local                    # the Samba4 AD and OpenLDAP lab i
 # on an ARM machine (Apple silicon): make image IMAGE_TAG=local PLATFORM=linux/arm64
 ```
 
+If production has Exchange, give the image Exchange's schema from Exchange's setup image (the ISO of the version
+production runs, from Microsoft's download site; Exchange Server SE and 2019 CU12 or later have the schema version
+17003). `bsdtar` reads it (macOS has it; Debian and Ubuntu: `apt install libarchive-tools`):
+
+```sh
+make image IMAGE_TAG=local EXCHANGE_ISO=~/Downloads/ExchangeServerSE-x64.iso   # ldap-cronin/samba-ad:local-exchange
+```
+
+Every lab made from that image has the schema `/PrepareSchema` writes to a forest like Samba's (about 2,800
+definitions), written when its domain is created, before Samba starts: the lab is up in about 30 seconds. The
+image holds Microsoft's files: keep it on your machine, never push it. On a Windows test domain, Exchange's own
+setup prepares the schema.
+
 For a machine without internet access, build the offline package instead (`make bundle`, see
 [lab.md](lab.md#using-the-offline-package)); `setup.sh` in it then takes the place of `ldap-cronin lab`.
 
@@ -87,8 +100,8 @@ Notes on the choices:
   attribute that is not in the allow lists.
 - Masked attributes must be plain strings: `member`, `sAMAccountName`, `userPrincipalName` and the like cannot be
   masked (a fixed string would break them).
-- `extensionAttribute1` and the like exist only with the Exchange schema. The lab has it; a target without it
-  refuses those values.
+- `extensionAttribute1` and the like exist only with the Exchange schema. The lab gets it in step 5; a target
+  without it refuses those values (`clone` stops before writing, naming them).
 
 ## 3. Look before writing
 
@@ -153,6 +166,7 @@ still in it; `clone` leaves those out by itself.
 ```sh
 export SAMBA_ADMIN_PASSWORD='Lab-Adm1n-Passw0rd!'            # the lab's Administrator; or let the lab generate one
 ./bin/ldap-cronin lab up --like-source config.toml --image ldap-cronin/samba-ad:local
+# with Exchange's schema (step 1): --image ldap-cronin/samba-ad:local-exchange
 ```
 
 `--like-source` reads the domain name, NetBIOS name, domain SID and GUID from `[source]` (it asks for the source
@@ -167,6 +181,9 @@ over.
 
 Production may have attributes and classes the lab lacks: an extension of your own (an employee code), or a
 product's. Do this **before the first `clone`**, so the snapshot of step 8 carries them and every restore has them.
+
+A lab made from the image with Exchange's schema (step 1) has it already; what is checked here is what production
+has beyond it (another Exchange version's, your own, another product's).
 
 ```sh
 export LDAP_CRONIN_TARGET_PASSWORD="$SAMBA_ADMIN_PASSWORD"
@@ -425,7 +442,7 @@ needs their definitions in its schema, and the clone copies them once an allow l
 
 Every `not copied` line is an attribute your entries hold that the clone leaves behind, with the number of entries
 holding it; `not in the target schema` marks the ones the target cannot hold yet. `extensionAttribute1`-`15` and
-`msExch*` come from the Exchange schema, which the lab already has.
+`msExch*` come from the Exchange schema, which the lab gets in step 5.
 
 ### Give the target their definitions
 

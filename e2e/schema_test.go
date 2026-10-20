@@ -142,7 +142,7 @@ func TestModeAllCopiesEveryWritableAttribute(t *testing.T) {
 	for _, e := range []directory.Entry{
 		{DN: scope, Attrs: map[string][]string{"objectClass": {"organizationalUnit"}, "ou": {fmt.Sprintf("All%06d", runID)}}},
 		{DN: ann, Attrs: map[string][]string{"objectClass": {"user"}, "cn": {"Ann"}, "sAMAccountName": {fmt.Sprintf("a%06dann", runID)},
-			"proxyAddresses": {"SMTP:ann@example.com", "smtp:a@example.com"}, "extensionAttribute7": {"x7"},
+			"proxyAddresses": {"SMTP:ann@example.com", "smtp:a@example.com"}, "otherTelephone": {"x7"},
 			"mS-DS-ConsistencyGuid": {string([]byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15})}}},
 		{DN: bob, Attrs: map[string][]string{"objectClass": {"user"}, "cn": {"Bob"}, "sAMAccountName": {fmt.Sprintf("a%06dbob", runID)},
 			"secretary": {ann}}},
@@ -161,8 +161,8 @@ func TestModeAllCopiesEveryWritableAttribute(t *testing.T) {
 		t.Fatal(err)
 	}
 	dst := dial(t, dstURL)
-	e, err := dst.Get(ctx, ann, []string{"proxyAddresses", "extensionAttribute7", "mS-DS-ConsistencyGuid"})
-	if err != nil || e == nil || len(e.Values("proxyAddresses")) != 2 || len(e.Values("extensionAttribute7")) != 1 || len(e.Values("mS-DS-ConsistencyGuid")) != 1 {
+	e, err := dst.Get(ctx, ann, []string{"proxyAddresses", "otherTelephone", "mS-DS-ConsistencyGuid"})
+	if err != nil || e == nil || len(e.Values("proxyAddresses")) != 2 || len(e.Values("otherTelephone")) != 1 || len(e.Values("mS-DS-ConsistencyGuid")) != 1 {
 		t.Fatalf("%v %v", e, err)
 	}
 	if e, err := dst.Get(ctx, bob, []string{"secretary"}); err != nil || e == nil || strings.Join(e.Values("secretary"), "") != ann {

@@ -97,8 +97,17 @@ down: ## Stop the Samba4 AD and delete its volumes
 	docker compose --profile e2e --profile ldap down -v
 
 .PHONY: image
-image: ## Build the lab images, Samba4 AD and OpenLDAP (set the architecture with e.g. PLATFORM=linux/arm64)
+image: ## Build the lab images, Samba4 AD and OpenLDAP (PLATFORM=linux/arm64 for the architecture; EXCHANGE_ISO=<Exchange setup .iso> for a Samba4 AD with Exchange's schema)
+ifeq ($(EXCHANGE_ISO),)
 	docker build --platform $(PLATFORM) -t $(IMAGE):$(IMAGE_TAG) docker/ad
+else
+	@command -v bsdtar >/dev/null || { echo "bsdtar reads the ISO (macOS has it; Debian/Ubuntu: apt install libarchive-tools)"; exit 1; }
+	rm -f docker/ad/exchange/*.ldf
+	bsdtar -xf "$(EXCHANGE_ISO)" -C docker/ad/exchange --strip-components 2 'Setup/Data/PostWindows2003_schema*.ldf' 'Setup/Data/SchemaVersion.ldf'
+	@# The schema files are Microsoft's: they are in the image only, and removed from the build context whatever happens.
+	docker build --platform $(PLATFORM) -t $(IMAGE):$(IMAGE_TAG)-exchange docker/ad; status=$$?; rm -f docker/ad/exchange/*.ldf; exit $$status
+	@echo "$(IMAGE):$(IMAGE_TAG)-exchange writes Exchange's schema to every lab it creates (lab up --image $(IMAGE):$(IMAGE_TAG)-exchange). Do not publish it."
+endif
 	docker build --platform $(PLATFORM) -t $(LDAP_IMAGE):$(IMAGE_TAG) docker/ldap
 
 .PHONY: bundle

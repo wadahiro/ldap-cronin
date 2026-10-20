@@ -36,7 +36,7 @@ func TestTheCommandsSessionAgainstSamba(t *testing.T) {
 		{DN: scope, Attrs: map[string][]string{"objectClass": {"organizationalUnit"}, "ou": {"Scope"}}},
 		{DN: out, Attrs: map[string][]string{"objectClass": {"organizationalUnit"}, "ou": {"Out"}}},
 		{DN: carl, Attrs: map[string][]string{"objectClass": {"user"}, "cn": {"Carl"}, "sAMAccountName": {fmt.Sprintf("s%06dcarl", runID)},
-			"extensionAttribute5": {"not in any allow list"}}},
+			"otherTelephone": {"not in any allow list"}}},
 	} {
 		must(src.Add(ctx, e))
 	}
@@ -46,7 +46,7 @@ func TestTheCommandsSessionAgainstSamba(t *testing.T) {
 			"sAMAccountName": {fmt.Sprintf("s%06dg%02d", runID, i)}, "member": {carl}}}))
 	}
 	must(src.Add(ctx, directory.Entry{DN: "CN=Ann," + scope, Attrs: map[string][]string{"objectClass": {"user"}, "cn": {"Ann"},
-		"sAMAccountName": {fmt.Sprintf("s%06dann", runID)}, "extensionAttribute5": {"x"}}}))
+		"sAMAccountName": {fmt.Sprintf("s%06dann", runID)}, "otherTelephone": {"x"}}}))
 
 	cfg, err := config.Parse([]byte(fmt.Sprintf("[source]\nurl = %q\nbind_dn = %q\ninsecure_skip_verify = true\n"+
 		"[target]\nurl = %q\nbind_dn = %q\ninsecure_skip_verify = true\n[scope]\nbase_dn = %q\n", srcURL, adminDN, dstURL, adminDN, scope)))
@@ -71,7 +71,7 @@ func TestTheCommandsSessionAgainstSamba(t *testing.T) {
 	must(s.ListAttrs(ctx, true, &list))
 	for _, want := range []string{
 		`(?m)^\[user\] 1 entries under ` + regexp.QuoteMeta(scope) + `$`,
-		`(?m)^  not copied\s+extensionAttribute5\s+1$`, // the target has the Exchange schema too: no note
+		`(?m)^  not copied\s+otherTelephone\s+1$`, // the base schema: the target has it too, so no note
 		`(?m)^  copied\s+sAMAccountName\s+1$`,
 		`(?m)^  never\s+objectSid\s+1  managed by the server$`,
 		`(?m)^\[group\] 40 entries`,

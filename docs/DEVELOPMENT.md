@@ -71,7 +71,7 @@ docker compose --profile e2e up -d --build   # plus the clone source (with sampl
 ```
 
 - `AD_REALM` is the domain name (for example `ad.example.com`); the Kerberos realm, NetBIOS name (first label, at most 15 characters) and BASE_DN are derived. After changing it, run `docker compose down -v` (a mismatch with an existing volume stops startup).
-- Every instance gets an Exchange-compatible extended schema (`extensionAttribute1-15`, `msExch*`, `mailNickname`) from `docker/ad/schema/`.
+- The schema is Samba's own (Windows' base schema): no Exchange or other product extension. A lab gets those from production (`ldap-cronin schema`), or Exchange's from an image built with `make image EXCHANGE_ISO=...`: the Makefile takes the schema files out of the ISO into `docker/ad/exchange/` (ignored by git) for the build and removes them after, and `docker/ad/exchange-schema.py` writes them when the domain is provisioned, before Samba starts. Tests that need an attribute of an extension create it in the test (made-up names and OIDs), as `e2e/schema_test.go` and `e2e/exchange_image_test.go` do; nothing of Exchange's files is in the repository.
 - Sample data is only in `ad-src` (`SEED_SAMPLE_DATA=true`): nested OUs, users in a `CN=` container, CNs containing `,` or non-ASCII characters, disabled and never-expiring users, nested groups.
 - The password policy is relaxed. LDAPS uses Samba's self-signed certificate, which can have a negative serial number that Go rejects by default, so `go.mod` sets `godebug x509negativeserial=1` (no effect on a real AD).
 

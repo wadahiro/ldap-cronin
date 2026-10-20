@@ -48,6 +48,8 @@ ldap-cronin lab up --like-source config.toml        # create it with the same do
 - If a container already exists with a different domain name or ports, the command **refuses without damaging the data**. With the same settings it resumes, even from a stopped state.
 - After starting, it prints the connection details and an example `[target]` setting. The LDAPS certificate is self-signed, so use `insecure_skip_verify = true` (or `ca_file`).
 - The DC host name is fixed to `dc1`.
+- **Exchange's schema**: an image built with `make image EXCHANGE_ISO=<Exchange setup .iso>` (tag `<tag>-exchange`) writes Exchange's schema, as `/PrepareSchema` does, to the domain of every lab it creates, before Samba starts (about 25 seconds more at the first start). A file it cannot write stops the first start with the reason in the container's log; `lab reset` starts over. The image holds Microsoft's files: keep it local, never push it.
+- **Samba's databases are not fsynced** (`ldb:nosync = true`, set at every start, so labs created before get it too). A lab is disposable and snapshots restore it; every write is several times faster without it (Exchange's schema over LDAP took 12 minutes with it, 4 without). A crash of the container keeps the data; a crash of the host can leave the lab to be restored from a snapshot.
 
 ## The OpenLDAP lab (`--profile ldap`)
 

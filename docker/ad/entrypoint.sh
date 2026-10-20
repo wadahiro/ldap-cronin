@@ -57,6 +57,15 @@ os.removexattr(sys.argv[1], "security.ldapcronin-probe")' /var/lib/samba 2>/dev/
   sed -i '/^\[global\]/a \\tldap server require strong auth = no' /etc/samba/smb.conf
   # Relax the password policy so that fixed passwords can be loaded
   samba-tool domain passwordsettings set --complexity=off --min-pwd-length=1 --min-pwd-age=0 --history-length=0
+  # Exchange's schema, when the image carries it, written before Samba starts (seconds, where over LDAP it took
+  # minutes). A failure stops here, before the domain is marked provisioned: lab reset starts over.
+  if compgen -G "/exchange/*.ldf" >/dev/null; then
+    base_dn=$(echo "$SAMBA_REALM" | awk -F. '{for(i=1;i<=NF;i++){printf "%sDC=%s",(i>1?",":""),tolower($i)}}')
+    if ! python3 /exchange-schema.py /exchange "$base_dn"; then
+      echo "Exchange's schema could not be written (see above); lab reset, or rebuild the image without it" >&2
+      exit 1
+    fi
+  fi
   echo "$SAMBA_REALM" > "$PROVISIONED"
 fi
 
@@ -64,9 +73,16 @@ fi
 # would make the container healthy before Samba is up. Remove it on every start.
 rm -f /tmp/ad-ready
 
-# Allow schema updates over LDAP so the Exchange-compatible extended schema can be loaded (also applied to existing volumes)
+# Allow schema updates over LDAP, for ldap-cronin schema (production's extensions, or Exchange's from its setup
+# image) and the marker index (also applied to existing volumes)
 grep -q 'dsdb:schema update allowed' /etc/samba/smb.conf || \
   sed -i '/^\[global\]/a \\tdsdb:schema update allowed = yes' /etc/samba/smb.conf
+
+# Do not fsync Samba's databases. A lab is disposable and its snapshots restore it, and every write is several times
+# faster without it: Exchange's schema (schema -exchange) took 12 minutes with it and 4 without. A crash of the host
+# (not of the container) can leave the lab to be restored from a snapshot.
+grep -q 'ldb:nosync' /etc/samba/smb.conf || \
+  sed -i '/^\[global\]/a \\tldb:nosync = true' /etc/samba/smb.conf
 
 /ad-init.sh &
 exec samba -i

@@ -37,8 +37,7 @@ mail: alice@example.com
 telephoneNumber: 03-1234-5678
 title: Manager
 department: IT
-extensionAttribute1: ext-alice
-mailNickname: alice
+otherTelephone: 03-9876-5432
 
 dn: CN=Bob Staff,OU=Tokyo,OU=Users,OU=IDM,$BASE_DN
 objectClass: user

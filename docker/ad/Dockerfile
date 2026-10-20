@@ -7,9 +7,11 @@ RUN apt-get update \
       ldb-tools ldap-utils dnsutils pwgen tini \
  && apt-get clean
 
-COPY entrypoint.sh ad-init.sh seed.sh /
-COPY schema /schema
+COPY entrypoint.sh ad-init.sh seed.sh exchange-schema.py /
 RUN chmod +x /entrypoint.sh /ad-init.sh /seed.sh
+# Exchange's schema files when the image is built with them (make image EXCHANGE_ISO=...); otherwise only the
+# .gitignore. An image with them must not be published: they are Microsoft's, from its setup image.
+COPY exchange/ /exchange/
 
 EXPOSE 53 88 389 445 464 636 3268
 ENTRYPOINT ["/usr/bin/tini", "--", "/entrypoint.sh"]
