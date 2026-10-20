@@ -13,6 +13,7 @@ package profile
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/wadahiro/ldap-cronin/internal/compare"
@@ -128,6 +129,21 @@ type AttributeLister interface {
 	Attributes(ctx context.Context, d directory.Directory) (names map[string]bool, ok bool, err error)
 }
 
+// SchemaCopier plans what a target's schema lacks of the source's extensions (the attributes and classes an
+// organization or a product added), so a lab can be given them before the first clone.
+type SchemaCopier interface {
+	// PlanSchema returns ok=false when either schema cannot be read.
+	PlanSchema(ctx context.Context, src, dst directory.Directory) (plan SchemaChanges, ok bool, err error)
+}
+
+// SchemaChanges is a plan of schema changes: written to the target, or printed for an administrator to apply.
+type SchemaChanges interface {
+	Empty() bool
+	WriteSummary(w io.Writer)
+	WriteLDIF(w io.Writer) error
+	Apply(ctx context.Context, dst directory.Directory, log io.Writer) error
+}
+
 // RootResolver finds the top of the naming context that holds base_dn. [scope] root_dn, when set, bypasses it.
 type RootResolver interface {
 	Root(ctx context.Context, src directory.Directory, baseDN string) (string, error)
@@ -209,8 +225,10 @@ type Profile struct {
 	// SchemaAttrs lists the attributes of a schema, so clone can refuse to start when the target lacks one the
 	// allow lists name and the source has. nil: no check.
 	SchemaAttrs AttributeLister
-	Root        RootResolver
-	Account     Account
+	// SchemaCopy is nil when the profile cannot carry schema definitions (ldap-cronin schema).
+	SchemaCopy SchemaCopier
+	Root       RootResolver
+	Account    Account
 	// Native is nil when clone -native is not possible for this server type.
 	Native NativeSupport
 }

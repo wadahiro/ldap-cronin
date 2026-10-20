@@ -300,7 +300,7 @@ func CheckTargetSchema(ctx context.Context, src, dst directory.Directory, job Jo
 	for i, n := range names {
 		parts[i] = fmt.Sprintf("%s (%s)", n, strings.Join(missing[n], ", "))
 	}
-	return fmt.Errorf("the target schema lacks attributes that the source defines and the allow lists name: %s; add them to the target's schema, or leave them out with [attributes] exclude", strings.Join(parts, ", "))
+	return fmt.Errorf("the target schema lacks attributes that the source defines and the allow lists name: %s; add them to the target's schema (ldap-cronin schema prints them as LDIF, -apply writes them), or leave them out with [attributes] exclude", strings.Join(parts, ", "))
 }
 
 // Unselected counts, by structural object class, the entries under base_dn that clone does not copy: those of no

@@ -123,6 +123,8 @@ func (s *Session) ListAttrs(ctx context.Context, withTarget, all bool, out io.Wr
 	fmt.Fprintln(out, "not copied: no allow list names it; add it with [attributes] extra_include (or include.<kind>) to copy and compare it")
 	if !withTarget {
 		fmt.Fprintln(out, "add -target to see which of them the target's schema lacks")
+	} else if s.Job.Profile.SchemaCopy != nil {
+		fmt.Fprintln(out, "not in the target schema: ldap-cronin schema prints what the target's schema lacks as LDIF (-apply writes it)")
 	}
 	return nil
 }

@@ -33,6 +33,8 @@ Commands:
   diff          Compare the source and the target (exit code 1 if there are differences)
   list-attrs    Show the default attributes (allow list) per object type (-profile ad|ldap); with -config, read the
                 source and list the attributes its entries hold, copied or not (-target: and the target's schema)
+  schema        Print as LDIF the attributes and classes the source's schema has and the target's lacks (AD); -apply
+                writes them to the target instead
   lab           Start an AD-compatible Samba4 on docker for verification, and take and restore snapshots (lab help)
   version       Show the version
 
@@ -43,6 +45,11 @@ Flags (clone/diff):
   -lab-prefix <p>, -lab-instance <name>   (clone -native) The lab to import into
   -format <f>      (diff only) text (default), or json: JSON Lines, one object per difference, then the summary
   -max-values <n>  (diff only, text) Show at most n values per direction of a multi-valued difference (default: 0, all)
+
+Flags (schema):
+  -config <file>   TOML config file (default: config.toml); reads the schemas of [source] and [target]
+  -apply           Write the changes to the target (a schema change cannot be undone in AD); without it, the LDIF goes
+                   to stdout, for ldapmodify or ldifde, and the summary to stderr
 `
 
 // version is embedded at build time with -ldflags "-X main.version=...".
@@ -84,6 +91,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		code, err = runDiff(ctx, args[1:], stdout)
 	case "list-attrs":
 		err = listAttrs(ctx, args[1:], stdout)
+	case "schema":
+		err = runSchema(ctx, args[1:], stdout, stderr)
 	case "lab":
 		err = runLab(ctx, args[1:], stdout, stderr)
 	case "version", "-version", "--version":
@@ -185,6 +194,25 @@ func runDiff(ctx context.Context, args []string, out io.Writer) (int, error) {
 	}
 	defer s.Close()
 	return s.Diff(ctx, app.DiffOutput{JSON: *format == "json", MaxValues: *maxValues}, out)
+}
+
+func runSchema(ctx context.Context, args []string, out, log io.Writer) error {
+	fs := flag.NewFlagSet("schema", flag.ContinueOnError)
+	cfgPath := fs.String("config", "config.toml", "config file")
+	apply := fs.Bool("apply", false, "write the changes to the target instead of printing them (cannot be undone in AD)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	s, err := openSession(ctx, *cfgPath)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	if *apply {
+		// The progress is the output then, and stays apart from the error on stderr.
+		log = out
+	}
+	return s.Schema(ctx, *apply, out, log)
 }
 
 func listAttrs(ctx context.Context, args []string, out io.Writer) error {

@@ -99,6 +99,7 @@ var AD = Profile{
 	MarkerCheck: adSchema{},
 	Refs:        adSchema{},
 	SchemaAttrs: adSchema{},
+	SchemaCopy:  adSchema{},
 	Root:        adRoot{},
 	Account:     adAccount{},
 	Native:      adNative{},
@@ -194,6 +195,19 @@ func (adSchema) Attributes(ctx context.Context, d directory.Directory) (map[stri
 		return nil, false, fmt.Errorf("read schema: %w", err)
 	}
 	return out, true, nil
+}
+
+// PlanSchema compares the attributeSchema and classSchema entries of the two schema naming contexts.
+func (adSchema) PlanSchema(ctx context.Context, src, dst directory.Directory) (SchemaChanges, bool, error) {
+	s, err := ad.ReadSchema(ctx, src)
+	if err != nil || s == nil {
+		return nil, false, err
+	}
+	d, err := ad.ReadSchema(ctx, dst)
+	if err != nil || d == nil {
+		return nil, false, err
+	}
+	return ad.PlanSchema(s, d), true, nil
 }
 
 // Unicode, case-insensitive and printable string syntaxes: the ones a marker can be stored and searched in.

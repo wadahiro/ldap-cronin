@@ -283,6 +283,11 @@ func (d *Dir) AddValues(ctx context.Context, dnStr, attr string, values []string
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if dnStr == "" && strings.EqualFold(attr, "schemaUpdateNow") {
+		// AD's request to reload the schema cache: an operation, not a value the root DSE keeps.
+		d.Ops = append(d.Ops, "schemaUpdateNow")
+		return nil
+	}
 	e, ok := d.Entries[dn.Normalize(dnStr)]
 	if !ok {
 		return fmt.Errorf("modify %s: no such object", dnStr)
@@ -387,6 +392,8 @@ func matches(e directory.Entry, filter string) bool {
 		return equalityMatches(e, filter)
 	case strings.Contains(filter, "attributeSchema"):
 		return strings.Contains(classes, "attributeschema")
+	case strings.Contains(filter, "classSchema"):
+		return strings.Contains(classes, "classschema")
 	case strings.Contains(filter, "groupOfNames"):
 		return strings.Contains(classes, "groupofnames") || strings.Contains(classes, "groupofuniquenames") || strings.Contains(classes, "posixgroup")
 	case strings.Contains(filter, "inetOrgPerson"):
