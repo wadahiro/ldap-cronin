@@ -199,6 +199,20 @@ It asks for the source password and the **fixed password for cloned users**: eve
 gets it, since password hashes are never copied. It must satisfy the target's password policy (the lab's is
 Samba's default complexity).
 
+Before the first write it shows where it is about to write, and asks:
+
+```
+clone adds and updates entries under base_dn on the target
+  target (written): ldaps://localhost:12636 (server dc1.ad.example.com)
+    bind_dn: CN=Administrator,CN=Users,DC=ad,DC=example,DC=com
+    base_dn: OU=IDM,DC=ad,DC=example,DC=com
+  source (read only): ldaps://dc01.ad.example.com:636 (server dc01.ad.example.com)
+Write to this target? [y/N]:
+```
+
+Only `y` (or `yes`) goes on; Enter alone stops with nothing written. In a script, where nothing can answer, pass
+`-y`. The source is never written to, whatever the command: its connection refuses every write.
+
 What it does, in order: the OUs and parents, then groups, users, computers and contacts (users and computers are
 added disabled, given the password, then their source `userAccountControl`), then `member`, `manager` and the other
 references. It prints each write (`add`, `update`) and the counts at the end.
@@ -509,6 +523,8 @@ exclude = ["homeDirectory", "homeDrive", "profilePath", "scriptPath"]   # still 
 - An attribute the target's schema lacks is left out with a note at the start of `clone` and `diff`, instead of
   stopping the run: give the target your extensions with `schema` first. A dry-run reads no target, so its LDIF has
   them all.
+- An attribute the target refuses over LDAP is left out the same way, with the reason: a Samba lab refuses
+  `userParameters` (old RAS and Terminal Services settings), which a real AD takes.
 - `diff` counts the compared attributes per kind instead of naming hundreds; `list-attrs -config -all` names them.
 - Some attributes a client may write are refreshed by the server or the machine itself (`msDS-SupportedEncryptionTypes`
   of a live computer, say): they are copied once and may show as `DIFF` on a later diff. `exclude` them if they get
@@ -521,6 +537,8 @@ exclude = ["homeDirectory", "homeDrive", "profilePath", "scriptPath"]   # still 
 |---|---|
 | `set password (LDAPS is required; ...)` | Use `ldaps://` (or `start_tls = true`) for the target, and a fixed password the target's policy accepts. Re-run `clone`: it sets the password of the users created without one |
 | `the target schema lacks attributes that the source defines and the allow lists name: ...` | Nothing was written. Give the target their definitions with `ldap-cronin schema` ([Attributes of your own](#attributes-of-your-own-schema-extensions)), or leave them out with `[attributes] exclude` |
+| `aborted: nothing was written (pass -y to skip the confirmation)` | The answer to `Write to this target? [y/N]` was not `y`, or there was no terminal to ask on. Check the target it showed; in a script, pass `-y` |
+| `... Constraint Violation ... setting userParameters is not supported over LDAP` | A Samba target refusing `userParameters`. This version leaves it out by itself; with an older one, `exclude` it. Re-run `clone`: it goes on from where it stopped |
 | `base_dn ... must be below the root` | `base_dn` is the domain root, or not in the domain; clone an OU |
 | `... already exists on the target but its ... differs` | Only with `clone -native`: the lab holds another object at that DN. Use a fresh lab |
 | `warning: [mapping] attribute adminDisplayName is not indexed on the target` | Index it (step 10); the lab does this itself |

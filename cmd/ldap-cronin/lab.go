@@ -354,6 +354,11 @@ func confirm(prompt string) bool {
 	}
 	fmt.Fprint(os.Stderr, prompt)
 	line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+	return isYes(line)
+}
+
+// isYes is the answer to a [y/N] question: only y or yes is a yes, so Enter alone (or anything else) is a no.
+func isYes(line string) bool {
 	answer := strings.ToLower(strings.TrimSpace(line))
 	return answer == "y" || answer == "yes"
 }

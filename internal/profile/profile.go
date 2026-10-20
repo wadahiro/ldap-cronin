@@ -155,6 +155,13 @@ type WritableLister interface {
 	Writable(ctx context.Context, src directory.Directory, classes []string) (names map[string][]string, ok bool, err error)
 }
 
+// RefusalReader names the attributes a target server refuses to have written over LDAP although its schema has
+// them, each with the reason, by the target's own name for its software (Samba refuses userParameters, say).
+type RefusalReader interface {
+	// Refused returns the attribute names (as clone writes them) and why; none for a server that takes them all.
+	Refused(ctx context.Context, dst directory.Directory) (map[string]string, error)
+}
+
 // RootResolver finds the top of the naming context that holds base_dn. [scope] root_dn, when set, bypasses it.
 type RootResolver interface {
 	Root(ctx context.Context, src directory.Directory, baseDN string) (string, error)
@@ -240,6 +247,8 @@ type Profile struct {
 	SchemaCopy SchemaCopier
 	// Writable is nil when the profile cannot tell which attributes a client can write ([attributes] mode = "all").
 	Writable WritableLister
+	// Refusals is nil when every target of the type takes every attribute its schema has.
+	Refusals RefusalReader
 	Root     RootResolver
 	Account  Account
 	// Native is nil when clone -native is not possible for this server type.

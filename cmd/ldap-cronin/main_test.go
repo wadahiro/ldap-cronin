@@ -70,7 +70,7 @@ func runCLI(t *testing.T, ctx context.Context, args ...string) (int, string, str
 func TestCloneAndDiffExitCodes(t *testing.T) {
 	_, dst, cfg := cli(t)
 	ctx := context.Background()
-	code, out, errOut := runCLI(t, ctx, "clone", "-config", cfg)
+	code, out, errOut := runCLI(t, ctx, "clone", "-y", "-config", cfg)
 	if code != 0 || !strings.Contains(out, "added=") {
 		t.Fatalf("clone: %d\n%s%s", code, out, errOut)
 	}
@@ -86,6 +86,24 @@ func TestCloneAndDiffExitCodes(t *testing.T) {
 	dst.Lookup(alice).Attrs["title"] = []string{"Manager"}
 	if code, out, _ := runCLI(t, ctx, "diff", "-config", cfg); code != 1 || !strings.Contains(out, "DIFF") {
 		t.Fatalf("diff with a change: %d\n%s", code, out)
+	}
+}
+
+// Without -y clone asks before writing, and with no terminal to ask on the answer is no: nothing is written.
+func TestCloneAsksFirstAndNoIsTheDefault(t *testing.T) {
+	_, dst, cfg := cli(t)
+	before := len(dst.Entries)
+	code, _, errOut := runCLI(t, context.Background(), "clone", "-config", cfg)
+	if code != exitError || !strings.Contains(errOut, "aborted: nothing was written") {
+		t.Fatalf("clone without -y and no terminal: %d\n%s", code, errOut)
+	}
+	if len(dst.Entries) != before {
+		t.Fatalf("an unanswered clone wrote to the target: %d entries, had %d", len(dst.Entries), before)
+	}
+	for line, want := range map[string]bool{"\n": false, "": false, "n\n": false, "no\n": false, "yy\n": false, "y\n": true, " Yes \n": true} {
+		if got := isYes(line); got != want {
+			t.Errorf("isYes(%q) = %v, want %v", line, got, want)
+		}
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 	"github.com/wadahiro/ldap-cronin/internal/clone"
 	"github.com/wadahiro/ldap-cronin/internal/config"
 	"github.com/wadahiro/ldap-cronin/internal/directory"
+	"github.com/wadahiro/ldap-cronin/internal/profile"
 )
 
 // A source AD with an attribute of its own (a schema extension) that the target lacks: clone refuses to start,
@@ -170,5 +171,29 @@ func TestModeAllCopiesEveryWritableAttribute(t *testing.T) {
 	var out bytes.Buffer
 	if code, err := s.Diff(ctx, app.DiffOutput{}, &out); err != nil || code != app.ExitSame {
 		t.Fatalf("%d %v\n%s", code, err, out.String())
+	}
+}
+
+// Samba refuses userParameters over LDAP, and tells itself apart by the vendorName of its root DSE: the AD
+// profile names userParameters as refused by this target, so clone leaves it out instead of stopping there.
+func TestSambaRefusesUserParametersAndSaysItIsSamba(t *testing.T) {
+	runID := time.Now().UnixNano() % 1_000_000
+	ctx := context.Background()
+	dst := dial(t, dstURL)
+	cn := fmt.Sprintf("UserParams%06d", runID)
+	err := dst.Add(ctx, directory.Entry{DN: "CN=" + cn + ",CN=Users," + realmDN, Attrs: map[string][]string{
+		"objectClass": {"top", "person", "organizationalPerson", "user"}, "cn": {cn}, "sAMAccountName": {cn},
+		"userParameters": {"P"},
+	}})
+	if err == nil || !strings.Contains(err.Error(), "userParameters") {
+		t.Fatalf("Samba takes userParameters over LDAP now? %v", err)
+	}
+	refused, err := profile.AD.Refusals.Refused(ctx, dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := refused["userParameters"]; !ok {
+		root, _ := dst.Get(ctx, "", []string{"vendorName", "vendorVersion"})
+		t.Fatalf("the target is not told to be Samba (root DSE %v): %v", root, refused)
 	}
 }

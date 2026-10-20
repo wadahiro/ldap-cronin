@@ -101,6 +101,7 @@ var AD = Profile{
 	SchemaAttrs: adSchema{},
 	SchemaCopy:  adSchema{},
 	Writable:    adSchema{},
+	Refusals:    sambaRefusals{},
 	Root:        adRoot{},
 	Account:     adAccount{},
 	Native:      adNative{},
@@ -322,4 +323,31 @@ func wellKnownPrincipal(entryDN string) (string, bool) {
 		return "", false
 	}
 	return "<SID=" + strings.ToUpper(sid) + ">", true
+}
+
+// sambaRefusals is what a Samba AD DC refuses over LDAP although its schema has it, told from Windows by the
+// vendorName of its root DSE (Windows publishes none).
+type sambaRefusals struct{}
+
+// sambaRefused are the attributes Samba will not have written over LDAP, with the reason it gives.
+var sambaRefused = map[string]string{
+	// samldb: "setting userParameters is not supported over LDAP"; Windows takes it (old RAS and Terminal Services
+	// settings in a binary format Samba does not parse).
+	"userParameters": "Samba refuses it over LDAP (https://bugzilla.samba.org/show_bug.cgi?id=8077)",
+}
+
+func (sambaRefusals) Refused(ctx context.Context, dst directory.Directory) (map[string]string, error) {
+	root, err := dst.Get(ctx, "", []string{"vendorName"})
+	if err != nil {
+		return nil, fmt.Errorf("read the target's root DSE: %w", err)
+	}
+	if root == nil {
+		return nil, nil
+	}
+	for _, v := range root.Values("vendorName") {
+		if strings.Contains(strings.ToLower(v), "samba") {
+			return sambaRefused, nil
+		}
+	}
+	return nil, nil
 }

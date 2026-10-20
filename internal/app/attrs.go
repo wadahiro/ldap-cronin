@@ -38,18 +38,30 @@ func (s *Session) ListAttrs(ctx context.Context, withTarget, all bool, out io.Wr
 		return err
 	}
 	var targetHas map[string]bool
-	if withTarget && s.Job.Profile.SchemaAttrs != nil {
+	refused := map[string]string{}
+	if withTarget && (s.Job.Profile.SchemaAttrs != nil || s.Job.Profile.Refusals != nil) {
 		dst, closeTarget, err := s.Target(ctx)
 		if err != nil {
 			return err
 		}
 		defer closeTarget()
-		has, ok, err := s.Job.Profile.SchemaAttrs.Attributes(ctx, dst)
-		if err != nil {
-			return err
+		if s.Job.Profile.SchemaAttrs != nil {
+			has, ok, err := s.Job.Profile.SchemaAttrs.Attributes(ctx, dst)
+			if err != nil {
+				return err
+			}
+			if ok {
+				targetHas = has
+			}
 		}
-		if ok {
-			targetHas = has
+		if s.Job.Profile.Refusals != nil {
+			got, err := s.Job.Profile.Refusals.Refused(ctx, dst)
+			if err != nil {
+				return err
+			}
+			for name, why := range got {
+				refused[strings.ToLower(name)] = why
+			}
 		}
 	}
 	_, marker, err := s.Cfg.MappingFor(s.Job.Profile)
@@ -80,6 +92,9 @@ func (s *Session) ListAttrs(ctx context.Context, withTarget, all bool, out io.Wr
 			st, note := status(key)
 			if targetHas != nil && !targetHas[key] && st != attrNever {
 				note = strings.TrimPrefix(note+"; not in the target schema", "; ")
+			}
+			if why, ok := refused[key]; ok && st != attrNever {
+				note = strings.TrimPrefix(note+"; left out for this target: "+why, "; ")
 			}
 			lines = append(lines, attrLine{status: st, name: u.Names[key], count: n, note: note})
 		}

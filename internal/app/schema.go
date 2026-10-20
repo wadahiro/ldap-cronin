@@ -34,6 +34,9 @@ func (s *Session) Schema(ctx context.Context, apply bool, out, log io.Writer) er
 	if !apply {
 		return plan.WriteLDIF(out)
 	}
+	if err := s.confirmWrite(ctx, dst, "schema -apply writes the changes above to the target's schema (AD cannot undo them)"); err != nil {
+		return err
+	}
 	if err := plan.Apply(ctx, dst, log); err != nil {
 		return err
 	}

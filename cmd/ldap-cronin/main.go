@@ -41,6 +41,7 @@ Commands:
 Flags (clone/diff):
   -config <file>   TOML config file (default: config.toml)
   -dry-run         (clone only) Do not connect to the target; print what would be done as LDIF
+  -y, -yes         (clone only) Write without asking: clone shows the target and the source and asks [y/N] first
   -native          (clone only) Import into the lab's Samba keeping the source's objectGUID and objectSid (Samba only. lab help)
   -lab-prefix <p>, -lab-instance <name>   (clone -native) The lab to import into
   -format <f>      (diff only) text (default), or json: JSON Lines, one object per difference, then the summary
@@ -50,6 +51,7 @@ Flags (schema):
   -config <file>   TOML config file (default: config.toml); reads the schemas of [source] and [target]
   -apply           Write the changes to the target (a schema change cannot be undone in AD); without it, the LDIF goes
                    to stdout, for ldapmodify or ldifde, and the summary to stderr
+  -y, -yes         With -apply: write without asking (it shows the target and asks [y/N] first)
 `
 
 // version is embedded at build time with -ldflags "-X main.version=...".
@@ -140,6 +142,7 @@ func runClone(ctx context.Context, args []string, out io.Writer) error {
 	cfgPath := fs.String("config", "config.toml", "config file")
 	dryRun := fs.Bool("dry-run", false, "print LDIF instead of writing")
 	native := fs.Bool("native", false, "import into a lab Samba keeping objectGUID/objectSid (Samba only)")
+	yes := yesFlag(fs)
 	var labFlags labCommon
 	fs.StringVar(&labFlags.prefix, "lab-prefix", lab.DefaultPrefix, "lab container name prefix (with -native)")
 	fs.StringVar(&labFlags.instance, "lab-instance", "", "lab instance (with -native; default: the main lab)")
@@ -154,6 +157,7 @@ func runClone(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	defer s.Close()
+	askBeforeWriting(s, *yes)
 
 	var report *clone.Report
 	// The dry-run stdout carries only LDIF that can be passed straight to ldapmodify; progress logs go to stderr.
@@ -175,6 +179,21 @@ func runClone(ctx context.Context, args []string, out io.Writer) error {
 		report.WriteSummary(log)
 	}
 	return err
+}
+
+// yesFlag is -y (and -yes): write to the target without asking first, for scripts.
+func yesFlag(fs *flag.FlagSet) *bool {
+	yes := fs.Bool("y", false, "write to the target without asking first")
+	fs.BoolVar(yes, "yes", false, "same as -y")
+	return yes
+}
+
+// askBeforeWriting makes the session ask on the terminal before its first write to the target, unless -y. The
+// answer is No unless y or yes is typed: Enter alone, or no terminal to ask on, writes nothing.
+func askBeforeWriting(s *app.Session, yes bool) {
+	if !yes {
+		s.Confirm = confirm
+	}
 }
 
 func runDiff(ctx context.Context, args []string, out io.Writer) (int, error) {
@@ -200,6 +219,7 @@ func runSchema(ctx context.Context, args []string, out, log io.Writer) error {
 	fs := flag.NewFlagSet("schema", flag.ContinueOnError)
 	cfgPath := fs.String("config", "config.toml", "config file")
 	apply := fs.Bool("apply", false, "write the changes to the target instead of printing them (cannot be undone in AD)")
+	yes := yesFlag(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -208,6 +228,7 @@ func runSchema(ctx context.Context, args []string, out, log io.Writer) error {
 		return err
 	}
 	defer s.Close()
+	askBeforeWriting(s, *yes)
 	if *apply {
 		// The progress is the output then, and stays apart from the error on stderr.
 		log = out

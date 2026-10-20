@@ -27,12 +27,12 @@ The name is a pun on "clone" and "ronin", a masterless samurai: cRONIN is a **c*
 
 | Command | Description |
 |---|---|
-| `clone [-config f] [-dry-run]` | Add and update. `-dry-run` does not connect to the target; it writes LDIF to standard output (progress logs go to standard error) |
+| `clone [-config f] [-dry-run] [-y]` | Add and update. Before the first write it shows the target (and the server name its root DSE gives) and the source, and asks `[y/N]`: only `y` writes, and without a terminal it stops unless `-y`. `-dry-run` does not connect to the target; it writes LDIF to standard output (progress logs go to standard error) |
 | `clone -native [-lab-prefix p] [-lab-instance n]` | **Samba lab only**: import with the same `objectGUID` and `objectSid` as the source (into a lab created with `lab up --like-source`). Uses unsupported internals. For the limitations see [docs/lab.md](docs/lab.md#importing-with-the-same-objectguid-and-objectsid-clone--native-samba-only) |
 | `diff [-config f] [-format text\|json] [-max-values n]` | Compare the source and the target. Exit code 1 if there are differences (2 on error). `-format json` writes JSON Lines for a program to read. For how to read the output see [docs/diff.md](docs/diff.md) |
 | `list-attrs [-profile ad\|ldap]` | Show the default attributes (allow list) per object type |
 | `list-attrs -config f [-target] [-all]` | Read the source and list, per object type, the attributes its entries hold with how many hold each, and whether `clone` copies them; a schema extension of your own shows as `not copied`. `-target` also notes the attributes the target's schema lacks |
-| `schema -config f [-apply]` | **AD**: compare the source's schema with the target's and print what the target lacks (attributes, classes, what a class both have allows) as LDIF for `ldapmodify` or `ldifde`; `-apply` writes it. For a lab before its first clone, or as a file to review for a test AD |
+| `schema -config f [-apply [-y]]` | **AD**: compare the source's schema with the target's and print what the target lacks (attributes, classes, what a class both have allows) as LDIF for `ldapmodify` or `ldifde`; `-apply` writes it, after the same `[y/N]` question as `clone`. For a lab before its first clone, or as a file to review for a test AD |
 | `lab up / down / reset / status` | Start and stop a test lab on docker: Samba4 AD, or OpenLDAP with `--profile ldap`. See [docs/lab.md](docs/lab.md) |
 | `lab snapshot / snapshots / restore` | Take, list and restore snapshots of the lab data |
 | `version` | Print the version |
@@ -55,7 +55,10 @@ make build                           # produces bin/ldap-cronin (requires Go)
 
 The dry-run LDIF loads with `ldapmodify` into an empty target. It never carries a password: on a generic server the users are created without one (and `clone` never adds one to an existing user); on AD the password and the `userAccountControl` that follows it are written as comments, and `clone` run against the loaded target sets them.
 
-Passwords are never kept in the configuration file; they are prompted for at run time. For non-interactive use set the environment variables `LDAP_CRONIN_SOURCE_PASSWORD` / `LDAP_CRONIN_TARGET_PASSWORD` / `LDAP_CRONIN_USER_PASSWORD`.
+Passwords are never kept in the configuration file; they are prompted for at run time. For non-interactive use set the environment variables `LDAP_CRONIN_SOURCE_PASSWORD` / `LDAP_CRONIN_TARGET_PASSWORD` / `LDAP_CRONIN_USER_PASSWORD`, and pass `-y` to `clone` and `schema -apply`.
+
+The source is only read. Its connection refuses every write before anything is sent, whatever the command; still,
+bind to it with an account that can only read, so the server refuses too.
 
 Ctrl-C stops a run at its next LDAP operation and still finishes its cleanup (a mapping file is written, a lab stopped for an import is resumed); a re-run of `clone` continues from there. See [docs/operations.md](docs/operations.md#stopping-a-run-and-hung-servers).
 

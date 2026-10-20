@@ -5,6 +5,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -50,6 +51,18 @@ type ldapConn struct{ *ldapdir.Client }
 
 func (c ldapConn) View(ranged []string) directory.Directory { return c.Client.With(ranged) }
 
+// readOnlyConn is how the source is opened: its writes, and those of its views, are refused before anything is sent.
+type readOnlyConn struct {
+	directory.ReadOnly
+	conn Conn
+}
+
+func (c readOnlyConn) View(ranged []string) directory.Directory {
+	return directory.ReadOnly{Directory: c.conn.View(ranged)}
+}
+
+func (c readOnlyConn) Close() { c.conn.Close() }
+
 // Session is a run against one source.
 type Session struct {
 	Cfg *config.Config
@@ -57,6 +70,9 @@ type Session struct {
 	// Src is the source, on sourceConns connections (see there).
 	Src  directory.Directory
 	Warn io.Writer
+	// Confirm, when set, is asked before the first write to the target (clone, schema -apply), after the target and
+	// the source are shown on Warn; false stops the run with nothing written. Nil writes without asking.
+	Confirm func(question string) bool
 
 	secrets Secrets
 	dial    Dialer
@@ -77,10 +93,12 @@ func Open(ctx context.Context, cfg *config.Config, secrets Secrets, dial Dialer,
 	if err != nil {
 		return nil, err
 	}
-	src, err := dial(ctx, cfg.Source, pw, sourceConns)
+	conn, err := dial(ctx, cfg.Source, pw, sourceConns)
 	if err != nil {
 		return nil, err
 	}
+	// The source is only ever read: whatever a command does, a write to it fails here instead of reaching the server.
+	var src Conn = readOnlyConn{ReadOnly: directory.ReadOnly{Directory: conn}, conn: conn}
 	prof, err := profile.Resolve(ctx, cfg.Scope.Profile, src)
 	if err != nil {
 		src.Close()
@@ -140,53 +158,119 @@ func (s *Session) writableAttrs(ctx context.Context) error {
 	return nil
 }
 
-// targetHas narrows the attributes of every kind to those the target's schema defines, for mode = "all": the
-// source's schema may have more (an extension, a newer Windows Server), and they are left out instead of stopping
-// the run, as no one named them. It returns the job to run and the names left out.
-func (s *Session) targetHas(ctx context.Context, dst directory.Directory) (plan.Job, []string, error) {
+// leftOut is what targetHas takes out of the job for a target.
+type leftOut struct {
+	// missing are the attributes the target's schema lacks (mode = "all").
+	missing []string
+	// refused are the attributes the target will not have written over LDAP, as "name: why".
+	refused []string
+}
+
+// targetHas narrows the attributes of every kind to those the target can be given. In mode = "all" that is those
+// the target's schema defines: the source's schema may have more (an extension, a newer Windows Server), and they
+// are left out instead of stopping the run, as no one named them. In any mode it is without those the target refuses
+// over LDAP (Samba: userParameters), which would otherwise stop the run at the first entry holding one, after
+// everything before it was written. Required attributes are always kept. It returns the job to run and what it left out.
+func (s *Session) targetHas(ctx context.Context, dst directory.Directory) (plan.Job, leftOut, error) {
 	job := s.Job
-	if !s.Cfg.Attributes.All() || job.Profile.SchemaAttrs == nil {
-		return job, nil, nil
+	var has map[string]bool
+	if s.Cfg.Attributes.All() && job.Profile.SchemaAttrs != nil {
+		got, ok, err := job.Profile.SchemaAttrs.Attributes(ctx, dst)
+		if err != nil {
+			return job, leftOut{}, err
+		}
+		if ok {
+			has = got
+		}
 	}
-	has, ok, err := job.Profile.SchemaAttrs.Attributes(ctx, dst)
-	if err != nil || !ok {
-		return job, nil, err
+	refused := map[string]string{}
+	if job.Profile.Refusals != nil {
+		got, err := job.Profile.Refusals.Refused(ctx, dst)
+		if err != nil {
+			return job, leftOut{}, err
+		}
+		for name, why := range got {
+			refused[strings.ToLower(name)] = why
+		}
+	}
+	var out leftOut
+	if has == nil && len(refused) == 0 {
+		return job, out, nil
 	}
 	job.Kinds = append([]plan.Kind(nil), job.Kinds...)
 	required := profile.Set(job.Profile.Required)
-	left := map[string]bool{}
-	var leftOut []string
+	noted := map[string]bool{}
 	for i := range job.Kinds {
 		var keep []string
 		for _, a := range job.Kinds[i].Attrs {
 			key := strings.ToLower(a)
-			if has[key] || required[key] {
+			why, isRefused := refused[key]
+			missing := has != nil && !has[key]
+			if required[key] || (!isRefused && !missing) {
 				keep = append(keep, a)
 				continue
 			}
-			if !left[key] {
-				left[key] = true
-				leftOut = append(leftOut, a)
+			if noted[key] {
+				continue
+			}
+			noted[key] = true
+			if isRefused {
+				out.refused = append(out.refused, a+": "+why)
+			} else {
+				out.missing = append(out.missing, a)
 			}
 		}
 		job.Kinds[i].Attrs = keep
 	}
-	sort.Slice(leftOut, func(i, j int) bool { return strings.ToLower(leftOut[i]) < strings.ToLower(leftOut[j]) })
-	return job, leftOut, nil
+	for _, l := range [][]string{out.missing, out.refused} {
+		sort.Slice(l, func(i, j int) bool { return strings.ToLower(l[i]) < strings.ToLower(l[j]) })
+	}
+	return job, out, nil
 }
 
-// noteLeftOut lists, one per line, the attributes mode = "all" leaves out because the target's schema lacks them.
-func noteLeftOut(w io.Writer, names []string) {
-	if len(names) == 0 {
-		return
+// noteLeftOut lists, one per line, the attributes targetHas left out and why.
+func noteLeftOut(w io.Writer, l leftOut) {
+	if len(l.missing) > 0 {
+		fmt.Fprintf(w, "not copied or compared: the target schema lacks %d attributes of the source's (ldap-cronin schema adds those of extensions):\n", len(l.missing))
+		for _, n := range l.missing {
+			fmt.Fprintf(w, "  %s\n", n)
+		}
 	}
-	fmt.Fprintf(w, "not copied or compared: the target schema lacks %d attributes of the source's (ldap-cronin schema adds those of extensions):\n", len(names))
-	for _, n := range names {
-		fmt.Fprintf(w, "  %s\n", n)
+	if len(l.refused) > 0 {
+		fmt.Fprintf(w, "not copied or compared: the target refuses %d attributes over LDAP:\n", len(l.refused))
+		for _, n := range l.refused {
+			fmt.Fprintf(w, "  %s\n", n)
+		}
 	}
 }
 
 func (s *Session) Close() { s.src.Close() }
+
+// confirmWrite shows which server is about to be written to, and which is only read, and asks s.Confirm. A server
+// name comes from its root DSE (dnsHostName, AD), so a URL that names the server another way still shows which it is.
+func (s *Session) confirmWrite(ctx context.Context, dst directory.Directory, what string) error {
+	if s.Confirm == nil {
+		return nil
+	}
+	fmt.Fprintf(s.Warn, "%s\n", what)
+	fmt.Fprintf(s.Warn, "  target (written): %s%s\n", s.Cfg.Target.URL, serverName(ctx, dst))
+	fmt.Fprintf(s.Warn, "    bind_dn: %s\n", s.Cfg.Target.BindDN)
+	fmt.Fprintf(s.Warn, "    base_dn: %s\n", s.Job.BaseDN)
+	fmt.Fprintf(s.Warn, "  source (read only): %s%s\n", s.Cfg.Source.URL, serverName(ctx, s.Src))
+	if !s.Confirm("Write to this target? [y/N]: ") {
+		return errors.New("aborted: nothing was written (pass -y to skip the confirmation)")
+	}
+	return nil
+}
+
+// serverName is " (server <dnsHostName>)" from the root DSE, or "" when the server does not publish one.
+func serverName(ctx context.Context, d directory.Directory) string {
+	root, err := d.Get(ctx, "", []string{"dnsHostName"})
+	if err != nil || root == nil || len(root.Values("dnsHostName")) == 0 {
+		return ""
+	}
+	return " (server " + root.Values("dnsHostName")[0] + ")"
+}
 
 // Target connects to the target with [run] workers connections. With profile = auto it also refuses a target of
 // another type: an AD source cloned into a plain LDAP server (or the reverse) would silently drop or mis-map attributes.

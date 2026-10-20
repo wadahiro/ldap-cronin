@@ -55,7 +55,7 @@ func (s *Session) Clone(ctx context.Context, dryRun bool, out, log io.Writer) (*
 		}
 		defer closeTarget()
 		dst = target
-		var left []string
+		var left leftOut
 		if job, left, err = s.targetHas(ctx, dst); err != nil {
 			return nil, err
 		}
@@ -68,6 +68,10 @@ func (s *Session) Clone(ctx context.Context, dryRun bool, out, log io.Writer) (*
 			if warning != "" {
 				fmt.Fprintf(s.Warn, "warning: %s\n", warning)
 			}
+		}
+		// Asked last, after the notes and warnings above, which only read.
+		if err := s.confirmWrite(ctx, dst, "clone adds and updates entries under base_dn on the target"); err != nil {
+			return nil, err
 		}
 		if mode == config.MappingFile {
 			header, err := s.mappingHeader(ctx)
