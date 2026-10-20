@@ -7,7 +7,7 @@ For people who develop and maintain ldap-cronin. For usage see [README.md](../RE
 ```
 cmd/ldap-cronin/    CLI: flags, passwords (prompt or environment), the signal context, exit codes. Nothing else
 internal/
-  app/               assembling a run: connections, profile resolution, the job, the [mapping] mode; clone, diff and native entry points
+  app/               assembling a run: connections, profile resolution, the job, the [mapping] mode; clone, diff, check, schema, dump and native entry points
   config/            TOML loading and validation; JobFor builds the job once the profile is known
   profile/           server types (ad, ldap): kinds and attribute lists as data, strategies for identity, schema, root, accounts, values
   identity/          identifier schemes (objectGUID, entryUUID), the marker, Resolver (by identifier, marker or file), and the mapping file
@@ -83,6 +83,8 @@ docker compose --profile e2e up -d --build   # plus the clone source (with sampl
 |---|---|
 | `TestDefaultAttributesExistInSambaSchema` | Every attribute in the default allow list exists in the Samba schema |
 | `TestReferenceAttributesAreDetectedFromSambaSchema` | DN reference attributes are detected from the schema |
+| `TestSchemaCarriesAnExtensionThenCloneCopiesIt` | `check` says clone would refuse (exit 1) and names `schema -apply`; after it, `check` is ready and the extension is cloned and compared |
+| `TestTheCommandsSessionAgainstSamba` | The commands against Samba: dry-run, `check -attrs` (a held attribute no list names is suggested) |
 | `TestCloneThenDiffThenIdempotentThenDetectTamper` | clone -> 0 diffs -> re-run gives 0 changes -> diff detects a manual change; login over LDAPS with the fixed password works |
 | `TestBulkUsersPagingAndLargeGroupRanges` | 1600 users (paging) and a group of 1600 members (several range retrievals, range size 500) |
 | `TestRenameAndMoveOnTargetAreDetectedWithTheMarkers` | Renames, moves, OU moves and child deletions on the target are detected through the markers; the image indexes `adminDisplayName` |

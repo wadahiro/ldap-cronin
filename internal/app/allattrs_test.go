@@ -89,6 +89,21 @@ func TestModeAllCopiesWhatAClientCanWrite(t *testing.T) {
 	if !strings.Contains(warn.String(), "acmeCode") || !strings.Contains(out.String(), "user : 6, every attribute a client can write on user") {
 		t.Fatalf("warn:\n%s\nout:\n%s", warn.String(), out.String())
 	}
+
+	// check names what exclude leaves behind, and not what only the server writes.
+	w.src.Lookup(alice).Attrs["whenChanged"] = []string{"20261021091233.0Z"}
+	w.src.Lookup(alice).Attrs["memberOf"] = []string{"CN=G," + base}
+	var report bytes.Buffer
+	if _, err := s.Check(ctx, CheckOptions{Config: "c.toml"}, &report); err != nil {
+		t.Fatal(err)
+	}
+	got := report.String()
+	if !strings.Contains(got, "[user] 1 entries; 1 attributes they hold are not copied ([attributes] exclude names them):\n  title ") {
+		t.Fatalf("the excluded attribute is named:\n%s", got)
+	}
+	if strings.Contains(got, "  whenChanged ") || strings.Contains(got, "  memberOf ") || strings.Contains(got, "extra_include") {
+		t.Fatalf("what only the server writes is not listed, and mode = \"all\" suggests no extra_include:\n%s", got)
+	}
 }
 
 // A profile that cannot tell what a client may write refuses mode = "all" instead of copying nothing.

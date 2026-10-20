@@ -149,9 +149,9 @@ target: not read (-no-target)
 [ou] 12 entries: clone copies every attribute they hold that a client can write
 [group] 40 entries: clone copies every attribute they hold that a client can write
 [user] 1150 entries; 3 attributes they hold are not copied (no allow list names them):
+  codePage             1150
   acmeEmployeeCode     1102
   extensionAttribute3   870
-  codePage             1150
   (and 9 more only the server writes; -attrs lists every attribute)
 ...
 
@@ -238,6 +238,7 @@ refuse to start, and `check` says so (exit code 1) with the command that fixes i
 
 ```
 [user] 1150 entries: clone copies every attribute they hold that a client can write
+  (and 9 more only the server writes; -attrs lists every attribute)
 ...
 clone refuses to start: the target schema lacks 1 attributes the allow lists name:
   acmeEmployeeCode (ou, group, user, computer, contact)

@@ -47,7 +47,7 @@ func (s *Session) Check(ctx context.Context, o CheckOptions, out io.Writer) (int
 	}
 	// What a client can write on each kind's class, to keep out of the suggestion what only the server writes.
 	var writable map[string]map[string]bool
-	if prof.Writable != nil && !s.Job.AllWritable {
+	if prof.Writable != nil {
 		var classes []string
 		for _, k := range s.Job.Kinds {
 			classes = append(classes, k.Class)
