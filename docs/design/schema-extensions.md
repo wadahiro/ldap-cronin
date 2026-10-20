@@ -10,7 +10,7 @@ Connect), a newer Windows Server's. Two things were manual:
 1. **Giving the target their definitions.** The tutorial had the reader search the source's schema and write the
    `attributeSchema` / `classSchema` LDIF by hand.
 2. **Copying them.** The allow lists name what Samba has out of the box; everything else had to be found with
-   `list-attrs -config` and listed in `extra_include`.
+   `check` and listed in `extra_include`.
 
 ## 2. `ldap-cronin schema`
 

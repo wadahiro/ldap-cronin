@@ -203,24 +203,15 @@ type leftOut struct {
 func (s *Session) targetHas(ctx context.Context, dst directory.Directory) (plan.Job, leftOut, error) {
 	job := s.Job
 	var has map[string]bool
-	if s.Cfg.Attributes.All() && job.Profile.SchemaAttrs != nil {
-		got, ok, err := job.Profile.SchemaAttrs.Attributes(ctx, dst)
-		if err != nil {
+	if s.Cfg.Attributes.All() {
+		var err error
+		if has, err = s.targetSchema(ctx, dst); err != nil {
 			return job, leftOut{}, err
-		}
-		if ok {
-			has = got
 		}
 	}
-	refused := map[string]string{}
-	if job.Profile.Refusals != nil {
-		got, err := job.Profile.Refusals.Refused(ctx, dst)
-		if err != nil {
-			return job, leftOut{}, err
-		}
-		for name, why := range got {
-			refused[strings.ToLower(name)] = why
-		}
+	refused, err := s.targetRefusals(ctx, dst)
+	if err != nil {
+		return job, leftOut{}, err
 	}
 	var out leftOut
 	if has == nil && len(refused) == 0 {
@@ -255,6 +246,34 @@ func (s *Session) targetHas(ctx context.Context, dst directory.Directory) (plan.
 		sort.Slice(l, func(i, j int) bool { return strings.ToLower(l[i]) < strings.ToLower(l[j]) })
 	}
 	return job, out, nil
+}
+
+// targetSchema is the attributes the target's schema defines, by lowercase name; nil when it cannot say.
+func (s *Session) targetSchema(ctx context.Context, dst directory.Directory) (map[string]bool, error) {
+	if s.Job.Profile.SchemaAttrs == nil {
+		return nil, nil
+	}
+	has, ok, err := s.Job.Profile.SchemaAttrs.Attributes(ctx, dst)
+	if err != nil || !ok {
+		return nil, err
+	}
+	return has, nil
+}
+
+// targetRefusals is the attributes the target will not have written over LDAP, by lowercase name, with why.
+func (s *Session) targetRefusals(ctx context.Context, dst directory.Directory) (map[string]string, error) {
+	refused := map[string]string{}
+	if s.Job.Profile.Refusals == nil {
+		return refused, nil
+	}
+	got, err := s.Job.Profile.Refusals.Refused(ctx, dst)
+	if err != nil {
+		return nil, err
+	}
+	for name, why := range got {
+		refused[strings.ToLower(name)] = why
+	}
+	return refused, nil
 }
 
 // noteLeftOut lists, one per line, the attributes targetHas left out and why.

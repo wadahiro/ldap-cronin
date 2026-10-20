@@ -68,8 +68,14 @@ func TestTheCommandsSessionAgainstSamba(t *testing.T) {
 	}
 
 	var list bytes.Buffer
-	must(s.ListAttrs(ctx, true, &list))
+	code, err := s.Check(ctx, app.CheckOptions{Attrs: true, Config: "c.toml"}, &list)
+	must(err)
+	t.Logf("check -attrs:\n%s", list.String())
+	if code != app.CheckReady {
+		t.Errorf("nothing stops clone here, so check exits %d", code)
+	}
 	for _, want := range []string{
+		`(?m)^       extra_include = \[.*"carLicense".*\]$`,
 		`(?m)^\[user\] 1 entries under ` + regexp.QuoteMeta(scope) + `$`,
 		`(?m)^  not copied\s+carLicense\s+1$`, // the base schema: the target has it too, so no note
 		`(?m)^  copied\s+sAMAccountName\s+1$`,

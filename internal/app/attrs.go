@@ -1,7 +1,6 @@
 package app
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"sort"
@@ -27,70 +26,21 @@ type attrLine struct {
 	count              int
 }
 
-// ListAttrs reads the entries of each kind under base_dn and lists, per kind, the attributes they hold with the
-// number of entries holding each, and what clone does with it: copied (or masked), not copied (no allow list names
-// it: add it with [attributes] extra_include), or never (credentials and what the server manages). Nothing is left
-// out: the attributes of the allow lists no entry holds follow, their names run together per status (there are
-// hundreds with mode = "all"), but one with a note gets a line of its own. With withTarget the target's schema is
-// read too, and an attribute it lacks is noted. It is as much reading as a clone, and writes nothing.
-func (s *Session) ListAttrs(ctx context.Context, withTarget bool, out io.Writer) error {
-	usage, err := plan.Survey(ctx, s.Src, s.Job)
-	if err != nil {
-		return err
-	}
-	var targetHas map[string]bool
-	refused := map[string]string{}
-	if withTarget && (s.Job.Profile.SchemaAttrs != nil || s.Job.Profile.Refusals != nil) {
-		dst, closeTarget, err := s.Target(ctx)
-		if err != nil {
-			return err
-		}
-		defer closeTarget()
-		if s.Job.Profile.SchemaAttrs != nil {
-			has, ok, err := s.Job.Profile.SchemaAttrs.Attributes(ctx, dst)
-			if err != nil {
-				return err
-			}
-			if ok {
-				targetHas = has
-			}
-		}
-		if s.Job.Profile.Refusals != nil {
-			got, err := s.Job.Profile.Refusals.Refused(ctx, dst)
-			if err != nil {
-				return err
-			}
-			for name, why := range got {
-				refused[strings.ToLower(name)] = why
-			}
-		}
-	}
+// writeAttrTable lists, per kind, the attributes its entries hold with the number of entries holding each, and what
+// clone does with it: copied (or masked), not copied (no allow list names it), or never (credentials and what the
+// server manages). Nothing is left out: the attributes of the allow lists no entry holds follow, their names run
+// together per status (there are hundreds with mode = "all"), but one with a note gets a line of its own. With the
+// target's schema (targetHas, nil when not read) an attribute it lacks is noted, and so is one it refuses.
+func (s *Session) writeAttrTable(out io.Writer, usage []plan.Usage, targetHas map[string]bool, refused map[string]string) error {
 	_, marker, err := s.Cfg.MappingFor(s.Job.Profile)
 	if err != nil {
 		return err
 	}
-	prof := s.Job.Profile
-	creds, never := profile.Set(prof.PasswordAttrs), profile.Set(prof.NeverClone)
 	for _, u := range usage {
 		allowed := profile.Set(u.Kind.Attrs)
 		var lines []attrLine
-		status := func(key string) (string, string) {
-			switch {
-			case creds[key]:
-				return attrNever, "credential"
-			case never[key] || strings.EqualFold(key, prof.Identity.Attr()):
-				return attrNever, "managed by the server"
-			case marker != "" && strings.EqualFold(key, marker):
-				return attrMarker, "clone writes the marker here"
-			case allowed[key] && s.Job.Masker.Masked(key):
-				return attrMasked, ""
-			case allowed[key]:
-				return attrCopied, ""
-			}
-			return attrNotCopied, ""
-		}
 		noted := func(key string) (string, string) {
-			st, note := status(key)
+			st, note := s.attrStatus(allowed, key, marker)
 			if targetHas != nil && !targetHas[key] && st != attrNever {
 				note = strings.TrimPrefix(note+"; not in the target schema", "; ")
 			}
@@ -145,17 +95,25 @@ func (s *Session) ListAttrs(ctx context.Context, withTarget bool, out io.Writer)
 		}
 		fmt.Fprintln(out)
 	}
-	if s.Job.AllWritable {
-		fmt.Fprintln(out, "not copied: [attributes] exclude names it, or the source's schema does not let a client write it on the kind's class")
-	} else {
-		fmt.Fprintln(out, "not copied: no allow list names it; add it with [attributes] extra_include (or include.<kind>) to copy and compare it")
-	}
-	if !withTarget {
-		fmt.Fprintln(out, "add -target to see which of them the target's schema lacks")
-	} else if s.Job.Profile.SchemaCopy != nil {
-		fmt.Fprintln(out, "not in the target schema: ldap-cronin schema prints what the target's schema lacks as LDIF (-apply writes it)")
-	}
 	return nil
+}
+
+// attrStatus is what clone does with the attribute key (lowercase) of a kind whose allow list is allowed, and why.
+func (s *Session) attrStatus(allowed map[string]bool, key, marker string) (string, string) {
+	prof := s.Job.Profile
+	switch {
+	case profile.Set(prof.PasswordAttrs)[key]:
+		return attrNever, "credential"
+	case profile.Set(prof.NeverClone)[key] || strings.EqualFold(key, prof.Identity.Attr()):
+		return attrNever, "managed by the server"
+	case marker != "" && strings.EqualFold(key, marker):
+		return attrMarker, "clone writes the marker here"
+	case allowed[key] && s.Job.Masker.Masked(key):
+		return attrMasked, ""
+	case allowed[key]:
+		return attrCopied, ""
+	}
+	return attrNotCopied, ""
 }
 
 // writeNames writes names separated by commas, in lines of at most width columns that start with indent.

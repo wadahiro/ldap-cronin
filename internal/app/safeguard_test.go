@@ -129,11 +129,11 @@ func TestUserParametersIsLeftOutForASambaTarget(t *testing.T) {
 				t.Fatalf("diff: %d %v", code, err)
 			}
 			var attrs bytes.Buffer
-			if err := s.ListAttrs(ctx, true, &attrs); err != nil {
+			if _, err := s.Check(ctx, CheckOptions{Attrs: true, Config: "c.toml"}, &attrs); err != nil {
 				t.Fatal(err)
 			}
 			if strings.Contains(attrs.String(), "left out for this target: Samba refuses it") == c.copied {
-				t.Fatalf("list-attrs -target:\n%s", attrs.String())
+				t.Fatalf("check -attrs:\n%s", attrs.String())
 			}
 		})
 	}

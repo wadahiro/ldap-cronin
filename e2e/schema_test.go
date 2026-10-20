@@ -97,6 +97,20 @@ func TestSchemaCarriesAnExtensionThenCloneCopiesIt(t *testing.T) {
 	if _, err := s.Clone(ctx, false, &bytes.Buffer{}, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "ldap-cronin schema") {
 		t.Fatalf("before the schema, clone refuses and names the command: %v", err)
 	}
+	// check says so first, with the command to run, and suggests nothing only the server writes.
+	var report bytes.Buffer
+	code, err := s.Check(ctx, app.CheckOptions{Config: "c.toml"}, &report)
+	must(err)
+	t.Logf("check:\n%s", report.String())
+	if code != app.CheckBlocked || !strings.Contains(report.String(), "clone refuses to start: the target schema lacks 1 attributes the allow lists name:\n  "+attr) ||
+		!strings.Contains(report.String(), "ldap-cronin schema -config c.toml -apply") {
+		t.Fatalf("check before the schema (exit %d):\n%s", code, report.String())
+	}
+	for _, managed := range []string{"whenCreated", "uSNCreated", "instanceType", "objectSid", "dSCorePropagationData", "pwdLastSet"} {
+		if strings.Contains(report.String(), `"`+managed+`"`) {
+			t.Fatalf("check suggests %s, which only the server writes:\n%s", managed, report.String())
+		}
+	}
 	var ldif, log bytes.Buffer
 	must(s.Schema(ctx, false, &ldif, &log))
 	for _, want := range []string{"lDAPDisplayName: " + attr, "lDAPDisplayName: " + aux, "dn: CN=User," + schema + "\nchangetype: modify\nadd: auxiliaryClass\nauxiliaryClass: " + aux} {
@@ -112,6 +126,10 @@ func TestSchemaCarriesAnExtensionThenCloneCopiesIt(t *testing.T) {
 		t.Fatalf("applied, nothing of it is left to add:\n%s", log.String())
 	}
 
+	report.Reset()
+	if code, err := s.Check(ctx, app.CheckOptions{Config: "c.toml"}, &report); err != nil || code != app.CheckReady {
+		t.Fatalf("check after the schema (exit %d, %v):\n%s", code, err, report.String())
+	}
 	if _, err := s.Clone(ctx, false, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}

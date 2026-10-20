@@ -19,7 +19,7 @@ type Usage struct {
 
 // Survey reads every user attribute of the entries of each kind under base_dn and counts the entries holding each,
 // so a deployment sees which attributes (a schema extension of its own) it would leave behind. It reads as much as a
-// clone does, so it is a command of its own (list-attrs -config), never a step of clone or diff. No value is kept.
+// clone does, so it is a command of its own (check), never a step of clone or diff. No value is kept.
 func Survey(ctx context.Context, src directory.Directory, job Job) ([]Usage, error) {
 	out := make([]Usage, 0, len(job.Kinds))
 	for i := range job.Kinds {

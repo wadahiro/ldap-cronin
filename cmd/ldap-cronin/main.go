@@ -31,16 +31,18 @@ const (
 
 const usage = `Usage: ldap-cronin <command> [flags]
 
-Commands:
-  clone         Add or update the source directory's OUs, groups, users, computers and contacts in the target (AD or generic LDAP)
-  diff          Compare the source and the target (exit code 1 if there are differences)
-  list-attrs    Show the default attributes (allow list) per object type (-profile ad|ldap); with -config, read the
-                source and list the attributes its entries hold, copied or not (-target: and the target's schema)
+Commands, in the order they are used:
+  dump          Read a source (read only) into one LDIF file that check, clone, diff and the rest take as [source]
+                ldif, so they never connect to production. Takes no config file: -url, -bind-dn, -base-dn, -o
+  lab           Start an AD-compatible Samba4 on docker for verification, and take and restore snapshots (lab help)
+  check         Say what clone would do, writing nothing: the attributes it would leave behind (with the
+                [attributes] line that copies them), what the target's schema lacks and refuses, the next steps.
+                Exit code 1 when clone would refuse to start
   schema        Print as LDIF the attributes and classes the source's schema has and the target's lacks (AD); -apply
                 writes them to the target instead
-  dump          Read a source (read only) into one LDIF file that clone, diff and the rest take as [source] ldif, so
-                they never connect to production. Takes no config file: -url, -bind-dn, -base-dn, -o (see Flags)
-  lab           Start an AD-compatible Samba4 on docker for verification, and take and restore snapshots (lab help)
+  clone         Add or update the source directory's OUs, groups, users, computers and contacts in the target (AD or generic LDAP)
+  diff          Compare the source and the target (exit code 1 if there are differences)
+  list-attrs    Show the default allow lists per object type (-profile ad|ldap), without reading anything
   version       Show the version
 
 Flags (clone/diff):
@@ -66,6 +68,11 @@ Flags (dump):
   -o <file>        The dump (.gz: compressed). Written to a temporary file and renamed when complete
   -mask <a,b>      Attributes masked in the file itself (-mask-value, default ********)
   -ca-file <file>, -insecure-skip-verify, -start-tls, -timeout <d>   The connection, as in [source]
+
+Flags (check):
+  -config <file>   TOML config file (default: config.toml)
+  -no-target       Read the source alone (a machine that reaches only production, a dump before the lab exists)
+  -attrs           Also list every attribute of every kind, held or named, and what clone does with it
 
 Flags (schema):
   -config <file>   TOML config file (default: config.toml); reads the schemas of [source] and [target]
@@ -111,6 +118,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		err = runClone(ctx, args[1:], stdout)
 	case "diff":
 		code, err = runDiff(ctx, args[1:], stdout)
+	case "check":
+		code, err = runCheck(ctx, args[1:], stdout)
 	case "list-attrs":
 		err = listAttrs(ctx, args[1:], stdout)
 	case "schema":
@@ -347,24 +356,32 @@ func runDump(ctx context.Context, args []string, log io.Writer) error {
 	return err
 }
 
-func listAttrs(ctx context.Context, args []string, out io.Writer) error {
+func runCheck(ctx context.Context, args []string, out io.Writer) (int, error) {
+	fs := flag.NewFlagSet("check", flag.ContinueOnError)
+	cfgPath := fs.String("config", "config.toml", "config file")
+	noTarget := fs.Bool("no-target", false, "read the source alone")
+	attrs := fs.Bool("attrs", false, "also list every attribute of every kind and what clone does with it")
+	if err := fs.Parse(args); err != nil {
+		return 0, err
+	}
+	s, err := openSession(ctx, *cfgPath)
+	if err != nil {
+		return 0, err
+	}
+	defer s.Close()
+	return s.Check(ctx, app.CheckOptions{NoTarget: *noTarget, Attrs: *attrs, Config: *cfgPath}, out)
+}
+
+func listAttrs(_ context.Context, args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("list-attrs", flag.ContinueOnError)
-	name := fs.String("profile", profile.NameAD, "server type: ad or ldap (without -config)")
-	cfgPath := fs.String("config", "", "config file: read the source and list the attributes its entries hold")
-	target := fs.Bool("target", false, "with -config: also read the target's schema")
+	name := fs.String("profile", profile.NameAD, "server type: ad or ldap")
+	cfgPath := fs.String("config", "", "moved to check")
+	fs.Bool("target", false, "moved to check")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *cfgPath != "" {
-		s, err := openSession(ctx, *cfgPath)
-		if err != nil {
-			return err
-		}
-		defer s.Close()
-		return s.ListAttrs(ctx, *target, out)
-	}
-	if *target {
-		return errors.New("-target needs -config")
+		return fmt.Errorf("list-attrs reads nothing now: ldap-cronin check -config %s says what the source's entries hold and clone leaves behind (-attrs: every attribute)", *cfgPath)
 	}
 	p, err := profile.ByName(*name)
 	if err != nil {

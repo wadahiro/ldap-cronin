@@ -284,17 +284,26 @@ func (p *Plan) Ancestor(ctx context.Context, a string) (Node, error) {
 // attribute neither schema defines is no problem (no value is ever read), and a schema that cannot be read (the
 // dry-run, test directories) skips the check.
 func CheckTargetSchema(ctx context.Context, src, dst directory.Directory, job Job) error {
+	missing, err := MissingOnTarget(ctx, src, dst, job)
+	if err != nil || len(missing) == 0 {
+		return err
+	}
+	return fmt.Errorf("the target schema lacks attributes that the source defines and the allow lists name: %s; add them to the target's schema (ldap-cronin schema prints them as LDIF, -apply writes them), or leave them out with [attributes] exclude; ldap-cronin check names every step", strings.Join(missing, ", "))
+}
+
+// MissingOnTarget names the attributes CheckTargetSchema refuses, as "name (kinds)", sorted.
+func MissingOnTarget(ctx context.Context, src, dst directory.Directory, job Job) ([]string, error) {
 	lister := job.Profile.SchemaAttrs
 	if lister == nil {
-		return nil
+		return nil, nil
 	}
 	have, ok, err := lister.Attributes(ctx, dst)
 	if err != nil || !ok {
-		return err
+		return nil, err
 	}
 	defined, ok, err := lister.Attributes(ctx, src)
 	if err != nil || !ok {
-		return err
+		return nil, err
 	}
 	missing := map[string][]string{} // attribute -> kinds
 	var names []string
@@ -321,15 +330,12 @@ func CheckTargetSchema(ctx context.Context, src, dst directory.Directory, job Jo
 	for _, a := range job.Profile.AncestorAttrs {
 		note(a, "parents")
 	}
-	if len(names) == 0 {
-		return nil
-	}
 	sort.Strings(names)
 	parts := make([]string, len(names))
 	for i, n := range names {
 		parts[i] = fmt.Sprintf("%s (%s)", n, strings.Join(missing[n], ", "))
 	}
-	return fmt.Errorf("the target schema lacks attributes that the source defines and the allow lists name: %s; add them to the target's schema (ldap-cronin schema prints them as LDIF, -apply writes them), or leave them out with [attributes] exclude", strings.Join(parts, ", "))
+	return parts, nil
 }
 
 // Unselected counts, by structural object class, the entries under base_dn that clone does not copy: those of no
