@@ -13,7 +13,9 @@ import (
 
 	"github.com/wadahiro/ldap-cronin/internal/config"
 	"github.com/wadahiro/ldap-cronin/internal/directory"
+	"github.com/wadahiro/ldap-cronin/internal/dn"
 	"github.com/wadahiro/ldap-cronin/internal/ldapdir"
+	"github.com/wadahiro/ldap-cronin/internal/ldifdir"
 	"github.com/wadahiro/ldap-cronin/internal/plan"
 	"github.com/wadahiro/ldap-cronin/internal/profile"
 	"github.com/wadahiro/ldap-cronin/internal/progress"
@@ -95,11 +97,7 @@ const sourceConns = 2
 // Open connects to the source, resolves the profile (asking the source's root DSE for auto) and builds the job.
 // The target is not touched: a dry-run and a native import never connect to it over LDAP.
 func Open(ctx context.Context, cfg *config.Config, secrets Secrets, dial Dialer, warn io.Writer) (*Session, error) {
-	pw, err := secrets.SourceBind()
-	if err != nil {
-		return nil, err
-	}
-	conn, err := dial(ctx, cfg.Source, pw, sourceConns)
+	conn, err := openSource(ctx, cfg, secrets, dial, warn)
 	if err != nil {
 		return nil, err
 	}
@@ -123,6 +121,31 @@ func Open(ctx context.Context, cfg *config.Config, secrets Secrets, dial Dialer,
 		}
 	}
 	return s, nil
+}
+
+// openSource connects to the source server, or reads the dump [source] ldif names: no password is asked then,
+// and the dump's server and time are said on warn, as what diff compares with is that moment of production.
+func openSource(ctx context.Context, cfg *config.Config, secrets Secrets, dial Dialer, warn io.Writer) (Conn, error) {
+	if cfg.Source.LDIF == "" {
+		pw, err := secrets.SourceBind()
+		if err != nil {
+			return nil, err
+		}
+		return dial(ctx, cfg.Source, pw, sourceConns)
+	}
+	d, err := ldifdir.Open(cfg.Source.LDIF)
+	if err != nil {
+		return nil, err
+	}
+	m := d.Meta()
+	if m.BaseDN != "" && !dn.Equal(cfg.Scope.BaseDN, m.BaseDN) && !dn.IsDescendant(cfg.Scope.BaseDN, m.BaseDN) {
+		return nil, fmt.Errorf("[scope] base_dn %s is not in the dump, which holds %s", cfg.Scope.BaseDN, m.BaseDN)
+	}
+	fmt.Fprintf(warn, "source: the dump %s of %s, taken %s (%d entries)\n", cfg.Source.LDIF, m.Server, m.DumpedAt, m.Entries)
+	if len(m.Masked) > 0 {
+		fmt.Fprintf(warn, "  masked in the dump: %s\n", strings.Join(m.Masked, ", "))
+	}
+	return d, nil
 }
 
 // writableAttrs gives each kind every attribute the source's schema lets a client write on its class
@@ -262,7 +285,11 @@ func (s *Session) confirmWrite(ctx context.Context, dst directory.Directory, wha
 	fmt.Fprintf(s.Warn, "  target (written): %s%s\n", s.Cfg.Target.URL, serverName(ctx, dst))
 	fmt.Fprintf(s.Warn, "    bind_dn: %s\n", s.Cfg.Target.BindDN)
 	fmt.Fprintf(s.Warn, "    base_dn: %s\n", s.Job.BaseDN)
-	fmt.Fprintf(s.Warn, "  source (read only): %s%s\n", s.Cfg.Source.URL, serverName(ctx, s.Src))
+	source := s.Cfg.Source.URL
+	if s.Cfg.Source.LDIF != "" {
+		source = "the dump " + s.Cfg.Source.LDIF
+	}
+	fmt.Fprintf(s.Warn, "  source (read only): %s%s\n", source, serverName(ctx, s.Src))
 	if !s.Confirm("Write to this target? [y/N]: ") {
 		return errors.New("aborted: nothing was written (pass -y to skip the confirmation)")
 	}

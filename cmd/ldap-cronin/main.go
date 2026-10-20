@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/wadahiro/ldap-cronin/internal/app"
@@ -15,6 +16,7 @@ import (
 	"github.com/wadahiro/ldap-cronin/internal/config"
 	"github.com/wadahiro/ldap-cronin/internal/diff"
 	"github.com/wadahiro/ldap-cronin/internal/lab"
+	"github.com/wadahiro/ldap-cronin/internal/ldapdir"
 	"github.com/wadahiro/ldap-cronin/internal/profile"
 	"github.com/wadahiro/ldap-cronin/internal/progress"
 	"github.com/wadahiro/ldap-cronin/internal/prompt"
@@ -36,6 +38,8 @@ Commands:
                 source and list the attributes its entries hold, copied or not (-target: and the target's schema)
   schema        Print as LDIF the attributes and classes the source's schema has and the target's lacks (AD); -apply
                 writes them to the target instead
+  dump          Read a source (read only) into one LDIF file that clone, diff and the rest take as [source] ldif, so
+                they never connect to production. Takes no config file: -url, -bind-dn, -base-dn, -o (see Flags)
   lab           Start an AD-compatible Samba4 on docker for verification, and take and restore snapshots (lab help)
   version       Show the version
 
@@ -51,6 +55,14 @@ Flags (clone/diff):
   -max-values <n>  (diff only, text) Show at most n values per direction of a multi-valued difference (default: 0, all)
   -progress <m>    auto (default): on a terminal a status kept at the bottom of the screen (phase, count, rate, time
                    left) while the log scrolls above it, elsewhere a line every 10s; plain: the lines; off
+
+Flags (dump):
+  -url <url>, -bind-dn <dn>   The source (the password: LDAP_CRONIN_SOURCE_PASSWORD, or asked)
+  -base-dn <dn>    What to dump: the entries under it, the root of its naming context and the entries in between, the
+                   entries outside it its references name (and their parents), the schema; credentials never
+  -o <file>        The dump (.gz: compressed). Written to a temporary file and renamed when complete
+  -mask <a,b>      Attributes masked in the file itself (-mask-value, default ********)
+  -ca-file <file>, -insecure-skip-verify, -start-tls, -timeout <d>   The connection, as in [source]
 
 Flags (schema):
   -config <file>   TOML config file (default: config.toml); reads the schemas of [source] and [target]
@@ -100,6 +112,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		err = listAttrs(ctx, args[1:], stdout)
 	case "schema":
 		err = runSchema(ctx, args[1:], stdout, stderr)
+	case "dump":
+		err = runDump(ctx, args[1:], stderr)
 	case "lab":
 		err = runLab(ctx, args[1:], stdout, stderr)
 	case "version", "-version", "--version":
@@ -286,6 +300,44 @@ func runSchema(ctx context.Context, args []string, out, log io.Writer) error {
 		log = out
 	}
 	return s.Schema(ctx, *apply, out, log)
+}
+
+func runDump(ctx context.Context, args []string, log io.Writer) error {
+	fs := flag.NewFlagSet("dump", flag.ContinueOnError)
+	url := fs.String("url", "", "the source: ldap:// or ldaps://")
+	bindDN := fs.String("bind-dn", "", "the DN to bind as (read access is enough)")
+	baseDN := fs.String("base-dn", "", "what to dump")
+	out := fs.String("o", "", "the dump file (.gz: compressed)")
+	maskAttrs := fs.String("mask", "", "attributes masked in the dump, comma separated")
+	maskValue := fs.String("mask-value", config.DefaultMaskValue, "the value masked attributes get")
+	caFile := fs.String("ca-file", "", "CA certificate (PEM) for the server's")
+	insecure := fs.Bool("insecure-skip-verify", false, "do not verify the server's certificate (tests only)")
+	startTLS := fs.Bool("start-tls", false, "StartTLS on an ldap:// URL")
+	timeout := fs.Duration("timeout", config.DefaultTimeout, "bound on each LDAP operation (0: none)")
+	progressMode := progressFlag(fs)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *url == "" || *bindDN == "" || *baseDN == "" || *out == "" {
+		return errors.New("dump needs -url, -bind-dn, -base-dn and -o")
+	}
+	mode, err := progress.ParseMode(*progressMode)
+	if err != nil {
+		return err
+	}
+	var masked []string
+	for _, a := range strings.Split(*maskAttrs, ",") {
+		if a = strings.TrimSpace(a); a != "" {
+			masked = append(masked, a)
+		}
+	}
+	display, bar := progress.Start(mode, os.Stderr, "dump ← "+*url)
+	defer display.Stop()
+	_, err = app.Dump(ctx, app.DumpOptions{
+		Conn:   ldapdir.ConnConfig{URL: *url, BindDN: *bindDN, CAFile: *caFile, InsecureSkipVerify: *insecure, StartTLS: *startTLS, Timeout: *timeout},
+		BaseDN: *baseDN, Out: *out, MaskValue: *maskValue, Masked: masked, Version: version, Progress: bar,
+	}, secrets.SourceBind, display.Writer(log))
+	return err
 }
 
 func listAttrs(ctx context.Context, args []string, out io.Writer) error {

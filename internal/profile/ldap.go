@@ -61,6 +61,7 @@ var LDAP = Profile{
 		Remedy: "the relax control needs manage access to the entries (or the rootdn) on OpenLDAP; " +
 			"grant it, or set [mapping] mode = \"marker\" with an attribute, \"file\" or \"off\"",
 	},
+	Operational: []string{"entryUUID", "createTimestamp", "modifyTimestamp", "creatorsName", "modifiersName", "structuralObjectClass"},
 	Refs:        subschema{},
 	SchemaAttrs: subschema{},
 	Root:        namingContextRoot{},

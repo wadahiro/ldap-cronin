@@ -19,6 +19,7 @@ The name is a pun on "clone" and "ronin", a masterless samurai: cRONIN is a **c*
 | [docs/generic-ldap.md](docs/generic-ldap.md) | Generic LDAP servers (OpenLDAP and others): passwords, preserved `entryUUID`, limitations |
 | [docs/diff.md](docs/diff.md) | `diff` output and comparison rules (every pattern), rename and move detection |
 | [docs/lab.md](docs/lab.md) | The test lab (`lab`): usage, **taking and restoring snapshots**, using the offline package |
+| [docs/dump.md](docs/dump.md) | `dump`: read production once into a file, and clone and diff from it |
 | [docs/operations.md](docs/operations.md) | Large data sets, load on the source and target AD, memory, performance figures |
 | [offline/README-OFFLINE.md](offline/README-OFFLINE.md) | Procedure for air-gapped environments (shipped inside the offline package) |
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | For developers: layout, build and test, CI, design decisions |
@@ -33,6 +34,7 @@ The name is a pun on "clone" and "ronin", a masterless samurai: cRONIN is a **c*
 | `list-attrs [-profile ad\|ldap]` | Show the default attributes (allow list) per object type |
 | `list-attrs -config f [-target]` | Read the source and list, per object type, the attributes its entries hold with how many hold each, and whether `clone` copies them; a schema extension of your own shows as `not copied`. Then the attributes of the allow lists that no entry holds, by name. `-target` also notes the attributes the target's schema lacks |
 | `schema -config f [-apply [-y]]` | **AD**: compare the source's schema with the target's and print what the target lacks (attributes, classes, what a class both have allows) as LDIF for `ldapmodify` or `ldifde`; `-apply` writes it, after the same `[y/N]` question as `clone`. For a lab before its first clone, or as a file to review for a test AD |
+| `dump -url u -bind-dn d -base-dn b -o f [-mask a,b]` | Read a source, read only, into one LDIF file (credentials never): `[source] ldif = "f"` then makes clone, diff and the rest read it instead of the server. See [docs/dump.md](docs/dump.md) |
 | `lab up / down / reset / status` | Start and stop a test lab on docker: Samba4 AD, or OpenLDAP with `--profile ldap`. See [docs/lab.md](docs/lab.md) |
 | `lab snapshot / snapshots / restore` | Take, list and restore snapshots of the lab data |
 | `version` | Print the version |

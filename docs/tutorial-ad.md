@@ -159,6 +159,22 @@ target (`ldapmodify -H ldaps://... -D <admin> -W -f clone.ldif`), and keep the f
 It does not read the target, so what the target lacks or refuses (`mode = "all"`, `userParameters` on Samba) is
 still in it; `clone` leaves those out by itself.
 
+### Read production once (optional)
+
+Every `clone` and `diff` above reads production. To read it once, at a time chosen for it, take a dump and point
+`[source]` at the file; the steps that follow are the same, and never connect to production
+([dump.md](dump.md)):
+
+```sh
+./bin/ldap-cronin dump -url ldaps://dc01.ad.example.com:636 -bind-dn 'CN=svc-ldap-cronin,OU=Service Accounts,DC=ad,DC=example,DC=com' \
+  -base-dn 'OU=IDM,DC=ad,DC=example,DC=com' -o prod.ldif.gz
+```
+
+```toml
+[source]
+ldif = "prod.ldif.gz"
+```
+
 ## Part 1: the Samba4 lab
 
 ### 4. Start a lab with the source's domain

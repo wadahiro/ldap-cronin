@@ -20,6 +20,10 @@ The tool **only reads from the source: it never writes, and it never issues a qu
 - Other reads: the root DSE and the schema (to detect DN reference attributes, a few hundred entries), reading parent containers (a few entries), and range retrieval for groups with more than 1500 members.
 - A slow target keeps the source search open longer (reading and writing are interleaved).
 - The source is not searched in parallel, to keep its load down.
+- To read production once and never during a clone, take a dump (`ldap-cronin dump`, [dump.md](dump.md)): the
+  clones and diffs that follow read the file. A dump is a subtree search under `base_dn`, one for the schema, and a
+  read per entry outside `base_dn` that a reference names. Reading it holds none of the entries in memory, only an
+  index of where each starts (under 2 MB for 100,000 entries); a `.gz` dump is expanded to a temporary file first.
 
 ## Load on the target AD (clone)
 

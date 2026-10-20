@@ -30,10 +30,10 @@ func TestParseAppliesDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(c.Scope.Objects) != 0 || c.Run.Workers != defaultWorkers || c.Mask.Value != defaultMaskValue {
+	if len(c.Scope.Objects) != 0 || c.Run.Workers != defaultWorkers || c.Mask.Value != DefaultMaskValue {
 		t.Fatalf("%+v", c)
 	}
-	if c.Source.Timeout() != defaultTimeout || c.Target.Timeout() != defaultTimeout {
+	if c.Source.Timeout() != DefaultTimeout || c.Target.Timeout() != DefaultTimeout {
 		t.Fatalf("timeouts %v %v", c.Source.Timeout(), c.Target.Timeout())
 	}
 }
@@ -67,6 +67,8 @@ func TestParseRejectsInvalid(t *testing.T) {
 		"all with a list":            valid + "\n[attributes]\nmode = \"all\"\nextra_include = [\"proxyAddresses\"]\n",
 		"all with include":           valid + "\n[attributes]\nmode = \"all\"\n[attributes.include]\nuser = [\"mail\"]\n",
 		"unknown configuration_refs": strings.Replace(valid, "[scope]", "[scope]\nconfiguration_refs = \"create\"", 1),
+		"a dump with a server":       strings.Replace(valid, "[source]", "[source]\nldif = \"prod.ldif\"", 1),
+		"a dump as the target":       strings.Replace(valid, "[target]", "[target]\nldif = \"prod.ldif\"", 1),
 		"configuration_refs without references = clone": strings.Replace(valid, "[scope]",
 			"[scope]\nreferences = \"existing\"\nconfiguration_refs = \"clone\"", 1),
 	}
@@ -74,6 +76,10 @@ func TestParseRejectsInvalid(t *testing.T) {
 		if _, err := Parse([]byte(raw)); err == nil {
 			t.Errorf("%s: expected error", name)
 		}
+	}
+	dumped := "[source]\nldif = \"prod.ldif\"\n" + valid[strings.Index(valid, "[target]"):]
+	if _, err := Parse([]byte(dumped)); err != nil {
+		t.Errorf("a dump as the source needs no url nor bind_dn: %v", err)
 	}
 	if _, err := Parse([]byte(strings.Replace(valid, "[scope]", "[scope]\nconfiguration_refs = \"clone\"", 1))); err != nil {
 		t.Errorf("configuration_refs = clone with the default references: %v", err)

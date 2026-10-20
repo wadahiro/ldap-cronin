@@ -184,6 +184,7 @@ func TestErrorsExitWith2(t *testing.T) {
 		"unknown command":  {context.Background(), []string{"klone"}, `unknown command "klone"`},
 		"missing config":   {context.Background(), []string{"diff", "-config", filepath.Join(t.TempDir(), "none.toml")}, "error:"},
 		"unknown flag":     {context.Background(), []string{"clone", "-bogus"}, "error:"},
+		"dump without -o":  {context.Background(), []string{"dump", "-url", "ldaps://src:636", "-bind-dn", "CN=a", "-base-dn", base}, "needs -url, -bind-dn, -base-dn and -o"},
 		"native + dry-run": {context.Background(), []string{"clone", "-native", "-dry-run", "-config", cfg}, "cannot be used together"},
 		"interrupted":      {cancelled, []string{"clone", "-config", cfg}, "interrupted"},
 	} {

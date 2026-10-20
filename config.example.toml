@@ -7,6 +7,7 @@ bind_dn = "CN=Administrator,CN=Users,DC=ad,DC=example,DC=com"
 # insecure_skip_verify = true
 # start_tls = true             # to use StartTLS on ldap://
 # timeout = "2m"               # per LDAP operation; a hung server fails the run instead of blocking it. Default 2m, "0" for no limit
+# ldif = "prod.ldif.gz"        # instead of all of the above: a dump (ldap-cronin dump), read instead of the server (docs/dump.md)
 
 [target]                       # clone target (Samba4 AD / real AD / generic LDAP). Setting AD user passwords requires LDAPS
 url = "ldaps://localhost:12636"

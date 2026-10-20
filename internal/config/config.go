@@ -4,6 +4,7 @@ package config
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -19,14 +20,18 @@ import (
 )
 
 const (
-	defaultMaskValue = "********"
+	// DefaultMaskValue is what a masked attribute gets unless [mask] value says otherwise.
+	DefaultMaskValue = "********"
 	defaultWorkers   = 8
-	// defaultTimeout is generous because a single modify of a large group on Samba can take seconds; its job is only
+	// DefaultTimeout is generous because a single modify of a large group on Samba can take seconds; its job is only
 	// to turn a hung server into an error.
-	defaultTimeout = 2 * time.Minute
+	DefaultTimeout = 2 * time.Minute
 )
 
 type Endpoint struct {
+	// LDIF ([source] only) is a dump (ldap-cronin dump) read instead of a server: url, bind_dn and the rest are then
+	// not given, and no password is asked.
+	LDIF               string `toml:"ldif"`
 	URL                string `toml:"url"`
 	BindDN             string `toml:"bind_dn"`
 	CAFile             string `toml:"ca_file"`
@@ -154,7 +159,7 @@ func Parse(raw []byte) (*Config, error) {
 		c.Run.Workers = defaultWorkers
 	}
 	if c.Mask.Value == "" {
-		c.Mask.Value = defaultMaskValue
+		c.Mask.Value = DefaultMaskValue
 	}
 	if c.Mapping.Mode == "" {
 		c.Mapping.Mode = MappingAuto
@@ -163,7 +168,7 @@ func Parse(raw []byte) (*Config, error) {
 		c.Mapping.File = defaultMappingFile
 	}
 	for name, ep := range map[string]*Endpoint{"source": &c.Source, "target": &c.Target} {
-		ep.timeout = defaultTimeout
+		ep.timeout = DefaultTimeout
 		if ep.TimeoutText != "" {
 			d, err := time.ParseDuration(ep.TimeoutText)
 			if err != nil || d < 0 {
@@ -214,7 +219,16 @@ func (c *Config) validate() error {
 	default:
 		return fmt.Errorf("[scope] configuration_refs must be %q or %q, got %q", plan.ConfigurationRefsSkip, plan.ConfigurationRefsClone, c.Scope.ConfigurationRefs)
 	}
+	if c.Target.LDIF != "" {
+		return errors.New("[target] ldif: a dump can only be a source")
+	}
+	if c.Source.LDIF != "" && (c.Source.URL != "" || c.Source.BindDN != "" || c.Source.CAFile != "" || c.Source.StartTLS || c.Source.InsecureSkipVerify) {
+		return errors.New("[source] ldif reads a dump instead of a server: leave out url, bind_dn and the connection settings")
+	}
 	for name, ep := range map[string]Endpoint{"source": c.Source, "target": c.Target} {
+		if ep.LDIF != "" {
+			continue
+		}
 		u, err := url.Parse(ep.URL)
 		if err != nil || (u.Scheme != "ldap" && u.Scheme != "ldaps") || u.Host == "" {
 			return fmt.Errorf("[%s] url must be ldap:// or ldaps:// URL, got %q", name, ep.URL)
@@ -226,7 +240,7 @@ func (c *Config) validate() error {
 			return fmt.Errorf("[%s] start_tls cannot be combined with ldaps://", name)
 		}
 	}
-	if strings.EqualFold(strings.TrimRight(c.Source.URL, "/"), strings.TrimRight(c.Target.URL, "/")) {
+	if c.Source.LDIF == "" && strings.EqualFold(strings.TrimRight(c.Source.URL, "/"), strings.TrimRight(c.Target.URL, "/")) {
 		return fmt.Errorf("source and target are the same server (%s)", c.Source.URL)
 	}
 	if c.Scope.BaseDN == "" {

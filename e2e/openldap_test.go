@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -17,7 +18,9 @@ import (
 	"github.com/wadahiro/ldap-cronin/internal/clone"
 	"github.com/wadahiro/ldap-cronin/internal/config"
 	"github.com/wadahiro/ldap-cronin/internal/diff"
+	"github.com/wadahiro/ldap-cronin/internal/dump"
 	"github.com/wadahiro/ldap-cronin/internal/ldapdir"
+	"github.com/wadahiro/ldap-cronin/internal/ldifdir"
 	"github.com/wadahiro/ldap-cronin/internal/profile"
 )
 
@@ -201,6 +204,30 @@ base_dn = %q
 	diffs, err := runDiffWith(opt, src, dst, nil)
 	if err != nil || len(diffs) != 0 {
 		t.Fatalf("diff after clone: %v %+v", err, diffs)
+	}
+
+	// A dump of the source stands for it: entryUUID and the creation metadata, which "*" does not return, are read by
+	// name and kept so; diff against the dump finds nothing, and a clone from it writes nothing more.
+	var dumped bytes.Buffer
+	if _, err := dump.Write(context.Background(), src, prof, dump.Options{BaseDN: olClone, Server: "ldap://openldap"}, &dumped); err != nil {
+		t.Fatal(err)
+	}
+	dumpPath := filepath.Join(t.TempDir(), "openldap.ldif")
+	if err := os.WriteFile(dumpPath, dumped.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fromDump, err := ldifdir.Open(dumpPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res, why, err := diff.ChooseResolver(context.Background(), fromDump, dst, opt, nil); err != nil || res == nil {
+		t.Fatalf("the preserved entryUUID, read from the dump: %q %v", why, err)
+	} else if diffs, err := runDiffWith(opt, fromDump, dst, res); err != nil || len(diffs) != 0 {
+		t.Fatalf("diff against the dump: %v %+v", err, diffs)
+	}
+	again, err := clone.Run(context.Background(), fromDump, dst, opt, clone.Options{UserPassword: "Fixed-Passw0rd", Workers: 4, Preserve: true, Operational: true}, &bytes.Buffer{})
+	if err != nil || again.Added != 0 || again.Updated != 0 {
+		t.Fatalf("a clone from the dump finds everything in place: %+v %v", again, err)
 	}
 
 	login := func(user, pw string) error {

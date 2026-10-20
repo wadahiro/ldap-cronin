@@ -235,6 +235,10 @@ type Profile struct {
 	Identity identity.Scheme
 	// Preserve is nil when the target cannot be given the source identifiers over LDAP.
 	Preserve *Preserver
+	// Operational are the attributes the tool reads from the source by name, as "*" does not return them (the
+	// identifier and creation metadata of a generic server). A dump reads them so, and records them, so that "*"
+	// from the dump leaves them out as the server does.
+	Operational []string
 	// Marker is the default attribute for the marker ([mapping] attribute); empty when the profile has none.
 	Marker string
 	// MarkerCheck is nil when the profile cannot read what the target schema says about an attribute.
