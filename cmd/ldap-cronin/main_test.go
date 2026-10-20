@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"strings"
@@ -128,6 +129,45 @@ func TestDryRunStdoutIsOnlyLDIF(t *testing.T) {
 	}
 	if dst.Lookup(alice) != nil {
 		t.Fatal("a dry-run must not write")
+	}
+}
+
+// [accounts] fixed_password gives the fixed password when the environment does not. A dry-run prints it only with
+// -with-password, and the LDIF then needs no clone after it; clone uses it without asking.
+func TestTheFixedPasswordFromTheConfig(t *testing.T) {
+	_, dst, cfg := cli(t)
+	t.Setenv(envUserPassword, "")
+	raw, err := os.ReadFile(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg, append(raw, []byte("[accounts]\nfixed_password = \"Cfg-Passw0rd!\"\n")...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	encoded := func(pw string) string { return base64.StdEncoding.EncodeToString([]byte(profile.EncodePassword(pw))) }
+	ctx := context.Background()
+
+	code, out, errOut := runCLI(t, ctx, "clone", "-dry-run", "-config", cfg)
+	if code != 0 || strings.Contains(out, encoded("Cfg-Passw0rd!")) || strings.Contains(out, "Cfg-Passw0rd!") {
+		t.Fatalf("without -with-password the LDIF has no password: %d\n%s%s", code, out, errOut)
+	}
+	code, out, errOut = runCLI(t, ctx, "clone", "-dry-run", "-with-password", "-config", cfg)
+	if code != 0 || !strings.Contains(out, encoded("Cfg-Passw0rd!")) || !strings.Contains(out, "replace: userAccountControl") {
+		t.Fatalf("with -with-password the LDIF has the password and what follows it: %d\n%s%s", code, out, errOut)
+	}
+	t.Setenv(envUserPassword, "Env-Passw0rd!")
+	if _, out, _ := runCLI(t, ctx, "clone", "-dry-run", "-with-password", "-config", cfg); !strings.Contains(out, encoded("Env-Passw0rd!")) {
+		t.Fatalf("the environment comes before the config:\n%s", out)
+	}
+	t.Setenv(envUserPassword, "")
+	if code, _, errOut := runCLI(t, ctx, "clone", "-with-password", "-config", cfg); code != exitError || !strings.Contains(errOut, "-with-password is for -dry-run") {
+		t.Fatalf("-with-password without -dry-run: %d %s", code, errOut)
+	}
+	if code, _, errOut := runCLI(t, ctx, "clone", "-y", "-config", cfg); code != 0 {
+		t.Fatalf("clone: %d %s", code, errOut)
+	}
+	if got := dst.Lookup(alice).Values("unicodePwd"); len(got) != 1 || got[0] != profile.EncodePassword("Cfg-Passw0rd!") {
+		t.Fatalf("clone takes the password from the config: %q", got)
 	}
 }
 

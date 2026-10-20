@@ -43,6 +43,13 @@ func (s *Session) Clone(ctx context.Context, dryRun bool, out, log io.Writer) (*
 		opt.Marker = &m
 	}
 	var dst directory.Directory = dryrun.New(out, s.Job.Profile)
+	if dryRun && s.WithPassword {
+		if opt.UserPassword, err = s.secrets.UserPassword(); err != nil {
+			return nil, err
+		}
+		dst = dryrun.WithPassword(out, s.Job.Profile)
+		fmt.Fprintln(log, "note: the LDIF carries the fixed password of the cloned users; keep it where the password may be")
+	}
 	job := s.Job
 	if !dryRun {
 		var err error

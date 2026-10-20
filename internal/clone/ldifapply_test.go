@@ -180,3 +180,62 @@ func dryRunEqualsClone(t *testing.T, src, dst *fakedir.Dir, job plan.Job, preser
 		t.Fatalf("the loaded LDIF must give what clone gives:\n%s", strings.Join(diffs, "\n"))
 	}
 }
+
+// With the password, the dry-run LDIF alone gives what clone gives: ldapmodify loads users with the fixed password
+// and their source userAccountControl, and diff finds nothing without a clone run after it. Only the attribute the
+// fixed password goes to is printed; the other password attributes stay redacted.
+func TestDryRunLDIFWithThePasswordNeedsNoCloneAfterIt(t *testing.T) {
+	for seed := int64(1); seed <= 20; seed++ {
+		src := randomTree(newRand(seed))
+		dst := fakedir.New(domain)
+		dst.IDPrefix = 0xd1
+		job := options(t, allKinds()...)
+		root, err := identity.RootKey(context.Background(), src, job.BaseDN, job.Profile.Identity)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m := identity.NewMarker(job.Profile.Marker, root)
+		opt := Options{UserPassword: "Fixed1!", Workers: 4, Marker: &m}
+		var out bytes.Buffer
+		if _, err := Run(context.Background(), src, dryrun.WithPassword(&out, job.Profile), job, opt, &bytes.Buffer{}); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(out.String(), base64.StdEncoding.EncodeToString([]byte(profile.EncodePassword("Fixed1!")))) {
+			t.Fatalf("seed %d: the LDIF must carry the password:\n%s", seed, out.String())
+		}
+		if strings.Contains(out.String(), "# changetype") {
+			t.Fatalf("seed %d: nothing is left as a comment for clone:\n%s", seed, out.String())
+		}
+		if err := ldapmodify(dst, out.String()); err != nil {
+			t.Fatalf("seed %d: ldapmodify refuses the LDIF: %v\n%s", seed, err, out.String())
+		}
+		users := 0
+		for _, e := range dst.Entries {
+			if v := e.Values("sAMAccountName"); v != nil && strings.HasPrefix(v[0], "u") {
+				users++
+				if got := e.Values("unicodePwd"); len(got) != 1 || got[0] != profile.EncodePassword("Fixed1!") {
+					t.Fatalf("seed %d: %s has no fixed password: %q", seed, e.DN, got)
+				}
+			}
+		}
+		if users == 0 {
+			t.Fatalf("seed %d: no user to check", seed)
+		}
+		var diffs []string
+		if _, err := diff.Run(context.Background(), src, dst, job, diff.Options{Workers: 1, Resolver: identity.ByMarker(m)},
+			func(d diff.Difference) { diffs = append(diffs, fmt.Sprintf("%s %s %s", d.Kind, d.DN, d.Attr)) }); err != nil {
+			t.Fatal(err)
+		}
+		if len(diffs) != 0 {
+			t.Fatalf("seed %d: the LDIF alone must give what clone gives:\n%s", seed, strings.Join(diffs, "\n"))
+		}
+	}
+	var out bytes.Buffer
+	d := dryrun.WithPassword(&out, profile.AD)
+	if err := d.Add(context.Background(), directory.Entry{DN: "CN=x," + domain, Attrs: map[string][]string{"cn": {"x"}, "userPassword": {"secret"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), "secret") {
+		t.Fatalf("another password attribute must stay redacted:\n%s", out.String())
+	}
+}

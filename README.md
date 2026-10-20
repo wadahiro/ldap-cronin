@@ -27,7 +27,7 @@ The name is a pun on "clone" and "ronin", a masterless samurai: cRONIN is a **c*
 
 | Command | Description |
 |---|---|
-| `clone [-config f] [-dry-run] [-y]` | Add and update. Before the first write it shows the target (and the server name its root DSE gives) and the source, and asks `[y/N]`: only `y` writes, and without a terminal it stops unless `-y`. `-dry-run` does not connect to the target; it writes LDIF to standard output (progress logs go to standard error) |
+| `clone [-config f] [-dry-run [-with-password]] [-y]` | Add and update. Before the first write it shows the target (and the server name its root DSE gives) and the source, and asks `[y/N]`: only `y` writes, and without a terminal it stops unless `-y`. `-dry-run` does not connect to the target; it writes LDIF to standard output (progress logs go to standard error); `-with-password` puts the users' fixed password in it, so `ldapmodify` alone completes them |
 | `clone -native [-lab-prefix p] [-lab-instance n]` | **Samba lab only**: import with the same `objectGUID` and `objectSid` as the source (into a lab created with `lab up --like-source`). Uses unsupported internals. For the limitations see [docs/lab.md](docs/lab.md#importing-with-the-same-objectguid-and-objectsid-clone--native-samba-only) |
 | `diff [-config f] [-format text\|json] [-max-values n]` | Compare the source and the target. Exit code 1 if there are differences (2 on error). `-format json` writes JSON Lines for a program to read. For how to read the output see [docs/diff.md](docs/diff.md) |
 | `list-attrs [-profile ad\|ldap]` | Show the default attributes (allow list) per object type |
@@ -53,9 +53,9 @@ make build                           # produces bin/ldap-cronin (requires Go)
 ./bin/ldap-cronin diff
 ```
 
-The dry-run LDIF loads with `ldapmodify` into an empty target. It never carries a password: on a generic server the users are created without one (and `clone` never adds one to an existing user); on AD the password and the `userAccountControl` that follows it are written as comments, and `clone` run against the loaded target sets them.
+The dry-run LDIF loads with `ldapmodify` into an empty target. By default it carries no password: on a generic server the users are created without one (and `clone` never adds one to an existing user); on AD the password and the `userAccountControl` that follows it are written as comments, and `clone` run against the loaded target sets them. With `-with-password` it carries the fixed password (`userPassword` in the add; on AD a `unicodePwd` modify, which needs LDAPS, then the `userAccountControl`), and `ldapmodify` alone gives users that can log on. Bind passwords are never in it.
 
-Passwords are never kept in the configuration file; they are prompted for at run time. For non-interactive use set the environment variables `LDAP_CRONIN_SOURCE_PASSWORD` / `LDAP_CRONIN_TARGET_PASSWORD` / `LDAP_CRONIN_USER_PASSWORD`, and pass `-y` to `clone` and `schema -apply`.
+Bind passwords are never kept in the configuration file; they are prompted for at run time. The fixed password of the cloned users, a test value, may be: `[accounts] fixed_password`. For non-interactive use set the environment variables `LDAP_CRONIN_SOURCE_PASSWORD` / `LDAP_CRONIN_TARGET_PASSWORD` / `LDAP_CRONIN_USER_PASSWORD` (the last one comes before `fixed_password`), and pass `-y` to `clone` and `schema -apply`.
 
 The source is only read. Its connection refuses every write before anything is sent, whatever the command; still,
 bind to it with an account that can only read, so the server refuses too.
@@ -90,7 +90,7 @@ Details per server type: [docs/active-directory.md](docs/active-directory.md) an
 - **Or every attribute** (AD): with `[attributes] mode = "all"`, every attribute the source's schema lets a client write on the class of each object type is copied and compared, your own extensions included; `exclude` still applies, and what the target's schema lacks is left out with a note. `ldap-cronin schema` gives the target the source's extensions first.
 - Attributes that cannot be migrated (`objectGUID`, `objectSid`, `unicodePwd`, `userPassword`, ...) are an error if you list them.
 - **Masking**: attributes in `[mask] attributes` are replaced with a fixed string on the target, and `diff` does not compare them. Identity, unique, DN-valued and non-string attributes cannot be masked.
-- **Passwords** are never copied. Cloned users get the fixed password you enter, set when they are created and never reset by a re-run; how it is set depends on the server type (see the server docs).
+- **Passwords** are never copied. Cloned users get the fixed password you enter (or `[accounts] fixed_password`), set when they are created and never reset by a re-run; how it is set depends on the server type (see the server docs).
 - **DN-valued attributes** (`member`, `manager`, `managedBy`, and anything you add such as `seeAlso`) are detected from the source schema, not from a fixed list.
   They are applied after all objects exist, because a reference to a missing object fails. **Every member is reproduced**: an object outside the scope that a reference names (a member outside `base_dn`) is cloned too, as its kind and without its own references (`[scope] references`); a built-in the target holds is referenced as it is; a value that still cannot be written (on AD, a built-in the target lacks) is skipped with a warning, and `diff` counts it instead of comparing it.
 - Back links (`memberOf`, `directReports`, ...) and DN+binary / DN+string attributes are an error in the allow list.

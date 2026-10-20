@@ -73,6 +73,9 @@ type Session struct {
 	// Confirm, when set, is asked before the first write to the target (clone, schema -apply), after the target and
 	// the source are shown on Warn; false stops the run with nothing written. Nil writes without asking.
 	Confirm func(question string) bool
+	// WithPassword makes a dry-run's LDIF carry the users' fixed password (Secrets.UserPassword) and the writes that
+	// follow it, instead of comments.
+	WithPassword bool
 
 	secrets Secrets
 	dial    Dialer

@@ -27,6 +27,12 @@ base_dn = "OU=IDM,DC=ad,DC=example,DC=com"
 # [scope.filters]                    # override the search filter per object type
 # user = "(&(objectCategory=person)(objectClass=user)(department=IT))"
 
+# [accounts]
+# fixed_password = "Lab-Us3r-Passw0rd!"  # every cloned user's and computer's password (their hashes are never copied).
+#                                      # A test value only, never a bind password: those are always asked or taken
+#                                      # from the environment. Unset: LDAP_CRONIN_USER_PASSWORD, or asked. A dry-run
+#                                      # prints it only with -with-password
+
 [run]
 workers = 8                          # parallel connections to the target, for clone and diff (1 = sequential). Default 8
 

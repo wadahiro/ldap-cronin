@@ -22,9 +22,10 @@ var required = map[string]string{"groupofnames": "member", "groupofuniquenames":
 // Dir assumes the target is empty and never connects: Get reports "not found", so every object is an Add, except
 // for the required values it wrote itself, which it remembers so the reference pass does not add them twice.
 //
-// The LDIF loads with ldapmodify. Writes that need the users' password are written as comments, since the password
-// is never printed: on AD the password and the userAccountControl that follows it. A user loaded from the LDIF is
-// then a disabled account without a password, which a clone run against the loaded target completes.
+// The LDIF loads with ldapmodify. Made with New, writes that need the users' password are written as comments, as
+// the password is not printed: on AD the password and the userAccountControl that follows it. A user loaded from
+// the LDIF is then a disabled account without a password, which a clone run against the loaded target completes.
+// Made with WithPassword, the LDIF carries the fixed password and those writes, and ldapmodify alone completes it.
 type Dir struct {
 	w        ldif.Writer
 	deferred []string // set after the password (the profile's account-owned attributes)
@@ -39,6 +40,24 @@ func New(out io.Writer, p profile.Profile) *Dir {
 	if p.Account != nil {
 		d.deferred = p.Account.Owned()
 	}
+	return d
+}
+
+// WithPassword writes to out for a target of profile p, printing the users' fixed password clone gives in the
+// attribute the profile writes it to, and the writes that follow it. Every other password attribute stays redacted.
+func WithPassword(out io.Writer, p profile.Profile) *Dir {
+	d := New(out, p)
+	d.deferred = nil
+	if p.Account == nil {
+		return d
+	}
+	var secret []string
+	for _, a := range p.PasswordAttrs {
+		if !strings.EqualFold(a, p.Account.PasswordAttr()) {
+			secret = append(secret, a)
+		}
+	}
+	d.w.Secret = secret
 	return d
 }
 

@@ -18,6 +18,8 @@ type Account interface {
 	AddEntry(e directory.Entry, password string) directory.Entry
 	// ReadExtra lists attributes to read along with an existing entry, for Finish.
 	ReadExtra() []string
+	// PasswordAttr is the attribute the fixed password is written to (unicodePwd, userPassword).
+	PasswordAttr() string
 	// Owned lists allow-listed attributes that only Finish writes. clone leaves them out of its own comparison so
 	// Finish is their only writer.
 	Owned() []string
@@ -66,8 +68,9 @@ func (adAccount) AddEntry(e directory.Entry, _ string) directory.Entry {
 	return out
 }
 
-func (adAccount) ReadExtra() []string { return []string{attrUAC, attrPwdLastSet} }
-func (adAccount) Owned() []string     { return []string{attrUAC} }
+func (adAccount) ReadExtra() []string  { return []string{attrUAC, attrPwdLastSet} }
+func (adAccount) Owned() []string      { return []string{attrUAC} }
+func (adAccount) PasswordAttr() string { return attrUnicodePwd }
 
 // Finish sets the password only on creation, or when creation was interrupted before the password was set
 // (pwdLastSet=0), so a re-run does not roll back a password changed by the program under test.
@@ -128,8 +131,9 @@ func (ldapAccount) AddEntry(e directory.Entry, password string) directory.Entry 
 	return out
 }
 
-func (ldapAccount) ReadExtra() []string { return nil }
-func (ldapAccount) Owned() []string     { return nil }
+func (ldapAccount) ReadExtra() []string  { return nil }
+func (ldapAccount) Owned() []string      { return nil }
+func (ldapAccount) PasswordAttr() string { return attrUserPassword }
 
 func (ldapAccount) Finish(context.Context, directory.Directory, directory.Entry, string, *directory.Entry) ([]string, error) {
 	return nil, nil

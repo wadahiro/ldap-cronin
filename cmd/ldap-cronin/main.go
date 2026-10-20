@@ -41,6 +41,8 @@ Commands:
 Flags (clone/diff):
   -config <file>   TOML config file (default: config.toml)
   -dry-run         (clone only) Do not connect to the target; print what would be done as LDIF
+  -with-password   (clone -dry-run) The LDIF carries the users' fixed password, and on AD the userAccountControl set
+                   after it, so ldapmodify alone gives users that can log on; without it they are comments
   -y, -yes         (clone only) Write without asking: clone shows the target and the source and asks [y/N] first
   -native          (clone only) Import into the lab's Samba keeping the source's objectGUID and objectSid (Samba only. lab help)
   -lab-prefix <p>, -lab-instance <name>   (clone -native) The lab to import into
@@ -134,13 +136,29 @@ func openSession(ctx context.Context, cfgPath string) (*app.Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	return app.Open(ctx, cfg, secrets, dial, os.Stderr)
+	return app.Open(ctx, cfg, secretsFor(cfg), dial, os.Stderr)
+}
+
+// secretsFor takes the fixed password of the cloned users from [accounts] fixed_password when the environment does not
+// give one, instead of asking. The bind passwords are never in the config.
+func secretsFor(cfg *config.Config) app.Secrets {
+	s := secrets
+	if fixed := cfg.Accounts.FixedPassword; fixed != "" {
+		s.UserPassword = func() (string, error) {
+			if v := os.Getenv(envUserPassword); v != "" {
+				return v, nil
+			}
+			return fixed, nil
+		}
+	}
+	return s
 }
 
 func runClone(ctx context.Context, args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("clone", flag.ContinueOnError)
 	cfgPath := fs.String("config", "config.toml", "config file")
 	dryRun := fs.Bool("dry-run", false, "print LDIF instead of writing")
+	withPassword := fs.Bool("with-password", false, "with -dry-run: the LDIF carries the users' fixed password and what follows it, so ldapmodify alone completes them")
 	native := fs.Bool("native", false, "import into a lab Samba keeping objectGUID/objectSid (Samba only)")
 	yes := yesFlag(fs)
 	var labFlags labCommon
@@ -152,12 +170,16 @@ func runClone(ctx context.Context, args []string, out io.Writer) error {
 	if *native && *dryRun {
 		return errors.New("-native and -dry-run cannot be used together")
 	}
+	if *withPassword && !*dryRun {
+		return errors.New("-with-password is for -dry-run: clone itself always sets the password")
+	}
 	s, err := openSession(ctx, *cfgPath)
 	if err != nil {
 		return err
 	}
 	defer s.Close()
 	askBeforeWriting(s, *yes)
+	s.WithPassword = *withPassword
 
 	var report *clone.Report
 	// The dry-run stdout carries only LDIF that can be passed straight to ldapmodify; progress logs go to stderr.

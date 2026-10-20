@@ -1,4 +1,5 @@
-// Package config loads and validates the TOML configuration. Passwords are never stored in the config file.
+// Package config loads and validates the TOML configuration. The bind passwords are never stored in the config file;
+// the only password it may hold is the fixed one clone gives the cloned users, a value of the test environment.
 package config
 
 import (
@@ -59,6 +60,13 @@ type Run struct {
 	Workers int `toml:"workers"` // number of parallel target connections; 1 means sequential
 }
 
+// Accounts is how clone gives the cloned users and computers a password, as their hashes are never copied.
+type Accounts struct {
+	// FixedPassword is the password of every cloned user and computer. Empty: LDAP_CRONIN_USER_PASSWORD, or asked on
+	// the terminal. It is a test value, never a bind password; a dry-run prints it only with -with-password.
+	FixedPassword string `toml:"fixed_password"`
+}
+
 type Attributes struct {
 	// Mode is AttributesListed (the default: the allow lists) or AttributesAll.
 	Mode    string              `toml:"mode"`
@@ -105,6 +113,7 @@ type Config struct {
 	Target     Endpoint   `toml:"target"`
 	Scope      Scope      `toml:"scope"`
 	Run        Run        `toml:"run"`
+	Accounts   Accounts   `toml:"accounts"`
 	Mapping    Mapping    `toml:"mapping"`
 	Attributes Attributes `toml:"attributes"`
 	Mask       Mask       `toml:"mask"`

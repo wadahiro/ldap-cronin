@@ -137,6 +137,13 @@ not cloned (matches no kind): 14
   target lacks).
 - The LDIF holds no password: the users' password steps are comments.
 
+To review exactly what will be loaded and load it with `ldapmodify` yourself, instead of running `clone`, add
+`-with-password`: the LDIF then carries the fixed password (asked for, or `[accounts] fixed_password`) and the
+`userAccountControl` set after it, so it alone gives users that can log on. Load it over LDAPS, into an empty
+target (`ldapmodify -H ldaps://... -D <admin> -W -f clone.ldif`), and keep the file where the password may be.
+It does not read the target, so what the target lacks or refuses (`mode = "all"`, `userParameters` on Samba) is
+still in it; `clone` leaves those out by itself.
+
 ## Part 1: the Samba4 lab
 
 ### 4. Start a lab with the source's domain
@@ -195,8 +202,8 @@ everything with [`mode = "all"`](#copy-everything-mode--all).
 ./bin/ldap-cronin clone -config config.toml
 ```
 
-It asks for the source password and the **fixed password for cloned users**: every cloned user (and computer)
-gets it, since password hashes are never copied. It must satisfy the target's password policy (the lab's is
+It asks for the source password and the **fixed password for cloned users** (unless `[accounts] fixed_password`
+sets it): every cloned user (and computer) gets it, since password hashes are never copied. It must satisfy the target's password policy (the lab's is
 Samba's default complexity).
 
 Before the first write it shows where it is about to write, and asks:
