@@ -60,6 +60,8 @@ type Run struct {
 }
 
 type Attributes struct {
+	// Mode is AttributesListed (the default: the allow lists) or AttributesAll.
+	Mode    string              `toml:"mode"`
 	Include map[string][]string `toml:"include"`
 	Extra   []string            `toml:"extra_include"`
 	Exclude []string            `toml:"exclude"`
@@ -164,7 +166,28 @@ func Parse(raw []byte) (*Config, error) {
 	return &c, nil
 }
 
+// The values of [attributes] mode.
+const (
+	// AttributesListed copies the attributes of the allow lists: the profile's defaults, include and extra_include.
+	AttributesListed = "allowlist"
+	// AttributesAll copies every attribute the source's schema lets a client write on the class of a kind, but
+	// exclude and what clone never copies; the profile resolves it against the source (app.Open).
+	AttributesAll = "all"
+)
+
+// All reports whether [attributes] mode is "all".
+func (a Attributes) All() bool { return a.Mode == AttributesAll }
+
 func (c *Config) validate() error {
+	switch c.Attributes.Mode {
+	case "", AttributesListed:
+	case AttributesAll:
+		if len(c.Attributes.Include) > 0 || len(c.Attributes.Extra) > 0 {
+			return fmt.Errorf("[attributes] mode = %q copies every attribute a client can write; include and extra_include are for mode = %q (exclude still applies)", AttributesAll, AttributesListed)
+		}
+	default:
+		return fmt.Errorf("[attributes] mode must be %q or %q, got %q", AttributesListed, AttributesAll, c.Attributes.Mode)
+	}
 	switch c.Scope.References {
 	case "", plan.RefsClone, plan.RefsExisting, plan.RefsSkip:
 	default:

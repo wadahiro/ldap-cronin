@@ -120,7 +120,11 @@ func (s *Session) ListAttrs(ctx context.Context, withTarget, all bool, out io.Wr
 		}
 		fmt.Fprintln(out)
 	}
-	fmt.Fprintln(out, "not copied: no allow list names it; add it with [attributes] extra_include (or include.<kind>) to copy and compare it")
+	if s.Job.AllWritable {
+		fmt.Fprintln(out, "not copied: [attributes] exclude names it, or the source's schema does not let a client write it on the kind's class")
+	} else {
+		fmt.Fprintln(out, "not copied: no allow list names it; add it with [attributes] extra_include (or include.<kind>) to copy and compare it")
+	}
 	if !withTarget {
 		fmt.Fprintln(out, "add -target to see which of them the target's schema lacks")
 	} else if s.Job.Profile.SchemaCopy != nil {

@@ -7,6 +7,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sort"
+	"strings"
 
 	"github.com/wadahiro/ldap-cronin/internal/config"
 	"github.com/wadahiro/ldap-cronin/internal/directory"
@@ -89,7 +91,99 @@ func Open(ctx context.Context, cfg *config.Config, secrets Secrets, dial Dialer,
 		src.Close()
 		return nil, err
 	}
-	return &Session{Cfg: cfg, Job: job, Src: src.View(prof.Ranged), Warn: warn, secrets: secrets, dial: dial, src: src}, nil
+	s := &Session{Cfg: cfg, Job: job, Src: src.View(prof.Ranged), Warn: warn, secrets: secrets, dial: dial, src: src}
+	if cfg.Attributes.All() {
+		if err := s.writableAttrs(ctx); err != nil {
+			src.Close()
+			return nil, err
+		}
+	}
+	return s, nil
+}
+
+// writableAttrs gives each kind every attribute the source's schema lets a client write on its class
+// ([attributes] mode = "all"), but what clone never copies, the marker and exclude.
+func (s *Session) writableAttrs(ctx context.Context) error {
+	prof := s.Job.Profile
+	if prof.Writable == nil {
+		return fmt.Errorf("[attributes] mode = %q needs the schema to say what a client can write; the %s profile cannot, so list the attributes (mode = %q)", config.AttributesAll, prof.Name, config.AttributesListed)
+	}
+	var classes []string
+	for _, k := range s.Job.Kinds {
+		classes = append(classes, k.Class)
+	}
+	byClass, ok, err := prof.Writable.Writable(ctx, s.Src, classes)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("[attributes] mode = %q: the source schema cannot be read", config.AttributesAll)
+	}
+	_, marker, err := s.Cfg.MappingFor(prof)
+	if err != nil {
+		return err
+	}
+	never := profile.Set(append(append([]string{prof.Identity.Attr(), marker}, prof.NeverClone...), prof.PasswordAttrs...))
+	s.Job.AllWritable = true
+	for i := range s.Job.Kinds {
+		k := &s.Job.Kinds[i]
+		var names []string
+		for _, n := range byClass[k.Class] {
+			if !never[strings.ToLower(n)] {
+				names = append(names, n)
+			}
+		}
+		if k.Attrs, err = prof.Attrs(k.Name, profile.Override{Include: map[string][]string{k.Name: names}, Exclude: s.Cfg.Attributes.Exclude}); err != nil {
+			return fmt.Errorf("[attributes] %s: %w", k.Name, err)
+		}
+	}
+	return nil
+}
+
+// targetHas narrows the attributes of every kind to those the target's schema defines, for mode = "all": the
+// source's schema may have more (an extension, a newer Windows Server), and they are left out instead of stopping
+// the run, as no one named them. It returns the job to run and the names left out.
+func (s *Session) targetHas(ctx context.Context, dst directory.Directory) (plan.Job, []string, error) {
+	job := s.Job
+	if !s.Cfg.Attributes.All() || job.Profile.SchemaAttrs == nil {
+		return job, nil, nil
+	}
+	has, ok, err := job.Profile.SchemaAttrs.Attributes(ctx, dst)
+	if err != nil || !ok {
+		return job, nil, err
+	}
+	job.Kinds = append([]plan.Kind(nil), job.Kinds...)
+	required := profile.Set(job.Profile.Required)
+	left := map[string]bool{}
+	var leftOut []string
+	for i := range job.Kinds {
+		var keep []string
+		for _, a := range job.Kinds[i].Attrs {
+			key := strings.ToLower(a)
+			if has[key] || required[key] {
+				keep = append(keep, a)
+				continue
+			}
+			if !left[key] {
+				left[key] = true
+				leftOut = append(leftOut, a)
+			}
+		}
+		job.Kinds[i].Attrs = keep
+	}
+	sort.Slice(leftOut, func(i, j int) bool { return strings.ToLower(leftOut[i]) < strings.ToLower(leftOut[j]) })
+	return job, leftOut, nil
+}
+
+// noteLeftOut lists, one per line, the attributes mode = "all" leaves out because the target's schema lacks them.
+func noteLeftOut(w io.Writer, names []string) {
+	if len(names) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "not copied or compared: the target schema lacks %d attributes of the source's (ldap-cronin schema adds those of extensions):\n", len(names))
+	for _, n := range names {
+		fmt.Fprintf(w, "  %s\n", n)
+	}
 }
 
 func (s *Session) Close() { s.src.Close() }

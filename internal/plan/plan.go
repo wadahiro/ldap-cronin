@@ -32,6 +32,9 @@ type Job struct {
 	// References says what is done with a reference to an entry outside the scope: RefsClone (the default, also
 	// for ""), RefsExisting or RefsSkip.
 	References string
+	// AllWritable is set when the allow lists are every attribute a client can write on the class of each kind
+	// ([attributes] mode = "all"), so the summaries count them instead of naming hundreds.
+	AllWritable bool
 }
 
 // The [scope] references settings.

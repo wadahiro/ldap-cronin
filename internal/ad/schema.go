@@ -99,6 +99,54 @@ func ReadSchema(ctx context.Context, d directory.Directory) (*Schema, error) {
 	return s, nil
 }
 
+// Writable returns, sorted, the attributes an object of class may hold that a client can write: what the class,
+// the classes it derives from and their auxiliary classes must or may contain, without what only the server writes
+// (systemOnly), the constructed attributes, the back links, and those holding a DN inside a larger value
+// (DN-Binary, DN-String). ok is false when the schema has no such class.
+func (s *Schema) Writable(class string) ([]string, bool) {
+	if s.Classes[strings.ToLower(class)] == nil {
+		return nil, false
+	}
+	names := map[string]string{}
+	seen := map[string]bool{}
+	var visit func(name string)
+	visit = func(name string) {
+		c := s.Classes[strings.ToLower(name)]
+		if c == nil || seen[strings.ToLower(name)] {
+			return
+		}
+		seen[strings.ToLower(name)] = true
+		for _, f := range []string{"mustContain", "systemMustContain", "mayContain", "systemMayContain"} {
+			for _, v := range c.Values(f) {
+				if a := s.Attributes[strings.ToLower(v)]; a != nil && writable(a) {
+					names[strings.ToLower(a.Name)] = a.Name
+				}
+			}
+		}
+		visit(c.value("subClassOf"))
+		for _, aux := range append(c.Values("auxiliaryClass"), c.Values("systemAuxiliaryClass")...) {
+			visit(aux)
+		}
+	}
+	visit(class)
+	out := make([]string, 0, len(names))
+	for _, n := range names {
+		out = append(out, n)
+	}
+	sort.Slice(out, func(i, j int) bool { return strings.ToLower(out[i]) < strings.ToLower(out[j]) })
+	return out, true
+}
+
+// The attributeSyntax of values that hold a DN inside a larger value.
+var dnInsideSyntaxes = map[string]bool{"2.5.5.7": true, "2.5.5.14": true}
+
+func writable(a *SchemaElement) bool {
+	flags, _ := strconv.Atoi(a.value("systemFlags"))
+	link, _ := strconv.Atoi(a.value("linkID"))
+	return !strings.EqualFold(a.value("systemOnly"), "TRUE") && flags&flagAttrIsConstructed == 0 && link%2 == 0 &&
+		!dnInsideSyntaxes[a.value("attributeSyntax")]
+}
+
 // SchemaChange is one step of a SchemaPlan: a new definition (Add), values added to a class the target has
 // (Values), or a reload of the schema cache (Refresh), after which the definitions written before can be named.
 type SchemaChange struct {

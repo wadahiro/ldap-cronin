@@ -43,6 +43,7 @@ func (s *Session) Clone(ctx context.Context, dryRun bool, out, log io.Writer) (*
 		opt.Marker = &m
 	}
 	var dst directory.Directory = dryrun.New(out, s.Job.Profile)
+	job := s.Job
 	if !dryRun {
 		var err error
 		if opt.UserPassword, err = s.secrets.UserPassword(); err != nil {
@@ -54,6 +55,11 @@ func (s *Session) Clone(ctx context.Context, dryRun bool, out, log io.Writer) (*
 		}
 		defer closeTarget()
 		dst = target
+		var left []string
+		if job, left, err = s.targetHas(ctx, dst); err != nil {
+			return nil, err
+		}
+		noteLeftOut(log, left)
 		if opt.Marker != nil && s.Job.Profile.MarkerCheck != nil {
 			warning, err := s.Job.Profile.MarkerCheck.CheckMarker(ctx, dst, attr, identity.MarkerLen)
 			if err != nil {
@@ -73,7 +79,7 @@ func (s *Session) Clone(ctx context.Context, dryRun bool, out, log io.Writer) (*
 			}
 		}
 	}
-	report, err := clone.Run(ctx, s.Src, dst, s.Job, opt, log)
+	report, err := clone.Run(ctx, s.Src, dst, job, opt, log)
 	// Closed even after a failure or an interruption: every pair recorded so far is kept, and a re-run continues.
 	if opt.Mapping != nil {
 		if cerr := opt.Mapping.Close(); cerr != nil && err == nil {
@@ -100,6 +106,11 @@ func (s *Session) Diff(ctx context.Context, o DiffOutput, out io.Writer) (int, e
 		return 0, err
 	}
 	defer closeTarget()
+	job, left, err := s.targetHas(ctx, dst)
+	if err != nil {
+		return 0, err
+	}
+	noteLeftOut(s.Warn, left)
 
 	res, closeRes, err := s.resolver(ctx, dst)
 	if err != nil {
@@ -117,7 +128,7 @@ func (s *Session) Diff(ctx context.Context, o DiffOutput, out io.Writer) (int, e
 			}
 		}
 	}
-	sum, err := diff.Run(ctx, s.Src, dst, s.Job, diff.Options{Workers: s.Cfg.Run.Workers, Resolver: res}, emit)
+	sum, err := diff.Run(ctx, s.Src, dst, job, diff.Options{Workers: s.Cfg.Run.Workers, Resolver: res}, emit)
 	if err == nil {
 		err = werr
 	}
@@ -131,14 +142,14 @@ func (s *Session) Diff(ctx context.Context, o DiffOutput, out io.Writer) (int, e
 		total += n
 	}
 	if js != nil {
-		if err := js.Summary(s.Job, sum, s.Cfg.Attributes.Exclude); err != nil {
+		if err := js.Summary(job, sum, s.Cfg.Attributes.Exclude); err != nil {
 			return 0, err
 		}
 	} else {
 		if total == 0 {
 			fmt.Fprintln(out, "no differences")
 		}
-		diff.WriteSummary(out, s.Job, sum, s.Cfg.Attributes.Exclude)
+		diff.WriteSummary(out, job, sum, s.Cfg.Attributes.Exclude)
 	}
 	if total == 0 {
 		return ExitSame, nil

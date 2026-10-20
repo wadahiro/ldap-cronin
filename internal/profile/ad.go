@@ -17,15 +17,15 @@ import (
 var AD = Profile{
 	Name: NameAD,
 	Kinds: []KindSpec{
-		{Name: KindOU, Role: RoleContainer, Filter: "(objectClass=organizationalUnit)", Is: classIs("organizationalUnit"), Default: []string{
+		{Name: KindOU, Class: "organizationalUnit", Role: RoleContainer, Filter: "(objectClass=organizationalUnit)", Is: classIs("organizationalUnit"), Default: []string{
 			"description", "displayName", "street", "l", "st", "postalCode", "co", "c", "managedBy",
 		}},
-		{Name: KindGroup, Role: RoleLeaf, Order: 0, Filter: "(objectClass=group)", Is: classIs("group"), Default: []string{
+		{Name: KindGroup, Class: "group", Role: RoleLeaf, Order: 0, Filter: "(objectClass=group)", Is: classIs("group"), Default: []string{
 			"sAMAccountName", "groupType", "description", "displayName", "info", "mail",
 			"managedBy", "member", "adminDescription", "gidNumber",
 		}},
 		// user excludes computer, which also has objectClass=user.
-		{Name: KindUser, Role: RoleLeaf, Order: 1, Account: true, Filter: "(&(objectCategory=person)(objectClass=user))",
+		{Name: KindUser, Class: "user", Role: RoleLeaf, Order: 1, Account: true, Filter: "(&(objectCategory=person)(objectClass=user))",
 			// objectCategory=person and objectClass=user: a user or inetOrgPerson, not a computer (a subclass of user).
 			Is: func(c []string) bool { return hasClass(c, []string{"user"}, "computer") }, Default: []string{
 				"sAMAccountName", "userPrincipalName", "userAccountControl", "accountExpires",
@@ -40,13 +40,13 @@ var AD = Profile{
 		// Computers are what groups hold most besides users. A computer is an account too: it gets the fixed
 		// password, as a joined computer has one (a pre-staged computer without it is not what production holds).
 		// Service accounts (msDS-ManagedServiceAccount) have their own objectCategory and stay out.
-		{Name: KindComputer, Role: RoleLeaf, Order: 2, Account: true, Filter: "(objectCategory=computer)", Is: classIs("computer"), Default: []string{
+		{Name: KindComputer, Class: "computer", Role: RoleLeaf, Order: 2, Account: true, Filter: "(objectCategory=computer)", Is: classIs("computer"), Default: []string{
 			"sAMAccountName", "userAccountControl", "dNSHostName", "description", "displayName", "location",
 			"managedBy", "operatingSystem", "operatingSystemVersion", "operatingSystemServicePack",
 			"servicePrincipalName", "info",
 		}},
 		// Contacts: the user list without the account and logon attributes.
-		{Name: KindContact, Role: RoleLeaf, Order: 3, Filter: "(objectClass=contact)", Is: classIs("contact"), Default: []string{
+		{Name: KindContact, Class: "contact", Role: RoleLeaf, Order: 3, Filter: "(objectClass=contact)", Is: classIs("contact"), Default: []string{
 			"givenName", "sn", "initials", "middleName", "displayName", "description",
 			"mail", "telephoneNumber", "mobile", "homePhone", "pager", "ipPhone",
 			"facsimileTelephoneNumber", "title", "department", "company", "division",
@@ -64,13 +64,13 @@ var AD = Profile{
 		"dBCSPwd", "ntPwdHistory", "lmPwdHistory", "supplementalCredentials", "sAMAccountType",
 		"objectCategory", "instanceType", "nTSecurityDescriptor", "isCriticalSystemObject",
 		"systemFlags", "dSCorePropagationData", "primaryGroupID", "msDS-KeyVersionNumber",
-	}, computerCredentials...),
+	}, append(accountSecrets, computerCredentials...)...),
 	NoMask: []string{
 		"objectClass", "cn", "ou", "sAMAccountName", "userPrincipalName", "servicePrincipalName",
 		"member", "manager", "managedBy", "userAccountControl", "groupType", "accountExpires",
 		"countryCode", "c", "uidNumber", "gidNumber",
 	},
-	PasswordAttrs: append([]string{"unicodePwd", "dBCSPwd", "ntPwdHistory", "lmPwdHistory", "supplementalCredentials"}, computerCredentials...),
+	PasswordAttrs: append(append([]string{"unicodePwd", "dBCSPwd", "ntPwdHistory", "lmPwdHistory", "supplementalCredentials"}, accountSecrets...), computerCredentials...),
 	// A safeguard so that Administrator, krbtgt and the like are not overwritten even if base_dn is CN=Users.
 	SystemFilter: "(!(isCriticalSystemObject=TRUE))",
 	SystemAttr:   "isCriticalSystemObject",
@@ -100,9 +100,18 @@ var AD = Profile{
 	Refs:        adSchema{},
 	SchemaAttrs: adSchema{},
 	SchemaCopy:  adSchema{},
+	Writable:    adSchema{},
 	Root:        adRoot{},
 	Account:     adAccount{},
 	Native:      adNative{},
+}
+
+// accountSecrets are the other secrets an account may hold, never cloned, compared or printed: the password a
+// client may write as userPassword (and the Unix one), a private key (userPKCS12), the credential roaming blobs, the
+// TPM owner information of a computer. No default allow list names them; they are listed so [attributes]
+// mode = "all", which takes every attribute a client can write, leaves them out too.
+var accountSecrets = []string{
+	"userPassword", "unixUserPassword", "userPKCS12", "msPKIAccountCredentials", "msPKIDPAPIMasterKeys", "msTPM-OwnerInformation",
 }
 
 // computerCredentials are never cloned, compared or printed: LAPS (legacy and Windows LAPS), Windows Hello / shadow
@@ -159,7 +168,7 @@ func (adSchema) Discover(ctx context.Context, src directory.Directory) (Schema, 
 			switch first(e.Values("attributeSyntax")) {
 			case syntaxDN:
 				s.Refs[key] = RefInfo{Single: strings.EqualFold(first(e.Values("isSingleValued")), "TRUE")}
-			default:
+			case syntaxDNBinary, syntaxDNString:
 				s.Unsupported[key] = true
 			}
 			// The server computes a back link (memberOf, directReports, ...) and it cannot be written.
@@ -208,6 +217,22 @@ func (adSchema) PlanSchema(ctx context.Context, src, dst directory.Directory) (S
 		return nil, false, err
 	}
 	return ad.PlanSchema(s, d), true, nil
+}
+
+func (adSchema) Writable(ctx context.Context, src directory.Directory, classes []string) (map[string][]string, bool, error) {
+	s, err := ad.ReadSchema(ctx, src)
+	if err != nil || s == nil {
+		return nil, false, err
+	}
+	out := map[string][]string{}
+	for _, c := range classes {
+		names, ok := s.Writable(c)
+		if !ok {
+			return nil, false, fmt.Errorf("the source schema has no class %s", c)
+		}
+		out[c] = names
+	}
+	return out, true, nil
 }
 
 // Unicode, case-insensitive and printable string syntaxes: the ones a marker can be stored and searched in.

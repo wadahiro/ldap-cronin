@@ -194,3 +194,41 @@ func TestNewClassesComeInTheOrderTheyDependOnEachOther(t *testing.T) {
 		t.Fatalf("%v", d.Attrs)
 	}
 }
+
+// What a client can write on a class: through the classes it derives from and their auxiliary classes, without what
+// only the server writes, the constructed attributes, the back links and the DN-Binary values.
+func TestWritableAttributesOfAClass(t *testing.T) {
+	d := schemaDir(srcSchemaNC)
+	for name, more := range map[string]map[string][]string{
+		"givenName":       nil,
+		"acmeCode":        nil,
+		"mixinAttr":       nil,
+		"whenChanged":     {"systemOnly": {"TRUE"}},
+		"tokenGroups":     {"systemFlags": {"4"}},
+		"manager":         {"attributeSyntax": {"2.5.5.1"}, "linkID": {"42"}},
+		"directReports":   {"attributeSyntax": {"2.5.5.1"}, "linkID": {"43"}},
+		"msExchDelegates": {"attributeSyntax": {"2.5.5.7"}},
+	} {
+		attr(d, srcSchemaNC, name, "1.3.6.1.4.1.99999.3."+name, more)
+	}
+	class(d, srcSchemaNC, "person", "2.5.6.6", map[string][]string{"subClassOf": {"top"}, "systemMayContain": {"givenName", "whenChanged"}})
+	class(d, srcSchemaNC, "mixin", "1.3.6.1.4.1.99999.4.1", map[string][]string{"subClassOf": {"top"}, "objectClassCategory": {"3"}, "mayContain": {"mixinAttr"}})
+	class(d, srcSchemaNC, "acmeAux", "1.3.6.1.4.1.99999.4.2", map[string][]string{"subClassOf": {"top"}, "objectClassCategory": {"3"},
+		"mayContain": {"acmeCode"}, "auxiliaryClass": {"mixin"}})
+	u := d.Lookup("CN=User," + srcSchemaNC).Attrs
+	u["subClassOf"] = []string{"person"}
+	u["mayContain"] = []string{"tokenGroups", "manager", "directReports", "msExchDelegates", "notDefined"}
+	u["auxiliaryClass"] = []string{"acmeAux"}
+	d.Lookup("CN=top," + srcSchemaNC).Attrs["systemMustContain"] = []string{"cn"}
+	s, err := ReadSchema(context.Background(), d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := s.Writable("User")
+	if !ok || strings.Join(got, ",") != "acmeCode,cn,givenName,manager,mixinAttr,sAMAccountName" {
+		t.Fatalf("%v %v", got, ok)
+	}
+	if _, ok := s.Writable("printer"); ok {
+		t.Fatal("a class the schema lacks")
+	}
+}

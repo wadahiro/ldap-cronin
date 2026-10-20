@@ -50,13 +50,21 @@ func WriteSummary(w io.Writer, job plan.Job, sum Summary, excluded []string) {
 	fmt.Fprintln(w, "compared attributes:")
 	compared, masked := comparedAttributes(job)
 	for _, k := range job.Kinds {
+		if job.AllWritable {
+			fmt.Fprintf(w, "  %-5s: %d, every attribute a client can write on %s (list-attrs -config -all lists them)\n", k.Name, len(compared[k.Name]), k.Class)
+			continue
+		}
 		fmt.Fprintf(w, "  %-5s: %s\n", k.Name, strings.Join(compared[k.Name], ", "))
 	}
 	fmt.Fprintln(w, "not compared:")
 	writeList(w, "masked (config [mask])", masked)
 	writeList(w, "excluded (config exclude)", excluded)
 	writeList(w, "credentials (clone never copies them)", job.Profile.PasswordAttrs)
-	fmt.Fprintln(w, "  and any attribute not listed above")
+	if job.AllWritable {
+		fmt.Fprintln(w, "  and what only the server writes, or the target's schema lacks")
+	} else {
+		fmt.Fprintln(w, "  and any attribute not listed above")
+	}
 }
 
 // comparedAttributes returns the attributes compared per kind, and the masked ones left out of them.

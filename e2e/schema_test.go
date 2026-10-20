@@ -123,3 +123,52 @@ func TestSchemaCarriesAnExtensionThenCloneCopiesIt(t *testing.T) {
 		t.Fatalf("%d %v\n%s", code, err, out.String())
 	}
 }
+
+// mode = "all": attributes no default allow list names (proxyAddresses, an Exchange extension attribute, the
+// sourceAnchor of Entra Connect, a forward link) are copied, and diff finds nothing.
+func TestModeAllCopiesEveryWritableAttribute(t *testing.T) {
+	runID := time.Now().UnixNano() % 1_000_000
+	ctx := context.Background()
+	src := dial(t, srcURL)
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	scope := fmt.Sprintf("OU=All%06d,%s", runID, realmDN)
+	ann, bob := "CN=Ann,"+scope, "CN=Bob,"+scope
+	for _, e := range []directory.Entry{
+		{DN: scope, Attrs: map[string][]string{"objectClass": {"organizationalUnit"}, "ou": {fmt.Sprintf("All%06d", runID)}}},
+		{DN: ann, Attrs: map[string][]string{"objectClass": {"user"}, "cn": {"Ann"}, "sAMAccountName": {fmt.Sprintf("a%06dann", runID)},
+			"proxyAddresses": {"SMTP:ann@example.com", "smtp:a@example.com"}, "extensionAttribute7": {"x7"},
+			"mS-DS-ConsistencyGuid": {string([]byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15})}}},
+		{DN: bob, Attrs: map[string][]string{"objectClass": {"user"}, "cn": {"Bob"}, "sAMAccountName": {fmt.Sprintf("a%06dbob", runID)},
+			"secretary": {ann}}},
+	} {
+		must(src.Add(ctx, e))
+	}
+	cfg, err := config.Parse([]byte(fmt.Sprintf("[source]\nurl = %q\nbind_dn = %q\ninsecure_skip_verify = true\n"+
+		"[target]\nurl = %q\nbind_dn = %q\ninsecure_skip_verify = true\n[scope]\nbase_dn = %q\n[attributes]\nmode = \"all\"\n",
+		srcURL, adminDN, dstURL, adminDN, scope)))
+	must(err)
+	pw := func() (string, error) { return adminPw, nil }
+	s, err := app.Open(ctx, cfg, app.Secrets{SourceBind: pw, TargetBind: pw, UserPassword: func() (string, error) { return fixedPw, nil }}, app.LDAP, &bytes.Buffer{})
+	must(err)
+	t.Cleanup(s.Close)
+	if _, err := s.Clone(ctx, false, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	dst := dial(t, dstURL)
+	e, err := dst.Get(ctx, ann, []string{"proxyAddresses", "extensionAttribute7", "mS-DS-ConsistencyGuid"})
+	if err != nil || e == nil || len(e.Values("proxyAddresses")) != 2 || len(e.Values("extensionAttribute7")) != 1 || len(e.Values("mS-DS-ConsistencyGuid")) != 1 {
+		t.Fatalf("%v %v", e, err)
+	}
+	if e, err := dst.Get(ctx, bob, []string{"secretary"}); err != nil || e == nil || strings.Join(e.Values("secretary"), "") != ann {
+		t.Fatalf("a reference no allow list names is written too: %v %v", e, err)
+	}
+	var out bytes.Buffer
+	if code, err := s.Diff(ctx, app.DiffOutput{}, &out); err != nil || code != app.ExitSame {
+		t.Fatalf("%d %v\n%s", code, err, out.String())
+	}
+}

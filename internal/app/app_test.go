@@ -71,6 +71,21 @@ func (w *world) secrets() Secrets {
 // open opens a session; mapping is the body of the [mapping] section.
 func (w *world) open(t *testing.T, mapping string) *Session {
 	t.Helper()
+	return w.openWith(t, "[mapping]\n"+mapping)
+}
+
+// openWith opens a session with more sections after [scope].
+func (w *world) openWith(t *testing.T, more string) *Session {
+	t.Helper()
+	s, err := w.tryOpen(more)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+	return s
+}
+
+func (w *world) tryOpen(more string) (*Session, error) {
 	cfg, err := config.Parse([]byte(`
 [source]
 url = "ldaps://src:636"
@@ -81,18 +96,12 @@ bind_dn = "CN=a"
 [scope]
 profile = "ad"
 base_dn = "` + base + `"
-[mapping]
-` + mapping + `
+` + more + `
 `))
 	if err != nil {
-		t.Fatal(err)
+		return nil, err
 	}
-	s, err := Open(context.Background(), cfg, w.secrets(), w.dial, &bytes.Buffer{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(s.Close)
-	return s
+	return Open(context.Background(), cfg, w.secrets(), w.dial, &bytes.Buffer{})
 }
 
 func TestCloneThenDiffThroughTheSession(t *testing.T) {

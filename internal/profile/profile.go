@@ -52,6 +52,9 @@ type KindSpec struct {
 	Name   string
 	Role   Role
 	Filter string
+	// Class is the structural object class of the kind's entries, whose schema definition says which attributes
+	// they may hold ([attributes] mode = "all"); empty where a kind has several (generic LDAP).
+	Class string
 	// Default is the default attribute allow list (without the profile's Required attributes).
 	Default []string
 	// Order is the creation order among leaves.
@@ -144,6 +147,14 @@ type SchemaChanges interface {
 	Apply(ctx context.Context, dst directory.Directory, log io.Writer) error
 }
 
+// WritableLister reads, per object class, the attributes a client can write on an object of the class: those the
+// class and the classes it derives from (and their auxiliary classes) may hold, without what only the server
+// writes. It resolves [attributes] mode = "all".
+type WritableLister interface {
+	// Writable returns the names per class (as given); ok=false when the schema cannot be read.
+	Writable(ctx context.Context, src directory.Directory, classes []string) (names map[string][]string, ok bool, err error)
+}
+
 // RootResolver finds the top of the naming context that holds base_dn. [scope] root_dn, when set, bypasses it.
 type RootResolver interface {
 	Root(ctx context.Context, src directory.Directory, baseDN string) (string, error)
@@ -227,8 +238,10 @@ type Profile struct {
 	SchemaAttrs AttributeLister
 	// SchemaCopy is nil when the profile cannot carry schema definitions (ldap-cronin schema).
 	SchemaCopy SchemaCopier
-	Root       RootResolver
-	Account    Account
+	// Writable is nil when the profile cannot tell which attributes a client can write ([attributes] mode = "all").
+	Writable WritableLister
+	Root     RootResolver
+	Account  Account
 	// Native is nil when clone -native is not possible for this server type.
 	Native NativeSupport
 }

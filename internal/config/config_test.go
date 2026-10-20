@@ -63,6 +63,9 @@ func TestParseRejectsInvalid(t *testing.T) {
 		"unclonable include":   withProfile("ad") + "\n[attributes]\nextra_include = [\"objectGUID\"]\n",
 		"unknown profile":      withProfile("oracle"),
 		"unknown object":       strings.Replace(valid, "[scope]", "[scope]\nobjects = [\"printer\"]", 1),
+		"unknown mode":         valid + "\n[attributes]\nmode = \"everything\"\n",
+		"all with a list":      valid + "\n[attributes]\nmode = \"all\"\nextra_include = [\"proxyAddresses\"]\n",
+		"all with include":     valid + "\n[attributes]\nmode = \"all\"\n[attributes.include]\nuser = [\"mail\"]\n",
 	}
 	for name, raw := range cases {
 		if _, err := Parse([]byte(raw)); err == nil {
