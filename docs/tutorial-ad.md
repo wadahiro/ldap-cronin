@@ -265,6 +265,54 @@ references. It prints each write (`add`, `update`) and the counts at the end.
 A run can be stopped with Ctrl-C and started again: `clone` only adds what is missing and updates what differs,
 and never deletes. A second run right after the first writes nothing.
 
+### Or: clone with the source's objectGUID and objectSid (`clone -native`)
+
+Over LDAP the lab gives every object its own `objectGUID` and `objectSid`. When the program under test keeps
+them (a GUID as the key of a user, a SID in an ACL or a token), import them as they are instead of step 6's
+`clone`. This works only into the Samba lab, and only one made with `--like-source` (step 4), whose domain SID the
+imported SIDs belong to:
+
+```sh
+./bin/ldap-cronin clone -native -config config.toml
+```
+
+It does not connect to the lab over LDAP. It stops the lab, writes Samba's database directly from a helper
+container of the lab image, and starts the lab again, also after a failure or Ctrl-C:
+
+```
+Stopping lab ldap-cronin-ad (only for the duration of the import; it resumes afterwards)
+...
+native: dbcheck: Checked 3854 objects (0 errors) / largest imported RID=1110 (next allocation=1111)
+Resuming lab ldap-cronin-ad
+```
+
+It asks for the source password and the fixed password as `clone` does, then names the lab and asks `[y/N]` before
+stopping it (`-y` skips it). Like `clone` it can run again (it adds what is missing and updates what differs). At the end it runs Samba's database check
+(`dbcheck`), and moves Samba's RID allocation past the imported RIDs, so a user the program under test creates
+later does not collide with them. It writes no markers in `adminDisplayName`: `diff` matches the objects by
+`objectGUID`, and its summary says so:
+
+```
+rename/move check: on (objectGUID preserved: the target holds the source's objectGUID)
+```
+
+It relies on Samba internals that are not a supported usage (verified on 4.19.5; a self-check at the start fails
+before writing anything when they do not work). The limitations are in
+[lab.md](lab.md#importing-with-the-same-objectguid-and-objectsid-clone--native-samba-only).
+
+**Faster: `-fast-password`.** Giving the fixed password is most of the time of a user: Samba derives the NT hash
+and the Kerberos keys from it. With `-fast-password`, the first user gets the password as usual and every other
+user gets the NT hash it got, written directly. 5,000 users and 50 groups took 24s instead of 75s (an LDAP
+`clone` took 60s).
+
+```sh
+./bin/ldap-cronin clone -native -fast-password -config config.toml
+# native: ... / -fast-password: 4999 users got the NT hash directly (no Kerberos AES keys)
+```
+
+Those users have **no Kerberos AES keys**. They log on with the fixed password over LDAP and NTLM, and over Kerberos
+with RC4, but not where only AES is allowed. When the test needs production's logon behavior, leave the flag off.
+
 ### 7. Check the clone
 
 ```sh

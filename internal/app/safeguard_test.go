@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/wadahiro/ldap-cronin/internal/directory"
+	"github.com/wadahiro/ldap-cronin/internal/lab"
 )
 
 // Every write to the source is refused before it reaches the server, through the session's view and its connection.
@@ -62,6 +63,24 @@ func TestCloneAsksBeforeWritingTheTarget(t *testing.T) {
 	s.Confirm = func(string) bool { return true }
 	if report, err := s.Clone(context.Background(), false, &bytes.Buffer{}, &bytes.Buffer{}); err != nil || report.Added == 0 {
 		t.Fatalf("a yes clones: %+v %v", report, err)
+	}
+}
+
+// clone -native asks too, naming the lab, before it stops the lab: a no leaves it running and untouched.
+func TestNativeAsksBeforeStoppingTheLab(t *testing.T) {
+	w := newWorld()
+	w.src.Put(domain, map[string][]string{"objectGUID": {"0123456789abcdef"}, "objectSid": {"\x01\x04\x00\x00\x00\x00\x00\x05\x15\x00\x00\x00\x01\x00\x00\x00\x02\x00\x00\x00\x03\x00\x00\x00"}})
+	s := w.open(t, "")
+	var shown bytes.Buffer
+	s.Warn = &shown
+	asked := false
+	s.Confirm = func(string) bool { asked = true; return false }
+	_, err := s.Native(context.Background(), &lab.Lab{Prefix: "t"}, lab.NativeOptions{}, &bytes.Buffer{})
+	if !asked || err == nil || !strings.Contains(err.Error(), "nothing was written") {
+		t.Fatalf("a no must stop before the lab is touched: asked=%v %v", asked, err)
+	}
+	if !strings.Contains(shown.String(), "target (written): the lab t-ad") {
+		t.Errorf("the question must name the lab:\n%s", shown.String())
 	}
 }
 
@@ -124,7 +143,7 @@ func TestUserParametersIsLeftOutForASambaTarget(t *testing.T) {
 func TestNativeRefusesConfigurationRefs(t *testing.T) {
 	s := newWorld().open(t, "")
 	s.Job.ConfigurationRefs = "clone"
-	if _, err := s.Native(context.Background(), nil, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "not supported by clone -native") {
+	if _, err := s.Native(context.Background(), nil, lab.NativeOptions{}, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "not supported by clone -native") {
 		t.Fatalf("%v", err)
 	}
 }

@@ -12,6 +12,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import traceback
 import uuid
 
@@ -21,6 +22,7 @@ sys.stdout = sys.stderr
 
 import ldb  # noqa: E402
 import samba  # noqa: E402
+from samba import dsdb  # noqa: E402
 from samba.auth import system_session  # noqa: E402
 from samba.dcerpc import misc, security  # noqa: E402
 from samba.ndr import ndr_pack, ndr_unpack  # noqa: E402
@@ -36,6 +38,14 @@ db = SamDB(url="/var/lib/samba/private/sam.ldb", session_info=system_session(), 
 BASE = str(db.get_default_basedn())
 DOMAIN_SID = str(db.get_domain_sid())
 max_rid = 0  # largest RID among the imported objectSids; at exit the lab's RID allocation is advanced past it
+
+# -fast-password: the first user given a password gets it through setpassword, which derives every hash (NT, the
+# Kerberos keys, supplementalCredentials); the NT hash it got (unsalted, so the same for every user with that
+# password) is then written to the others directly with the bypass control, which derives nothing else. Most of the
+# time of a user is the Kerberos keys (salted with the account name, so they cannot be shared).
+FAST = False
+nt_hashes = {}  # password -> NT hash
+fast_count = 0
 
 
 def b64d(v):
@@ -85,7 +95,9 @@ def rid_of(sid_bytes):
     return int(rid)
 
 
-def op_hello(_req):
+def op_hello(req):
+    global FAST
+    FAST = bool(req.get("fast_password"))
     # Try the same operation up front so the import does not fail midway (the transaction is cancelled, so nothing remains).
     ver = getattr(samba, "version", "")  # samba.version is a string
     guid = uuid.uuid4()
@@ -98,13 +110,22 @@ def op_hello(_req):
         msg["sAMAccountName"] = ldb.MessageElement([b"adckselfchk"], ldb.FLAG_MOD_ADD, "sAMAccountName")
         msg["objectGUID"] = ldb.MessageElement([ndr_pack(misc.GUID(str(guid)))], ldb.FLAG_MOD_ADD, "objectGUID")
         msg["objectSid"] = ldb.MessageElement([ndr_pack(security.dom_sid(sid))], ldb.FLAG_MOD_ADD, "objectSid")
-        db.add(msg, controls=CONTROLS)
+        try:
+            db.add(msg, controls=CONTROLS)
+        except ldb.LdbError as e:
+            return fail(e.args[0], "self-check: add with a specified objectGUID was rejected (not usable with this Samba): %s" % e.args[1])
         res = db.search(base=msg.dn, scope=ldb.SCOPE_BASE, attrs=["objectGUID"])
         got = str(ndr_unpack(misc.GUID, res[0]["objectGUID"][0]))
         if got != str(guid):
             return fail(1, "self-check: objectGUID did not take the specified value (%s != %s)" % (got, guid))
-    except ldb.LdbError as e:
-        return fail(e.args[0], "self-check: add with a specified objectGUID was rejected (not usable with this Samba): %s" % e.args[1])
+        if FAST:
+            nt_hash = bytes(range(1, 17))
+            try:
+                set_nt_hash(str(msg.dn), nt_hash)
+            except ldb.LdbError as e:
+                return fail(e.args[0], "self-check: writing an NT hash directly was rejected (-fast-password is not usable with this Samba): %s" % e.args[1])
+            if read_nt_hash(str(msg.dn)) != nt_hash:
+                return fail(1, "self-check: an NT hash written directly was not kept (-fast-password is not usable with this Samba)")
     finally:
         db.transaction_cancel()
     return ok(samba=str(ver), tested=str(ver).startswith(TESTED_SAMBA_PREFIX), base=BASE, domain_sid=DOMAIN_SID,
@@ -165,10 +186,39 @@ def op_replace(req):
         text = b64d(pwd[0]).decode("utf-16-le")
         if len(text) < 2 or text[0] != '"' or text[-1] != '"':
             return fail(19, "unicodePwd is not wrapped in quotes")
-        db.setpassword("(distinguishedName=%s)" % ldb.binary_encode(req["dn"]), text[1:-1], False)
+        set_password(req["dn"], text[1:-1])
     if attrs:
         db.modify(message(req["dn"], attrs, ldb.FLAG_MOD_REPLACE))
     return ok()
+
+
+def set_password(dn, password):
+    global fast_count
+    if FAST and password in nt_hashes:
+        set_nt_hash(dn, nt_hashes[password])
+        fast_count += 1
+        return
+    db.setpassword("(distinguishedName=%s)" % ldb.binary_encode(dn), password, False)
+    if FAST:
+        nt_hash = read_nt_hash(dn)
+        if nt_hash:
+            nt_hashes[password] = nt_hash
+
+
+def read_nt_hash(dn):
+    res = db.search(base=dn, scope=ldb.SCOPE_BASE, attrs=["unicodePwd"], controls=["search_options:1:2"])
+    return res[0]["unicodePwd"][0] if "unicodePwd" in res[0] else None
+
+
+def set_nt_hash(dn, nt_hash):
+    """Write an NT hash as it is, and pwdLastSet as setpassword sets it (now): the bypass control makes the password
+    module take unicodePwd as a hash and derive nothing from it."""
+    msg = ldb.Message()
+    msg.dn = ldb.Dn(db, dn)
+    msg["unicodePwd"] = ldb.MessageElement([nt_hash], ldb.FLAG_MOD_REPLACE, "unicodePwd")
+    nttime = int((time.time() + 11644473600) * 10000000)  # 100ns since 1601-01-01
+    msg["pwdLastSet"] = ldb.MessageElement([str(nttime).encode()], ldb.FLAG_MOD_REPLACE, "pwdLastSet")
+    db.modify(msg, controls=["local_oid:%s:0" % dsdb.DSDB_CONTROL_BYPASS_PASSWORD_HASH_OID] + CONTROLS)
 
 
 def op_add_values(req):
@@ -186,7 +236,7 @@ def op_finish(_req):
     summary = out[-1] if out else ""
     if proc.returncode != 0 or ", 0 errors" not in summary and "(0 errors)" not in summary:
         return fail(1, "dbcheck reported an error (relax loosens the consistency checks, so this is the last line of defense): " + " / ".join(out[-5:]))
-    return ok(max_rid=max_rid, rid_next=bumped, dbcheck=summary)
+    return ok(max_rid=max_rid, rid_next=bumped, dbcheck=summary, fast_passwords=fast_count)
 
 
 def bump_rid(maximum):

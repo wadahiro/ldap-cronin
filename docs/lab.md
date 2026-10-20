@@ -192,10 +192,17 @@ ldap-cronin diff -config config.toml
 ```
 
 - `lab up --like-source <config>` reads the domain's `objectSid` / `objectGUID`, the domain name and the NetBIOS name from `[source]` and creates Samba with the same values. `--domain-sid` / `--domain-guid` set them directly and take precedence. **They apply only when the domain is created** (to change them, `lab reset` and recreate).
-- `clone -native` selects the lab with `-lab-prefix` (default `ldap-cronin`) and `-lab-instance`. The lab container is stopped only during the import and resumed afterwards, also on failure. If the lab's domain (root DN, SID, GUID) differs from the source, it refuses without writing anything.
+- `clone -native` selects the lab with `-lab-prefix` (default `ldap-cronin`) and `-lab-instance`. It names the lab and asks `[y/N]` before stopping it, as `clone` does before writing (`-y` skips it). The lab container is stopped only during the import and resumed afterwards, also on failure. If the lab's domain (root DN, SID, GUID) differs from the source, it refuses without writing anything.
 - After the import it runs `dbcheck` (Samba's database check) and fails on errors. It also advances the RID allocation so RIDs of users created over LDAP later do not collide with imported ones.
 - It can be re-run: an object that already exists with the same `objectGUID` gets only its attribute differences updated. **If an object with a different `objectGUID` exists at the same DN, it fails without rewriting** (`objectGUID` cannot be changed).
 - It writes no marker and no mapping file: neither is needed when the `objectGUID` is the same.
+- `-fast-password` makes it about 3 times faster: 5,000 users and 50 groups took 24s instead of 75s (an LDAP `clone`
+  took 60s). Most of the time of a user goes into the hashes Samba derives from the password (the NT hash, and the
+  Kerberos keys salted with the account name). With this flag the first user gets the fixed password as usual; the
+  others get the NT hash it got, written directly. **Those users then have no Kerberos AES keys:** they log on over
+  LDAP, NTLM and Kerberos with RC4, but not where only AES is allowed. Leave the flag off when the test needs the
+  production behavior. The self-check at the start also tries it (and rolls it back), and the summary says how many
+  users got the hash directly.
 - `diff` switches to matching by `objectGUID` automatically when the `objectGUID` is the same on both sides; the summary shows `rename/move check: on (objectGUID preserved ...)`. The decision uses the `objectGUID` of the first object `diff` compares under `base_dn`, found with the configured filters (`base_dn` itself only when nothing is under it, because a container that exists in the lab from the start, such as `CN=Users`, has the lab's own `objectGUID`). **The domain GUID alone is not enough**: after a plain LDAP `clone` into a `--like-source` lab, the domain GUID matches but the objects' GUIDs differ.
 
 ### Limitations (read these)
@@ -203,7 +210,7 @@ ldap-cronin diff -config config.toml
 - **Samba only.** It cannot be used with a real AD (Windows AD does not let you create an object with a chosen `objectGUID`, either over LDAP or directly).
 - **This is not a supported way of using Samba.** It uses Samba internals (the replication path, with system privileges and the `provision` and `relax` controls). It depends on the Samba version, and only **4.19.5** has been verified.
   At the start of each run it tries the same operation (and rolls it back) and fails immediately if it does not work. On another version it warns and continues, provided this self-check passes.
-- **Password hashes are not copied** (they cannot be read over LDAP). User passwords are the fixed password, as in a normal `clone`.
+- **Password hashes are not copied** (they cannot be read over LDAP). User passwords are the fixed password, as in a normal `clone` (with `-fast-password`, without Kerberos AES keys).
 - `whenCreated` and `uSNCreated` become the lab's local values (not the source's).
 - **RIDs can collide.** If the RID of a source user is the same as that of one of the lab's standard objects (RID 1000, 1101, 1102), importing that object fails with an error that names the colliding object
   (it is never skipped silently). For a source built on Samba the configuration is the same, so collisions normally do not occur.

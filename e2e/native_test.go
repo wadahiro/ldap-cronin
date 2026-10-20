@@ -84,9 +84,9 @@ func TestNativeImportKeepsObjectGUIDAndObjectSid(t *testing.T) {
 	must(dstLab.Up(context.Background(), lab.UpOptions{Image: image, Flags: lab.Settings{Domain: realm, AdminPassword: password,
 		DomainSID: srcSID, DomainGUID: srcGUID, LDAPPort: freePort(t), LDAPSPort: dstLDAPS}}))
 
-	importNative := func() *clone.Report {
+	importNative := func(opts lab.NativeOptions) (*clone.Report, lab.NativeFinish) {
 		t.Helper()
-		n, err := dstLab.OpenNative(context.Background())
+		n, err := dstLab.OpenNative(context.Background(), opts)
 		must(err)
 		defer func() { must(n.Close(context.Background())) }()
 		if n.Info.DomainSID != srcSID || !strings.EqualFold(n.Info.DomainGUID, srcGUID) {
@@ -98,9 +98,13 @@ func TestNativeImportKeepsObjectGUIDAndObjectSid(t *testing.T) {
 		res, err := n.Finish(context.Background())
 		must(err)
 		t.Logf("native: %s", res.Summary())
-		return rep
+		return rep, res
 	}
-	rep := importNative()
+	// The first import gives the passwords the fast way; the users are checked to log on below.
+	rep, res := importNative(lab.NativeOptions{FastPassword: true})
+	if res.FastPasswords == 0 {
+		t.Fatalf("-fast-password must give the NT hash directly to the users after the first: %+v", res)
+	}
 	if rep.Added == 0 {
 		t.Fatalf("nothing imported: %+v", rep)
 	}
@@ -151,6 +155,31 @@ func TestNativeImportKeepsObjectGUIDAndObjectSid(t *testing.T) {
 	}
 	login.Close()
 
+	// Every enabled user logs on with the fixed password, those given the NT hash directly too, and not with another.
+	var enabled []string
+	err = dst.Walk(context.Background(), cloneBase, "(&(objectCategory=person)(objectClass=user))", []string{"userAccountControl"}, func(e directory.Entry) error {
+		var uac int
+		if _, err := fmt.Sscan(strings.Join(e.Values("userAccountControl"), ""), &uac); err == nil && uac&2 == 0 {
+			enabled = append(enabled, e.DN)
+		}
+		return nil
+	})
+	must(err)
+	if len(enabled) < 2 {
+		t.Fatalf("at least two enabled users are needed to see both ways of setting the password: %v", enabled)
+	}
+	for _, u := range enabled {
+		c, err := dialAs(dstLDAPS, u, fixed)
+		if err != nil {
+			t.Fatalf("login as %s with the fixed password: %v", u, err)
+		}
+		c.Close()
+	}
+	if c, err := dialAs(dstLDAPS, enabled[len(enabled)-1], fixed+"x"); err == nil {
+		c.Close()
+		t.Fatal("another password must be refused")
+	}
+
 	// A user created over LDAP after the import does not collide with the imported RIDs.
 	conn, err := ldap.DialURL(fmt.Sprintf("ldaps://%s:%d", host, dstLDAPS), ldap.DialWithTLSConfig(&tls.Config{InsecureSkipVerify: true}))
 	must(err)
@@ -182,7 +211,7 @@ func TestNativeImportKeepsObjectGUIDAndObjectSid(t *testing.T) {
 	must(conn.Del(ldap.NewDelRequest(fresh, nil)))
 
 	// Re-running only updates the same objects and adds nothing. The lab is stopped and restored, so the connection is reopened.
-	if again := importNative(); again.Added != 0 {
+	if again, _ := importNative(lab.NativeOptions{}); again.Added != 0 {
 		t.Fatalf("a re-run must not add anything: %+v", again)
 	}
 	reconnect := func() {

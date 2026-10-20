@@ -27,6 +27,14 @@ const (
 	ldbEntryExists = 68
 )
 
+// NativeOptions are how a native import writes.
+type NativeOptions struct {
+	// FastPassword gives the first user the fixed password as Samba does, and every other user the NT hash it got,
+	// written directly: Samba then derives no other hash, the Kerberos AES keys among them, which is what takes the
+	// time of a user. Those users log on over LDAP and with Kerberos through RC4, not AES.
+	FastPassword bool
+}
+
 // NativeInfo is the information about the lab's Samba and domain reported by the helper.
 type NativeInfo struct {
 	Samba      string
@@ -55,9 +63,10 @@ type wireResponse struct {
 	DomainSID  string `json:"domain_sid"`
 	DomainGUID string `json:"domain_guid"`
 
-	MaxRID  int    `json:"max_rid"`
-	RIDNext int    `json:"rid_next"`
-	DBCheck string `json:"dbcheck"`
+	MaxRID        int    `json:"max_rid"`
+	RIDNext       int    `json:"rid_next"`
+	DBCheck       string `json:"dbcheck"`
+	FastPasswords int    `json:"fast_passwords"`
 }
 
 // NativeFinish is the result of the post-import cleanup (RID allocation, dbcheck).
@@ -65,6 +74,8 @@ type NativeFinish struct {
 	MaxRID  int
 	RIDNext int
 	DBCheck string
+	// FastPasswords is the number of users given the NT hash directly (NativeOptions.FastPassword).
+	FastPasswords int
 }
 
 // Native is a session that creates objects directly in the lab's Samba with a specified objectGUID and objectSid.
@@ -84,10 +95,13 @@ type Native struct {
 
 var _ directory.Directory = (*Native)(nil)
 
+// Name is the lab's container name (ldap-cronin-ad, or ldap-cronin-ad-<instance>).
+func (l *Lab) Name() string { return l.container() }
+
 func (l *Lab) helperName() string { return l.container() + "-native" }
 
 // OpenNative stops the lab, starts the helper and runs the self-check. On failure it restores the lab and fails.
-func (l *Lab) OpenNative(ctx context.Context) (*Native, error) {
+func (l *Lab) OpenNative(ctx context.Context, opts NativeOptions) (*Native, error) {
 	st, ok := l.D.(Streamer)
 	if !ok {
 		return nil, errors.New("this docker invocation method does not support native import")
@@ -135,7 +149,7 @@ func (l *Lab) OpenNative(ctx context.Context) (*Native, error) {
 		return nil, err
 	}
 	n.proc, n.rd = proc, bufio.NewReaderSize(proc.Stdout, 1<<20)
-	resp, err := n.call(ctx, map[string]any{"op": "hello"})
+	resp, err := n.call(ctx, map[string]any{"op": "hello", "fast_password": opts.FastPassword})
 	if err != nil {
 		_ = n.Close(ctx)
 		return nil, fmt.Errorf("cannot start the native helper (it may not work with this Samba): %w", err)
@@ -283,7 +297,7 @@ func (n *Native) Finish(ctx context.Context) (NativeFinish, error) {
 		return NativeFinish{}, err
 	}
 	n.finished = true
-	return NativeFinish{MaxRID: resp.MaxRID, RIDNext: resp.RIDNext, DBCheck: resp.DBCheck}, nil
+	return NativeFinish{MaxRID: resp.MaxRID, RIDNext: resp.RIDNext, DBCheck: resp.DBCheck, FastPasswords: resp.FastPasswords}, nil
 }
 
 // Close ends the helper and resumes the lab that was stopped. It runs to the end even when ctx is cancelled, since
@@ -324,6 +338,9 @@ func (f NativeFinish) Summary() string {
 	parts := []string{"dbcheck: " + strings.TrimSpace(f.DBCheck)}
 	if f.MaxRID > 0 {
 		parts = append(parts, fmt.Sprintf("largest imported RID=%d (next allocation=%d)", f.MaxRID, f.RIDNext))
+	}
+	if f.FastPasswords > 0 {
+		parts = append(parts, fmt.Sprintf("-fast-password: %d users got the NT hash directly (no Kerberos AES keys)", f.FastPasswords))
 	}
 	return strings.Join(parts, " / ")
 }

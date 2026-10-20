@@ -12,7 +12,7 @@ import (
 func TestNativeStopsTheLabWhileImportingAndRestartsItAfterwards(t *testing.T) {
 	fx := newLabFixture(t)
 	fx.up("ad.example.com")
-	n, err := fx.l.OpenNative(context.Background())
+	n, err := fx.l.OpenNative(context.Background(), NativeOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +35,7 @@ func TestInterruptedNativeImportStopsBetweenRequestsAndResumesTheLab(t *testing.
 	fx := newLabFixture(t)
 	fx.up("ad.example.com")
 	ctx, cancel := context.WithCancel(context.Background())
-	n, err := fx.l.OpenNative(ctx)
+	n, err := fx.l.OpenNative(ctx, NativeOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func TestInterruptedNativeImportStopsBetweenRequestsAndResumesTheLab(t *testing.
 func TestNativeHelperMountsTheLabVolumesAndKeepsPasswordsOutOfArguments(t *testing.T) {
 	fx := newLabFixture(t)
 	fx.up("ad.example.com")
-	n, err := fx.l.OpenNative(context.Background())
+	n, err := fx.l.OpenNative(context.Background(), NativeOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,10 +71,30 @@ func TestNativeHelperMountsTheLabVolumesAndKeepsPasswordsOutOfArguments(t *testi
 	}
 }
 
+func TestNativeFastPasswordReachesTheSelfCheckAndTheSummary(t *testing.T) {
+	fx := newLabFixture(t)
+	fx.up("ad.example.com")
+	n, err := fx.l.OpenNative(context.Background(), NativeOptions{FastPassword: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer n.Close(context.Background())
+	if fx.d.helper.hello["fast_password"] != true {
+		t.Fatalf("the helper must be told before its self-check: %v", fx.d.helper.hello)
+	}
+	f := NativeFinish{DBCheck: "Checked 3 objects (0 errors)", FastPasswords: 41}
+	if !strings.Contains(f.Summary(), "41 users got the NT hash directly (no Kerberos AES keys)") {
+		t.Fatal(f.Summary())
+	}
+	if strings.Contains(NativeFinish{DBCheck: "ok"}.Summary(), "fast-password") {
+		t.Fatal("a normal import says nothing of it")
+	}
+}
+
 func TestNativeAddMapsExistingEntryToErrExists(t *testing.T) {
 	fx := newLabFixture(t)
 	fx.up("ad.example.com")
-	n, err := fx.l.OpenNative(context.Background())
+	n, err := fx.l.OpenNative(context.Background(), NativeOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +121,7 @@ func TestNativeAddMapsExistingEntryToErrExists(t *testing.T) {
 func TestNativeFinishRunsBeforeTheLabIsRestarted(t *testing.T) {
 	fx := newLabFixture(t)
 	fx.up("ad.example.com")
-	n, err := fx.l.OpenNative(context.Background())
+	n, err := fx.l.OpenNative(context.Background(), NativeOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +139,7 @@ func TestNativeRestartsTheLabWhenTheSelfCheckFails(t *testing.T) {
 	fx.up("ad.example.com")
 	fx.d.helper = newFakeHelper()
 	fx.d.helper.failOp = "hello"
-	if _, err := fx.l.OpenNative(context.Background()); err == nil {
+	if _, err := fx.l.OpenNative(context.Background(), NativeOptions{}); err == nil {
 		t.Fatal("a failing self-check must fail")
 	}
 	if !fx.d.containers["t-ad"].running {
@@ -129,7 +149,7 @@ func TestNativeRestartsTheLabWhenTheSelfCheckFails(t *testing.T) {
 
 func TestNativeWithoutALabFails(t *testing.T) {
 	fx := newLabFixture(t)
-	if _, err := fx.l.OpenNative(context.Background()); err == nil || !strings.Contains(err.Error(), "lab") {
+	if _, err := fx.l.OpenNative(context.Background(), NativeOptions{}); err == nil || !strings.Contains(err.Error(), "lab") {
 		t.Fatalf("got %v", err)
 	}
 }

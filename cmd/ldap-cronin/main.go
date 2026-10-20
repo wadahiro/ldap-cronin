@@ -48,9 +48,12 @@ Flags (clone/diff):
   -dry-run         (clone only) Do not connect to the target; print what would be done as LDIF
   -with-password   (clone -dry-run) The LDIF carries the users' fixed password, and on AD the userAccountControl set
                    after it, so ldapmodify alone gives users that can log on; without it they are comments
-  -y, -yes         (clone only) Write without asking: clone shows the target and the source and asks [y/N] first
+  -y, -yes         (clone only) Write without asking: clone shows the target (with -native the lab) and the source
+                   and asks [y/N] first
   -native          (clone only) Import into the lab's Samba keeping the source's objectGUID and objectSid (Samba only. lab help)
   -lab-prefix <p>, -lab-instance <name>   (clone -native) The lab to import into
+  -fast-password   (clone -native) Give the users the fixed password's NT hash directly instead of having Samba
+                   derive every hash: about 3 times faster; the users then have no Kerberos AES keys (RC4 only)
   -format <f>      (diff only) text (default), or json: JSON Lines, one object per difference, then the summary
   -max-values <n>  (diff only, text) Show at most n values per direction of a multi-valued difference (default: 0, all)
   -progress <m>    auto (default): on a terminal a status kept at the bottom of the screen (phase, count, rate, time
@@ -177,6 +180,7 @@ func runClone(ctx context.Context, args []string, out io.Writer) error {
 	dryRun := fs.Bool("dry-run", false, "print LDIF instead of writing")
 	withPassword := fs.Bool("with-password", false, "with -dry-run: the LDIF carries the users' fixed password and what follows it, so ldapmodify alone completes them")
 	native := fs.Bool("native", false, "import into a lab Samba keeping objectGUID/objectSid (Samba only)")
+	fastPassword := fs.Bool("fast-password", false, "with -native: give the users the fixed password's NT hash directly, about 3 times faster, without Kerberos AES keys")
 	yes := yesFlag(fs)
 	progressMode := progressFlag(fs)
 	var labFlags labCommon
@@ -187,6 +191,9 @@ func runClone(ctx context.Context, args []string, out io.Writer) error {
 	}
 	if *native && *dryRun {
 		return errors.New("-native and -dry-run cannot be used together")
+	}
+	if *fastPassword && !*native {
+		return errors.New("-fast-password is for -native: it writes the lab's database directly")
 	}
 	if *withPassword && !*dryRun {
 		return errors.New("-with-password is for -dry-run: clone itself always sets the password")
@@ -223,7 +230,7 @@ func runClone(ctx context.Context, args []string, out io.Writer) error {
 		if lerr != nil {
 			return lerr
 		}
-		report, err = s.Native(ctx, l, out)
+		report, err = s.Native(ctx, l, lab.NativeOptions{FastPassword: *fastPassword}, out)
 	} else {
 		report, err = s.Clone(ctx, *dryRun, out, log)
 	}

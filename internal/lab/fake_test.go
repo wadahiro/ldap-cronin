@@ -352,6 +352,7 @@ type fakeHelper struct {
 	sawStop bool                           // whether the lab container was stopped at startup
 	ops     []string
 	failOp  string // returns an error for this op
+	hello   map[string]any
 }
 
 func newFakeHelper() *fakeHelper {
@@ -412,6 +413,7 @@ func (h *fakeHelper) handle(req map[string]any) map[string]any {
 	dn, _ := req["dn"].(string)
 	switch op {
 	case "hello":
+		h.hello = req
 		return map[string]any{"ok": true, "samba": "4.19.5-Ubuntu", "tested": true, "base": "DC=ad,DC=example,DC=com",
 			"domain_sid": "S-1-5-21-1-2-3", "domain_guid": "11111111-2222-3333-4444-555555555555"}
 	case "get":

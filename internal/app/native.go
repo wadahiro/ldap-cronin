@@ -51,7 +51,7 @@ func (s *Session) domain(ctx context.Context) (profile.Domain, error) {
 // Native imports into the lab's Samba keeping the source's objectGUID and objectSid, which cannot be given over
 // LDAP. Samba only; it uses internals that are not a supported usage. It does not connect to the target over LDAP.
 // The lab is stopped during the import and resumed afterwards, also when the import fails or is interrupted.
-func (s *Session) Native(ctx context.Context, l *lab.Lab, out io.Writer) (report *clone.Report, err error) {
+func (s *Session) Native(ctx context.Context, l *lab.Lab, opts lab.NativeOptions, out io.Writer) (report *clone.Report, err error) {
 	if s.Job.ConfigurationRefs == plan.ConfigurationRefsClone {
 		// The import writes the domain partition of the lab's database; the configuration partition is not tried.
 		return nil, fmt.Errorf("[scope] configuration_refs = %q is not supported by clone -native, which imports the domain partition only", plan.ConfigurationRefsClone)
@@ -64,7 +64,13 @@ func (s *Session) Native(ctx context.Context, l *lab.Lab, out io.Writer) (report
 	if err != nil {
 		return nil, err
 	}
-	n, err := l.OpenNative(ctx)
+	// Asked before the lab is stopped: a No leaves it as it was.
+	if s.Confirm != nil {
+		if err := s.ask(ctx, "clone -native stops the lab and adds and updates entries under base_dn in its database", "the lab "+l.Name()+" (Samba's database, written directly)"); err != nil {
+			return nil, err
+		}
+	}
+	n, err := l.OpenNative(ctx, opts)
 	if err != nil {
 		return nil, err
 	}

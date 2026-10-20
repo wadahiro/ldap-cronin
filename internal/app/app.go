@@ -281,9 +281,16 @@ func (s *Session) confirmWrite(ctx context.Context, dst directory.Directory, wha
 	if s.Confirm == nil {
 		return nil
 	}
+	return s.ask(ctx, what, s.Cfg.Target.URL+serverName(ctx, dst), "bind_dn: "+s.Cfg.Target.BindDN)
+}
+
+// ask shows what is about to be written where, and what is only read, and asks s.Confirm.
+func (s *Session) ask(ctx context.Context, what, target string, details ...string) error {
 	fmt.Fprintf(s.Warn, "%s\n", what)
-	fmt.Fprintf(s.Warn, "  target (written): %s%s\n", s.Cfg.Target.URL, serverName(ctx, dst))
-	fmt.Fprintf(s.Warn, "    bind_dn: %s\n", s.Cfg.Target.BindDN)
+	fmt.Fprintf(s.Warn, "  target (written): %s\n", target)
+	for _, d := range details {
+		fmt.Fprintf(s.Warn, "    %s\n", d)
+	}
 	fmt.Fprintf(s.Warn, "    base_dn: %s\n", s.Job.BaseDN)
 	source := s.Cfg.Source.URL
 	if s.Cfg.Source.LDIF != "" {
