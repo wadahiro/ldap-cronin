@@ -47,6 +47,9 @@ objectClass: user
 objectCategory: CN=Person,CN=Schema,CN=Configuration,` + root + `
 department: IT
 employeeType: staff
+userAccountControl: 512
+uSNChanged: 120
+whenChanged: 20261021091233.0Z
 objectGUID:: AAECAwQFBgcICQoLDA0ODw==
 entryUUID: 0e8c3a3e-0000-0000-0000-000000000001
 description: a long description that
@@ -56,6 +59,9 @@ dn: CN=Bob\2C Jr.,OU=IDM,` + root + `
 objectClass: user
 objectCategory: CN=Person,CN=Schema,CN=Configuration,` + root + `
 department: Sales
+userAccountControl: 66050
+uSNChanged: 99
+whenChanged: 20250101000000.0Z
 employeeType: external
 manager: CN=Alice,OU=IDM,` + root + `
 
@@ -66,6 +72,7 @@ objectCategory: CN=Computer,CN=Schema,CN=Configuration,` + root + `
 
 dn: CN=Eng,OU=IDM,` + root + `
 objectClass: group
+groupType: -2147483646
 member: CN=Alice,OU=IDM,` + root + `
 
 dn: CN=Ext,OU=IDM,` + root + `
@@ -147,12 +154,24 @@ func TestFiltersSelectAsTheServerDoes(t *testing.T) {
 		"(cn=*)":                     "",
 		"(description=a long*goes*)": "CN=Alice",
 		"(department=s*s)":           "CN=Bob\\2C Jr.",
+		// Ordering: integers as numbers (99 < 120 though "99" > "120" as text), generalized times as text.
+		"(uSNChanged>=100)":                "CN=Alice",
+		"(uSNChanged<=99)":                 "CN=Bob\\2C Jr.",
+		"(whenChanged>=20260101000000.0Z)": "CN=Alice",
+		"(&(objectClass=user)(sn>=a))":     "",
+		// AD's bitwise rules: disabled (2) and password never expires (65536), the security groups (0x80000000).
+		"(userAccountControl:1.2.840.113556.1.4.803:=2)":                              "CN=Bob\\2C Jr.",
+		"(&(objectCategory=person)(!(userAccountControl:1.2.840.113556.1.4.803:=2)))": "CN=Administrator CN=Alice",
+		"(userAccountControl:1.2.840.113556.1.4.803:=65538)":                          "CN=Bob\\2C Jr.",
+		"(userAccountControl:1.2.840.113556.1.4.804:=65538)":                          "CN=Bob\\2C Jr.",
+		"(userAccountControl:1.2.840.113556.1.4.804:=514)":                            "CN=Alice CN=Bob\\2C Jr.",
+		"(groupType:1.2.840.113556.1.4.803:=2147483648)":                              "CN=Eng",
 	} {
 		if got := names(t, d, filter); got != want {
 			t.Errorf("%s: %q, want %q", filter, got, want)
 		}
 	}
-	for _, filter := range []string{"(uSNChanged>=100)", "(cn~=alice)", "(userAccountControl:1.2.840.113556.1.4.803:=2)"} {
+	for _, filter := range []string{"(cn~=alice)", "(memberOf:1.2.840.113556.1.4.1941:=CN=Eng,OU=IDM," + root + ")", "(cn:dn:2.5.13.5:=IDM)", "(:1.2.840.113556.1.4.803:=2)"} {
 		err := d.Walk(context.Background(), root, filter, nil, func(directory.Entry) error { return nil })
 		if err == nil || !strings.Contains(err.Error(), "not supported on a dump") {
 			t.Errorf("%s must be refused, not matched: %v", filter, err)

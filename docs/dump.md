@@ -73,10 +73,15 @@ lines say what it is; LDIF tools skip them:
 ## Reading it
 
 - **Filters**: the kinds' filters, `[scope] filters` and the tool's own are evaluated as the server does for `&`, `|`,
-  `!`, equality, presence and substrings. `objectCategory=person` matches the class's `defaultObjectCategory`, as on
-  AD (from the dump's schema; without the class there, the category named after it, `CN=Person`); a DN compares as a DN, a binary value byte for byte, the rest ignoring case. Ordering (`>=`, `<=`),
-  approximate (`~=`) and extensible matches (`:1.2.840.113556.1.4.803:=`) are refused with the filter named, never
-  taken as a match.
+  `!`, equality, presence, substrings, ordering (`>=`, `<=`) and AD's bitwise matching rules
+  (`(userAccountControl:1.2.840.113556.1.4.803:=2)`, every bit set, and `.804`, any of them).
+  - `objectCategory=person` matches the class's `defaultObjectCategory`, as on AD (from the dump's schema; without
+    the class there, the category named after it, `CN=Person`).
+  - A DN compares as a DN, a binary value byte for byte, the rest ignoring case.
+  - Ordering compares integers (`uSNChanged`, `pwdLastSet`) as numbers and the rest as text, which orders
+    generalized times of the same form (`whenChanged>=20260101000000.0Z`) by time.
+  - Approximate matches (`~=`) and other matching rules (the in-chain rule `1.2.840.113556.1.4.1941`, `:dn`) are
+    refused with the filter named, never taken as a match.
 - **Memory**: none of the entries is held. A search reads the file from the start, an entry at a time; a read of one
   entry goes straight to it through an index of where each starts (16 bytes an entry: under 2 MB for 100,000). A
   `.gz` dump is expanded to a temporary file first (readable by its owner only, removed when the command ends), as
