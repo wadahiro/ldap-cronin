@@ -154,10 +154,44 @@ over.
 `lab up` ends with the connection details and the `[target]` section to use, which is the one already in
 `config.toml` (LDAPS on port 12636; `--ldaps-port` changes it).
 
-### 5. Clone
+### 5. Give the lab the source's schema extensions
+
+Production may have attributes and classes the lab lacks: an extension of your own (an employee code), or a
+product's. Do this **before the first `clone`**, so the snapshot of step 8 carries them and every restore has them.
 
 ```sh
 export LDAP_CRONIN_TARGET_PASSWORD="$SAMBA_ADMIN_PASSWORD"
+./bin/ldap-cronin schema -config config.toml > schema.ldif       # what the lab lacks; writes nothing
+```
+
+The summary on the terminal says what it found:
+
+```
+attributes to add: 2
+  acmeEmployeeCode
+  acmeSponsor
+classes to add: 1
+  acmePerson
+classes to extend: 1
+  user: auxiliaryClass acmePerson
+```
+
+`the target schema has every attribute and class of the source's extensions` means there is nothing to do: go on
+to step 6. Otherwise look through `schema.ldif` ([what is in it](#give-the-target-their-definitions)), then write
+it to the lab and check that nothing is left:
+
+```sh
+./bin/ldap-cronin schema -config config.toml -apply
+./bin/ldap-cronin schema -config config.toml > /dev/null         # the target schema has every attribute and class ...
+```
+
+The lab's schema can be changed freely: if something went wrong, `lab reset -y` and start again from step 4.
+Having the definitions does not copy the values yet: name the attributes in `[attributes] extra_include`, or copy
+everything with [`mode = "all"`](#copy-everything-mode--all).
+
+### 6. Clone
+
+```sh
 ./bin/ldap-cronin clone -config config.toml
 ```
 
@@ -172,7 +206,7 @@ references. It prints each write (`add`, `update`) and the counts at the end.
 A run can be stopped with Ctrl-C and started again: `clone` only adds what is missing and updates what differs,
 and never deletes. A second run right after the first writes nothing.
 
-### 6. Check the clone
+### 7. Check the clone
 
 ```sh
 ./bin/ldap-cronin diff -config config.toml; echo "exit=$?"
@@ -206,13 +240,13 @@ not compared:
 `references not compared` are the values the warnings of `clone` named: diff leaves them out, and compares every
 other member.
 
-### 7. Save the state
+### 8. Save the state
 
 ```sh
 ./bin/ldap-cronin lab snapshot baseline --note "right after clone"
 ```
 
-### 8. The test cycle
+### 9. The test cycle
 
 ```sh
 # ... the program under test changes the lab (ldaps://localhost:12636) ...
@@ -245,7 +279,7 @@ date with the source), and `lab snapshot baseline --force`. Objects deleted on t
 The same configuration works against a Windows AD; only `[target]` and a few preparations change. There are no
 snapshots here: restoring a test domain is your backup's job, and `clone` never deletes anything.
 
-### 9. Prepare the test domain
+### 10. Prepare the test domain
 
 - **Same domain name** as the source (`ad.example.com`), isolated from production: no trust, no replication, its
   own DNS.
@@ -270,10 +304,9 @@ snapshots here: restoring a test domain is your backup's job, and `clone` never 
   ```
 
   Without it `clone` warns and still works.
-- The source's schema extensions your allow lists need (the Exchange schema for `extensionAttribute1`):
-  `ldap-cronin schema` writes them as a file to review ([Give the target their definitions](#give-the-target-their-definitions)).
+- The source's schema extensions: step 12, once the configuration points at the test domain.
 
-### 10. Point the configuration at it
+### 11. Point the configuration at it
 
 ```toml
 [target]
@@ -286,7 +319,60 @@ timeout = "2m"
 workers = 4                                       # a real DC also serves others; start low
 ```
 
-### 11. Dry-run, clone, diff
+### 12. Give the test domain the source's schema extensions
+
+Everything here is LDAP, so it is done from your machine like the clone. **A schema change cannot be undone in
+AD**: an attribute or class can only be made defunct, and the schema belongs to the whole forest. Add only what
+production has, to a forest that exists for testing.
+
+1. **Find the schema master.** Schema changes are made on the DC that holds the schema master role; another DC
+   refuses them.
+
+   ```sh
+   ldapsearch -H ldaps://dc01.test.ad.example.com -D 'CN=Administrator,CN=Users,DC=ad,DC=example,DC=com' -W \
+     -b 'CN=Schema,CN=Configuration,DC=ad,DC=example,DC=com' -s base fSMORoleOwner
+   # fSMORoleOwner: CN=NTDS Settings,CN=DC01,CN=Servers,... -> DC01 holds it
+   ```
+
+   On a Windows machine of the domain, `netdom query fsmo` says the same.
+
+2. **An account in Schema Admins.** The tool's account of step 10 is not one, and should not be: add a
+   test-domain administrator to Schema Admins for the change, and remove it afterwards. Membership takes effect at
+   the next logon (bind).
+
+3. **Write the file and read it.** The configuration of step 11 reads the test domain's schema through any DC:
+
+   ```sh
+   ./bin/ldap-cronin schema -config config.toml > schema.ldif
+   ```
+
+   Check the summary: every name under `attributes to add` and `classes to add` should be one production has on
+   purpose. `left out` lists what will not be carried, with why ([what each means](#give-the-target-their-definitions)).
+
+4. **Apply it to the schema master**, as the Schema Admin, over LDAPS:
+
+   ```sh
+   ldapmodify -H ldaps://dc01.test.ad.example.com \
+     -D 'CN=Administrator,CN=Users,DC=ad,DC=example,DC=com' -W -f schema.ldif
+   ```
+
+   It stops at the first change the DC refuses and says why; the changes before it stay. Fix the cause, write
+   the file again (step 3: it then holds only what is still missing) and apply that.
+
+   The tool can write it too: copy `config.toml` to `schema.toml`, point its `[target]` at the schema master with
+   the Schema Admin as `bind_dn`, and run `./bin/ldap-cronin schema -config schema.toml -apply`. On the DC itself,
+   `ldifde -i -f schema.ldif` reads the same file.
+
+5. **Check it, through the DC the clone writes to**, once the change has replicated there (the schema replicates
+   like everything else; with one DC there is nothing to wait for):
+
+   ```sh
+   ./bin/ldap-cronin schema -config config.toml > /dev/null   # the target schema has every attribute and class ...
+   ```
+
+Then remove the account from Schema Admins.
+
+### 13. Dry-run, clone, diff
 
 ```sh
 ./bin/ldap-cronin clone -config config.toml -dry-run > clone.ldif   # unchanged from step 3
@@ -295,7 +381,7 @@ workers = 4                                       # a real DC also serves others
 ```
 
 Run it outside business hours: every object is several writes, replicated to every DC (the load per user is in
-[operations.md](operations.md#load-on-the-target-ad-clone)). Then test as in step 8, with `diff` against the test
+[operations.md](operations.md#load-on-the-target-ad-clone)). Then test as in step 9, with `diff` against the test
 domain; to start a test over, re-run `clone`, which puts back what was changed (it does not remove what the
 program added: `diff` lists those as `ONLY_TARGET`).
 
@@ -372,24 +458,8 @@ objectClass: classSchema
 ...
 ```
 
-**The lab.** Apply it **before the first `clone`**, then take the snapshot as usual: a snapshot carries the schema,
-and every restore or second instance has it.
-
-```sh
-./bin/ldap-cronin schema -config config.toml -apply
-./bin/ldap-cronin schema -config config.toml          # now: the target schema has every attribute and class ...
-```
-
-**A test AD** (part 2). **A schema change cannot be undone in AD**: an attribute or class can only be made defunct.
-Review `schema.ldif`, then apply it as a member of Schema Admins, against the schema master:
-
-```sh
-ldapmodify -H ldaps://dc01.test.ad.example.com -D 'CN=Administrator,CN=Users,DC=ad,DC=example,DC=com' -W -f schema.ldif
-# or on the DC: ldifde -i -f schema.ldif
-```
-
-`schema -apply` does the same when `[target] url` is the schema master and `bind_dn` a Schema Admin; another DC
-refuses the change.
+How to apply it: to the lab in [step 5](#5-give-the-lab-the-sources-schema-extensions), to a test AD in
+[step 12](#12-give-the-test-domain-the-sources-schema-extensions).
 
 ### Copy and compare them
 
@@ -453,7 +523,7 @@ exclude = ["homeDirectory", "homeDrive", "profilePath", "scriptPath"]   # still 
 | `the target schema lacks attributes that the source defines and the allow lists name: ...` | Nothing was written. Give the target their definitions with `ldap-cronin schema` ([Attributes of your own](#attributes-of-your-own-schema-extensions)), or leave them out with `[attributes] exclude` |
 | `base_dn ... must be below the root` | `base_dn` is the domain root, or not in the domain; clone an OU |
 | `... already exists on the target but its ... differs` | Only with `clone -native`: the lab holds another object at that DN. Use a fresh lab |
-| `warning: [mapping] attribute adminDisplayName is not indexed on the target` | Index it (step 9); the lab does this itself |
+| `warning: [mapping] attribute adminDisplayName is not indexed on the target` | Index it (step 10); the lab does this itself |
 | `x509: certificate signed by unknown authority` | Give the CA with `ca_file` |
 | `skip member of ...: ... does not exist on target` | A member clone cannot reproduce (a principal of a trusted domain, a built-in the target lacks); `diff` counts it instead of comparing it |
 | `lab up` refuses with a different domain | A lab already exists for another domain: `lab reset -y`, or use `--instance` |
