@@ -1,13 +1,14 @@
 # ldap-cronin example configuration. Do not put passwords here (they are entered at run time without echo; LDAP_CRONIN_*_PASSWORD also works).
 
-[source]                       # clone source
-url = "ldaps://src-ad.example.com:636"
-bind_dn = "CN=Administrator,CN=Users,DC=ad,DC=example,DC=com"
+[source]                       # clone source: a dump (ldap-cronin dump; docs/dump.md), read instead of the server
+ldif = "prod.ldif.gz"
+# Or the server itself, read on every run (instead of ldif):
+# url = "ldaps://src-ad.example.com:636"
+# bind_dn = "CN=Administrator,CN=Users,DC=ad,DC=example,DC=com"
 # ca_file = "ca.pem"           # for a self-signed certificate, give the CA, or (for testing only) set the line below to true
 # insecure_skip_verify = true
 # start_tls = true             # to use StartTLS on ldap://
 # timeout = "2m"               # per LDAP operation; a hung server fails the run instead of blocking it. Default 2m, "0" for no limit
-# ldif = "prod.ldif.gz"        # instead of all of the above: a dump (ldap-cronin dump), read instead of the server (docs/dump.md)
 
 [target]                       # clone target (Samba4 AD / real AD / generic LDAP). Setting AD user passwords requires LDAPS
 url = "ldaps://localhost:12636"

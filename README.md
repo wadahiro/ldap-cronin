@@ -28,13 +28,13 @@ The name is a pun on "clone" and "ronin", a masterless samurai: cRONIN is a **c*
 
 | Command | Description |
 |---|---|
+| `dump -url u -bind-dn d -base-dn b -o f [-mask a,b]` | Read a source, read only, into one LDIF file (credentials never): `[source] ldif = "f"` then makes clone, diff and the rest read it instead of the server. See [docs/dump.md](docs/dump.md) |
+| `check -config f [-no-target] [-attrs]` | Say what `clone` would do, writing nothing: per object type the attributes the entries hold that it would leave behind (a schema extension of your own) with the `[attributes]` line that copies them, what the target's schema lacks and refuses, and the next steps to run. Exit code 1 when `clone` would refuse to start. `-no-target` reads the source alone; `-attrs` lists every attribute and what `clone` does with it |
+| `schema -config f [-apply [-y]]` | **AD**: compare the source's schema with the target's and print what the target lacks (attributes, classes, what a class both have allows) as LDIF for `ldapmodify` or `ldifde`; `-apply` writes it, after the same `[y/N]` question as `clone`. For a lab before its first clone, or as a file to review for a test AD |
 | `clone [-config f] [-dry-run [-with-password]] [-y] [-progress m]` | Add and update. Before the first write it shows the target (and the server name its root DSE gives) and the source, and asks `[y/N]`: only `y` writes, and without a terminal it stops unless `-y`. `-dry-run` does not connect to the target; it writes LDIF to standard output (progress logs go to standard error); `-with-password` puts the users' fixed password in it, so `ldapmodify` alone completes them |
 | `clone -native [-fast-password] [-lab-prefix p] [-lab-instance n]` | **Samba lab only**: import with the same `objectGUID` and `objectSid` as the source (into a lab created with `lab up --like-source`). Uses unsupported internals. `-fast-password` writes the fixed password's NT hash directly, about 3 times faster, without Kerberos AES keys. For the limitations see [docs/lab.md](docs/lab.md#importing-with-the-same-objectguid-and-objectsid-clone--native-samba-only) |
 | `diff [-config f] [-format text\|json] [-max-values n] [-progress m]` | Compare the source and the target. Exit code 1 if there are differences (2 on error). `-format json` writes JSON Lines for a program to read. For how to read the output see [docs/diff.md](docs/diff.md) |
-| `check -config f [-no-target] [-attrs]` | Say what `clone` would do, writing nothing: per object type the attributes the entries hold that it would leave behind (a schema extension of your own) with the `[attributes]` line that copies them, what the target's schema lacks and refuses, and the next steps to run. Exit code 1 when `clone` would refuse to start. `-no-target` reads the source alone; `-attrs` lists every attribute and what `clone` does with it |
 | `list-attrs [-profile ad\|ldap]` | Show the default attributes (allow list) per object type, reading nothing |
-| `schema -config f [-apply [-y]]` | **AD**: compare the source's schema with the target's and print what the target lacks (attributes, classes, what a class both have allows) as LDIF for `ldapmodify` or `ldifde`; `-apply` writes it, after the same `[y/N]` question as `clone`. For a lab before its first clone, or as a file to review for a test AD |
-| `dump -url u -bind-dn d -base-dn b -o f [-mask a,b]` | Read a source, read only, into one LDIF file (credentials never): `[source] ldif = "f"` then makes clone, diff and the rest read it instead of the server. See [docs/dump.md](docs/dump.md) |
 | `lab up / down / reset / status` | Start and stop a test lab on docker: Samba4 AD, or OpenLDAP with `--profile ldap`. See [docs/lab.md](docs/lab.md) |
 | `lab snapshot / snapshots / restore` | Take, list and restore snapshots of the lab data |
 | `version` | Print the version |
@@ -44,16 +44,22 @@ Parents above `base_dn` are created automatically if they do not exist on the ta
 
 ## Usage
 
-For a first run against Active Directory, follow the [tutorial](docs/tutorial-ad.md): a complete configuration, a
-clone into the Samba4 lab with snapshots, and the same clone into a test AD.
+For a first run against Active Directory, follow the [tutorial](docs/tutorial-ad.md): production read once into a
+dump, a complete configuration, a clone into the Samba4 lab with snapshots, and the same clone into a test AD.
 
 ```sh
-cp config.example.toml config.toml   # edit it
 make build                           # produces bin/ldap-cronin (requires Go)
-./bin/ldap-cronin clone -dry-run    # check the LDIF first
+./bin/ldap-cronin dump -url ldaps://dc01.example.com:636 -bind-dn '...' -base-dn 'OU=IDM,DC=example,DC=com' -o prod.ldif.gz
+cp config.example.toml config.toml   # edit it: [source] ldif = "prod.ldif.gz", [target], [scope] base_dn
+./bin/ldap-cronin check             # what clone would leave behind and what the target lacks, with the fixes
+./bin/ldap-cronin clone -dry-run    # the LDIF clone would write
 ./bin/ldap-cronin clone
 ./bin/ldap-cronin diff
 ```
+
+Reading production once into a dump is the basic way: production is read at one moment, every target is made from
+that same moment, and every later step (trying the configuration, cloning again, diff) never touches it.
+`[source] url` reads production on every run instead ([docs/dump.md](docs/dump.md)).
 
 The dry-run LDIF loads with `ldapmodify` into an empty target. By default it carries no password: on a generic server the users are created without one (and `clone` never adds one to an existing user); on AD the password and the `userAccountControl` that follows it are written as comments, and `clone` run against the loaded target sets them. With `-with-password` it carries the fixed password (`userPassword` in the add; on AD a `unicodePwd` modify, which needs LDAPS, then the `userAccountControl`), and `ldapmodify` alone gives users that can log on. Bind passwords are never in it.
 
