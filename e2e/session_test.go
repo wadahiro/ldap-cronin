@@ -68,7 +68,7 @@ func TestTheCommandsSessionAgainstSamba(t *testing.T) {
 	}
 
 	var list bytes.Buffer
-	must(s.ListAttrs(ctx, true, false, &list))
+	must(s.ListAttrs(ctx, true, &list))
 	for _, want := range []string{
 		`(?m)^\[user\] 1 entries under ` + regexp.QuoteMeta(scope) + `$`,
 		`(?m)^  not copied\s+extensionAttribute5\s+1$`, // the target has the Exchange schema too: no note

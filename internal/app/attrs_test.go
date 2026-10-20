@@ -18,7 +18,7 @@ func TestListAttrsShowsWhatTheSourceHoldsAndWhatCloneLeavesBehind(t *testing.T) 
 	w.src.Put("CN=Big,OU=Users,"+base, map[string][]string{"objectClass": {"top", "group"}, "cn": {"Big"}, "member;range=0-1499": {alice}})
 	s := w.open(t, ``)
 	var out bytes.Buffer
-	if err := s.ListAttrs(context.Background(), false, false, &out); err != nil {
+	if err := s.ListAttrs(context.Background(), false, &out); err != nil {
 		t.Fatal(err)
 	}
 	got := out.String()
@@ -27,7 +27,8 @@ func TestListAttrsShowsWhatTheSourceHoldsAndWhatCloneLeavesBehind(t *testing.T) 
 		`(?m)^  not copied\s+acmeEmployeeCode\s+1$`,
 		`(?m)^  copied\s+title\s+1$`,
 		`(?m)^  copied\s+member\s+1$`,
-		`(?m)^  \(and \d+ attributes of the allow list that no entry holds; -all lists them\)$`,
+		`(?m)^  copied      no entry holds these \d+:$`,
+		`(?m)^ {16}(\S+, )*department,`, // an attribute of the allow list no entry holds is named too
 		`(?m)^  never\s+unicodePwd\s+1  credential$`,
 		`(?m)^  never\s+objectGUID\s+1  managed by the server$`,
 	} {
@@ -40,13 +41,6 @@ func TestListAttrsShowsWhatTheSourceHoldsAndWhatCloneLeavesBehind(t *testing.T) 
 	}
 	if strings.Index(got, "not copied") > strings.Index(got, "  copied ") {
 		t.Fatalf("what clone leaves behind comes first:\n%s", got)
-	}
-	out.Reset()
-	if err := s.ListAttrs(context.Background(), false, true, &out); err != nil {
-		t.Fatal(err)
-	}
-	if !regexp.MustCompile(`(?m)^  copied\s+department\s+0$`).MatchString(out.String()) {
-		t.Fatalf("-all lists the allow list's attributes no entry holds:\n%s", out.String())
 	}
 	if len(w.dialed) != 1 {
 		t.Fatalf("without -target only the source is read: %v", w.dialed)
@@ -63,7 +57,7 @@ func TestListAttrsWithTargetNotesWhatTheTargetSchemaLacks(t *testing.T) {
 	}
 	s := w.open(t, ``)
 	var out bytes.Buffer
-	if err := s.ListAttrs(context.Background(), true, false, &out); err != nil {
+	if err := s.ListAttrs(context.Background(), true, &out); err != nil {
 		t.Fatal(err)
 	}
 	got := out.String()

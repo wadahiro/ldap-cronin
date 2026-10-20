@@ -289,7 +289,7 @@ not compared:
 
 - `compared objects`: objects compared, per type.
 - `RENAMED` / `REPLACED` / `UNMARKED` appear only when objects are matched (`rename/move check: on`; `REPLACED` and `UNMARKED` only when there are any). `not listed` is the number of entries left out because they merely moved along with their parent OU. A line saying objects were found more than once means a marker (or, on OpenLDAP, an `entryUUID`) was copied onto another object; the first one found was used.
-- `compared attributes`: the attributes that were compared (excluding masked ones); with `[attributes] mode = "all"`, how many per type (`list-attrs -config -all` names them), and the attributes left out because the target's schema lacks them are listed on standard error before the differences. `not compared`: what was not compared (masked, `exclude`d, the credentials, and attributes not in the allow list).
+- `compared attributes`: the attributes that were compared (excluding masked ones); with `[attributes] mode = "all"`, how many per type (`list-attrs -config` names them), and the attributes left out because the target's schema lacks them are listed on standard error before the differences. `not compared`: what was not compared (masked, `exclude`d, the credentials, and attributes not in the allow list).
 
 ## JSON output (`-format json`)
 

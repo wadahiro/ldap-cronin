@@ -293,7 +293,6 @@ func listAttrs(ctx context.Context, args []string, out io.Writer) error {
 	name := fs.String("profile", profile.NameAD, "server type: ad or ldap (without -config)")
 	cfgPath := fs.String("config", "", "config file: read the source and list the attributes its entries hold")
 	target := fs.Bool("target", false, "with -config: also read the target's schema")
-	all := fs.Bool("all", false, "with -config: also list the attributes of the allow lists that no entry holds")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -303,7 +302,7 @@ func listAttrs(ctx context.Context, args []string, out io.Writer) error {
 			return err
 		}
 		defer s.Close()
-		return s.ListAttrs(ctx, *target, *all, out)
+		return s.ListAttrs(ctx, *target, out)
 	}
 	if *target {
 		return errors.New("-target needs -config")

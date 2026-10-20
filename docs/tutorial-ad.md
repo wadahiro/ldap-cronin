@@ -108,10 +108,12 @@ with the number of entries holding it:
   masked      mail                      980
   never       objectGUID               1150  managed by the server
   never       objectSid                1150  managed by the server
-  (and 12 attributes of the allow list that no entry holds; -all lists them)
+  copied      no entry holds these 12:
+                facsimileTelephoneNumber, homePhone, initials, ipPhone, middleName, pager, ...
 ```
 
-`not copied` is what the clone would leave behind: add the ones your applications read to `extra_include`, or copy
+Nothing is left out: after the attributes the entries hold come those of the allow lists that no entry holds, by
+name (with `mode = "all"` they are hundreds). `not copied` is what the clone would leave behind: add the ones your applications read to `extra_include`, or copy
 them all with [`mode = "all"`](#copy-everything-mode--all). Run it again with `-target` once the target exists, to
 see which of them its schema lacks (`clone` refuses to start in that case, naming them). How to carry an attribute of your own over is in
 [Attributes of your own](#attributes-of-your-own-schema-extensions).
@@ -535,7 +537,7 @@ exclude = ["homeDirectory", "homeDrive", "profilePath", "scriptPath"]   # still 
   them all.
 - An attribute the target refuses over LDAP is left out the same way, with the reason: a Samba lab refuses
   `userParameters` (old RAS and Terminal Services settings), which a real AD takes.
-- `diff` counts the compared attributes per kind instead of naming hundreds; `list-attrs -config -all` names them.
+- `diff` counts the compared attributes per kind instead of naming hundreds; `list-attrs -config` names them.
 - Some attributes a client may write are refreshed by the server or the machine itself (`msDS-SupportedEncryptionTypes`
   of a live computer, say): they are copied once and may show as `DIFF` on a later diff. `exclude` them if they get
   in the way.

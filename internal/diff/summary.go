@@ -51,7 +51,7 @@ func WriteSummary(w io.Writer, job plan.Job, sum Summary, excluded []string) {
 	compared, masked := comparedAttributes(job)
 	for _, k := range job.Kinds {
 		if job.AllWritable {
-			fmt.Fprintf(w, "  %-5s: %d, every attribute a client can write on %s (list-attrs -config -all lists them)\n", k.Name, len(compared[k.Name]), k.Class)
+			fmt.Fprintf(w, "  %-5s: %d, every attribute a client can write on %s (list-attrs -config lists them)\n", k.Name, len(compared[k.Name]), k.Class)
 			continue
 		}
 		fmt.Fprintf(w, "  %-5s: %s\n", k.Name, strings.Join(compared[k.Name], ", "))
