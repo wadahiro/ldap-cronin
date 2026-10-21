@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -16,7 +18,9 @@ import (
 	"github.com/go-ldap/ldap/v3"
 
 	"github.com/wadahiro/ldap-cronin/internal/ad"
+	"github.com/wadahiro/ldap-cronin/internal/app"
 	"github.com/wadahiro/ldap-cronin/internal/clone"
+	"github.com/wadahiro/ldap-cronin/internal/config"
 	"github.com/wadahiro/ldap-cronin/internal/diff"
 	"github.com/wadahiro/ldap-cronin/internal/directory"
 	"github.com/wadahiro/ldap-cronin/internal/dn"
@@ -50,6 +54,14 @@ func TestNativeImportKeepsObjectGUIDAndObjectSid(t *testing.T) {
 		}
 	}
 	srcLab, dstLab := newLab(fmt.Sprintf("natsrc%d", nano)), newLab(fmt.Sprintf("natdst%d", nano))
+	// clone creates the lab with the LDAPS port of [target] url; its LDAP port must not be the e2e Samba's either.
+	dstLDAP := freePort(t)
+	dstLab.Getenv = func(k string) string {
+		if k == "AD_LDAP_PORT" {
+			return strconv.Itoa(dstLDAP)
+		}
+		return ""
+	}
 	for _, l := range []*lab.Lab{srcLab, dstLab} {
 		l := l
 		t.Cleanup(func() { _ = l.Reset(context.Background(), lab.ResetOptions{Yes: true, Snapshots: true}) })
@@ -74,15 +86,45 @@ func TestNativeImportKeepsObjectGUIDAndObjectSid(t *testing.T) {
 	must(err)
 	defer src.Close()
 
-	// Equivalent to --like-source: read the source domain's SID and GUID and create the lab with the same values.
 	root, err := src.Get(context.Background(), base, []string{"objectSid", "objectGUID"})
 	must(err)
 	srcSID, err := ad.SIDText([]byte(root.Values("objectSid")[0]))
 	must(err)
 	srcGUID, err := ad.GUIDText([]byte(root.Values("objectGUID")[0]))
 	must(err)
-	must(dstLab.Up(context.Background(), lab.UpOptions{Image: image, Flags: lab.Settings{Domain: realm, AdminPassword: password,
-		DomainSID: srcSID, DomainGUID: srcGUID, LDAPPort: freePort(t), LDAPSPort: dstLDAPS}}))
+
+	// The lab is the target of the config ([target.lab] native = true): check says clone will create it, and clone
+	// creates it like the source (the same domain SID and GUID) and imports into it.
+	cfg, err := config.Parse([]byte(fmt.Sprintf("[source]\nurl = \"ldaps://%s:%d\"\nbind_dn = %q\ninsecure_skip_verify = true\n"+
+		"[target]\nurl = \"ldaps://%s:%d\"\nbind_dn = %q\ninsecure_skip_verify = true\n"+
+		"[target.lab]\nprefix = %q\nimage = %q\nnative = true\nfast_password = true\n"+
+		"[scope]\nbase_dn = %q\n[attributes]\nextra_include = [\"carLicense\", \"seeAlso\"]\n[mask]\nattributes = [\"mail\"]\n",
+		host, srcLDAPS, admin, host, dstLDAPS, admin, dstLab.Prefix, image, cloneBase)))
+	must(err)
+	pw := func() (string, error) { return password, nil }
+	s, err := app.Open(context.Background(), cfg, app.Secrets{SourceBind: pw, TargetBind: pw, UserPassword: func() (string, error) { return fixed, nil }}, app.LDAP, &bytes.Buffer{})
+	must(err)
+	defer s.Close()
+	var report bytes.Buffer
+	code, err := s.Check(context.Background(), app.CheckOptions{Config: "c.toml", Lab: dstLab}, &report)
+	must(err)
+	if code != app.CheckReady || !strings.Contains(report.String(), "does not exist yet: clone creates it like the source") {
+		t.Fatalf("check before the lab exists (exit %d):\n%s", code, report.String())
+	}
+	var cloned bytes.Buffer
+	rep, err := s.CloneLab(context.Background(), dstLab, &cloned, &cloned)
+	if err != nil {
+		t.Fatalf("%v\n%s\n%s", err, cloned.String(), errw.String())
+	}
+	t.Logf("clone:\n%s", cloned.String())
+	if rep.Added == 0 || !regexp.MustCompile(`fast_password: [1-9]\d* users got the NT hash directly`).MatchString(cloned.String()) {
+		t.Fatalf("the lab is created and imported into, the passwords the fast way: %+v\n%s", rep, cloned.String())
+	}
+	report.Reset()
+	if code, err := s.Check(context.Background(), app.CheckOptions{Config: "c.toml", Lab: dstLab}, &report); err != nil || code != app.CheckReady ||
+		!strings.Contains(report.String(), "its database written directly") {
+		t.Fatalf("check after the clone (exit %d, %v):\n%s", code, err, report.String())
+	}
 
 	importNative := func(opts lab.NativeOptions) (*clone.Report, lab.NativeFinish) {
 		t.Helper()
@@ -99,14 +141,6 @@ func TestNativeImportKeepsObjectGUIDAndObjectSid(t *testing.T) {
 		must(err)
 		t.Logf("native: %s", res.Summary())
 		return rep, res
-	}
-	// The first import gives the passwords the fast way; the users are checked to log on below.
-	rep, res := importNative(lab.NativeOptions{FastPassword: true})
-	if res.FastPasswords == 0 {
-		t.Fatalf("-fast-password must give the NT hash directly to the users after the first: %+v", res)
-	}
-	if rep.Added == 0 {
-		t.Fatalf("nothing imported: %+v", rep)
 	}
 
 	dst, err := dialAs(dstLDAPS, admin, password)

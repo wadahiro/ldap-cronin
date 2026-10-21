@@ -69,6 +69,10 @@ func TestParseRejectsInvalid(t *testing.T) {
 		"unknown configuration_refs": strings.Replace(valid, "[scope]", "[scope]\nconfiguration_refs = \"create\"", 1),
 		"a dump with a server":       strings.Replace(valid, "[source]", "[source]\nldif = \"prod.ldif\"", 1),
 		"a dump as the target":       strings.Replace(valid, "[target]", "[target]\nldif = \"prod.ldif\"", 1),
+		"a lab as the source":        strings.Replace(valid, "[target]", "[source.lab]\n[target]", 1),
+		"fast_password over LDAP":    strings.Replace(valid, "[scope]", "[target.lab]\nfast_password = true\n[scope]", 1),
+		"native with configuration_refs": strings.Replace(valid, "[scope]",
+			"[target.lab]\nnative = true\n[scope]\nconfiguration_refs = \"clone\"", 1),
 		"configuration_refs without references = clone": strings.Replace(valid, "[scope]",
 			"[scope]\nreferences = \"existing\"\nconfiguration_refs = \"clone\"", 1),
 	}
@@ -83,6 +87,27 @@ func TestParseRejectsInvalid(t *testing.T) {
 	}
 	if _, err := Parse([]byte(strings.Replace(valid, "[scope]", "[scope]\nconfiguration_refs = \"clone\"", 1))); err != nil {
 		t.Errorf("configuration_refs = clone with the default references: %v", err)
+	}
+}
+
+// [target.lab] names the lab the target is; native = true makes clone write it directly.
+func TestTargetLabSaysWhichLabAndHowItIsWritten(t *testing.T) {
+	c, err := Parse([]byte(strings.Replace(valid, "[scope]", "[target.lab]\ninstance = \"dev2\"\n[scope]", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Target.Lab == nil || c.Target.Lab.Instance != "dev2" || c.NativeLab() != nil {
+		t.Fatalf("a lab cloned over LDAP: %+v", c.Target.Lab)
+	}
+	c, err = Parse([]byte(strings.Replace(valid, "[scope]", "[target.lab]\nnative = true\nfast_password = true\n[scope]", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l := c.NativeLab(); l == nil || !l.FastPassword {
+		t.Fatalf("a native lab: %+v", c.Target.Lab)
+	}
+	if c, _ := Parse([]byte(valid)); c.Target.Lab != nil || c.NativeLab() != nil {
+		t.Fatal("without the section the target is a server")
 	}
 }
 

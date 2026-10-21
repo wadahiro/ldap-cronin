@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -113,8 +114,9 @@ func TestSchemaCarriesAnExtensionThenCloneCopiesIt(t *testing.T) {
 	}
 	var ldif, log bytes.Buffer
 	must(s.Schema(ctx, false, &ldif, &log))
-	for _, want := range []string{"lDAPDisplayName: " + attr, "lDAPDisplayName: " + aux, "dn: CN=User," + schema + "\nchangetype: modify\nadd: auxiliaryClass\nauxiliaryClass: " + aux} {
-		if !strings.Contains(ldif.String(), want) {
+	// Other tests extend user of the same source too, so the modify may carry their classes as well.
+	for _, want := range []string{"lDAPDisplayName: " + attr, "lDAPDisplayName: " + aux, `(?m)^dn: CN=User,` + regexp.QuoteMeta(schema) + `\nchangetype: modify\nadd: auxiliaryClass\n(auxiliaryClass: .*\n)*auxiliaryClass: ` + aux + `$`} {
+		if !regexp.MustCompile(want).MatchString(ldif.String()) {
 			t.Fatalf("missing %q in\n%s", want, ldif.String())
 		}
 	}

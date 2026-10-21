@@ -3,6 +3,7 @@ package lab
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -86,7 +87,7 @@ func TestNativeFastPasswordReachesTheSelfCheckAndTheSummary(t *testing.T) {
 	if !strings.Contains(f.Summary(), "41 users got the NT hash directly (no Kerberos AES keys)") {
 		t.Fatal(f.Summary())
 	}
-	if strings.Contains(NativeFinish{DBCheck: "ok"}.Summary(), "fast-password") {
+	if strings.Contains(NativeFinish{DBCheck: "ok"}.Summary(), "fast_password") {
 		t.Fatal("a normal import says nothing of it")
 	}
 }
@@ -188,5 +189,37 @@ func TestUpRejectsAMalformedDomainIdentity(t *testing.T) {
 	}
 	if len(fx.d.callsMatching("run -d")) != 0 {
 		t.Fatal("nothing must be started")
+	}
+}
+
+// A lab target's url must be the lab's: its port is the lab's LDAPS (or LDAP) port, so what clone writes directly
+// is what check, diff and schema read.
+func TestCheckTargetURLComparesTheLabsPorts(t *testing.T) {
+	fx := newLabFixture(t)
+	if st, err := fx.l.State(context.Background()); err != nil || st != Missing {
+		t.Fatalf("before up: %s %v", st, err)
+	}
+	if err := fx.l.CheckTargetURL(context.Background(), "ldaps://localhost:12636"); err == nil || !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("no lab: %v", err)
+	}
+	fx.up("ad.example.com")
+	if st, err := fx.l.State(context.Background()); err != nil || st != Running {
+		t.Fatalf("after up: %s %v", st, err)
+	}
+	ctx := context.Background()
+	for _, ok := range []string{"ldaps://localhost:" + strconv.Itoa(DefaultLDAPSPort), "ldap://localhost:" + strconv.Itoa(DefaultLDAPPort)} {
+		if err := fx.l.CheckTargetURL(ctx, ok); err != nil {
+			t.Errorf("%s: %v", ok, err)
+		}
+	}
+	err := fx.l.CheckTargetURL(ctx, "ldaps://localhost:22636")
+	if err == nil || !strings.Contains(err.Error(), "LDAPS port is "+strconv.Itoa(DefaultLDAPSPort)) {
+		t.Fatalf("another port: %v", err)
+	}
+	if err := fx.l.Down(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := fx.l.State(ctx); err != nil || st != Stopped {
+		t.Fatalf("after down: %s %v", st, err)
 	}
 }

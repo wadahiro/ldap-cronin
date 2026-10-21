@@ -9,7 +9,9 @@ import (
 	"strings"
 
 	"github.com/wadahiro/ldap-cronin/internal/config"
+	"github.com/wadahiro/ldap-cronin/internal/directory"
 	"github.com/wadahiro/ldap-cronin/internal/identity"
+	"github.com/wadahiro/ldap-cronin/internal/lab"
 	"github.com/wadahiro/ldap-cronin/internal/plan"
 	"github.com/wadahiro/ldap-cronin/internal/profile"
 )
@@ -28,6 +30,8 @@ type CheckOptions struct {
 	Attrs bool
 	// Config is the config file's path, for the commands check prints.
 	Config string
+	// Lab is the lab [target.lab] names (nil without it): check says whether clone creates or starts it.
+	Lab *lab.Lab
 }
 
 // Check reads the source (a server or a dump) and the target and says, before anything is written, what clone
@@ -84,16 +88,51 @@ func (s *Session) Check(ctx context.Context, o CheckOptions, out io.Writer) (int
 		warning  string
 		refusal  string // why else clone would refuse to start
 	)
-	if o.NoTarget {
+	// A lab clone makes: what clone does to it first, and whether it can be read now.
+	var labNote string
+	inLab := s.Cfg.Target.Lab != nil && o.Lab != nil
+	if inLab && !o.NoTarget {
+		state, err := s.labState(ctx, o.Lab)
+		if err != nil {
+			return 0, err
+		}
+		switch state {
+		case lab.Missing:
+			labNote = "does not exist yet: clone creates it like the source"
+		case lab.Stopped:
+			labNote = "is stopped: clone starts it"
+		default:
+			if err := o.Lab.CheckTargetURL(ctx, s.Cfg.Target.URL); err != nil {
+				refusal = err.Error()
+			}
+		}
+	}
+	native := s.Cfg.NativeLab() != nil
+	switch {
+	case o.NoTarget:
 		fmt.Fprintln(out, "target: not read (-no-target)")
-	} else {
+	case labNote != "":
+		fmt.Fprintf(out, "target: the lab %s %s, and gives its schema the source's definitions it lacks\n", o.Lab.Name(), labNote)
+	default:
 		s.Progress.Phase("the target's schema", -1)
 		dst, closeTarget, err := s.Target(ctx)
 		if err != nil {
 			return 0, err
 		}
 		defer closeTarget()
-		fmt.Fprintf(out, "target: %s%s\n", s.Cfg.Target.URL, serverName(ctx, dst))
+		switch {
+		case inLab && native:
+			fmt.Fprintf(out, "target: the lab %s (%s%s), its database written directly\n", o.Lab.Name(), s.Cfg.Target.URL, serverName(ctx, dst))
+		case inLab:
+			fmt.Fprintf(out, "target: the lab %s (%s%s)\n", o.Lab.Name(), s.Cfg.Target.URL, serverName(ctx, dst))
+		default:
+			fmt.Fprintf(out, "target: %s%s\n", s.Cfg.Target.URL, serverName(ctx, dst))
+		}
+		if native && refusal == "" {
+			if refusal, err = s.sameDomain(ctx, dst); err != nil {
+				return 0, err
+			}
+		}
 		if has, err = s.targetSchema(ctx, dst); err != nil {
 			return 0, err
 		}
@@ -195,7 +234,9 @@ func (s *Session) Check(ctx context.Context, o CheckOptions, out io.Writer) (int
 	}
 	fmt.Fprintln(out)
 
-	if len(blocking) > 0 {
+	if len(blocking) > 0 && inLab {
+		fmt.Fprintf(out, "the lab's schema lacks %d attributes the allow lists name; clone adds them first:\n", len(blocking))
+	} else if len(blocking) > 0 {
 		fmt.Fprintf(out, "clone refuses to start: the target schema lacks %d attributes the allow lists name:\n", len(blocking))
 		for _, b := range blocking {
 			fmt.Fprintf(out, "  %s\n", b)
@@ -209,7 +250,11 @@ func (s *Session) Check(ctx context.Context, o CheckOptions, out io.Writer) (int
 		fmt.Fprintf(out, "warning: %s\n", warning)
 	}
 	if changes != nil && !changes.Empty() {
-		fmt.Fprintln(out, "the target schema lacks definitions of the source's (ldap-cronin schema adds them):")
+		if inLab {
+			fmt.Fprintln(out, "the lab's schema lacks definitions of the source's (clone adds them first):")
+		} else {
+			fmt.Fprintln(out, "the target schema lacks definitions of the source's (ldap-cronin schema adds them):")
+		}
 		var b strings.Builder
 		changes.WriteSummary(&b)
 		for _, l := range strings.Split(strings.TrimRight(b.String(), "\n"), "\n") {
@@ -233,7 +278,7 @@ func (s *Session) Check(ctx context.Context, o CheckOptions, out io.Writer) (int
 		step++
 		fmt.Fprintf(out, "  %d. "+format+"\n", append([]any{step}, a...)...)
 	}
-	needSchema := len(blocking) > 0 || len(lacking) > 0 || (changes != nil && !changes.Empty())
+	needSchema := !inLab && (len(blocking) > 0 || len(lacking) > 0 || (changes != nil && !changes.Empty()))
 	if len(suggest) > 0 {
 		names := append([]string(nil), s.Cfg.Attributes.Extra...)
 		seen := profile.Set(names)
@@ -267,9 +312,30 @@ func (s *Session) Check(ctx context.Context, o CheckOptions, out io.Writer) (int
 	if o.NoTarget {
 		fmt.Fprintln(out, "     (with the target, so it can say what the target's schema lacks)")
 	}
-	next("clone: ldap-cronin clone %s", cfg)
-	if len(blocking) > 0 || refusal != "" {
+	if labNote != "" {
+		next("clone: ldap-cronin clone %s (it %s first)", cfg, strings.TrimSuffix(strings.TrimPrefix(labNote, "does not exist yet: clone "), "is stopped: clone "))
+	} else {
+		next("clone: ldap-cronin clone %s", cfg)
+	}
+	if (len(blocking) > 0 && !inLab) || refusal != "" {
 		return CheckBlocked, nil
 	}
 	return CheckReady, nil
+}
+
+// sameDomain says why a native import into dst would refuse: the lab's domain (root, SID, GUID) is not the
+// source's. It reads the lab over LDAP, as check writes nothing and does not stop it.
+func (s *Session) sameDomain(ctx context.Context, dst directory.Directory) (string, error) {
+	src, err := s.domain(ctx)
+	if err != nil {
+		return err.Error(), nil
+	}
+	d, err := s.Job.Profile.Native.Domain(ctx, dst, src.Root)
+	if err != nil {
+		return "", fmt.Errorf("target: %w", err)
+	}
+	if err := checkSameDomain(lab.NativeInfo{Base: d.Root, DomainSID: d.SID, DomainGUID: d.GUID}, src); err != nil {
+		return err.Error(), nil
+	}
+	return "", nil
 }

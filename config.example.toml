@@ -15,6 +15,14 @@ url = "ldaps://localhost:12636"
 bind_dn = "CN=Administrator,CN=Users,DC=ad,DC=example,DC=com"
 insecure_skip_verify = true
 
+# [target.lab]                  # the target is a lab of `ldap-cronin lab`: clone creates it like the source when it is
+#                               # missing (same domain, and on AD the same domain SID and GUID), starts it, and gives its
+#                               # schema the source's definitions it lacks. Not for a real AD (docs/lab.md)
+# image = "ldap-cronin/samba-ad:local"   # what it is created from (default: the offline package's image)
+# instance = "dev2"            # another instance (it must exist); prefix = "ldap-cronin"
+# native = true                # Samba only: write its database directly, keeping objectGUID and objectSid
+# fast_password = true         # with native: the fixed password's NT hash written directly, ~3x faster, no Kerberos AES keys
+
 [scope]                              # what clone copies and diff compares
 # profile = "auto"                   # auto (default: asks the source), ad (Active Directory, Samba AD) or ldap (OpenLDAP, 389-ds, ...)
 # root_dn = "o=acme"                 # only for a generic server whose naming context cannot be derived from base_dn

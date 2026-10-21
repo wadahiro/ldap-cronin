@@ -39,7 +39,7 @@ BASE = str(db.get_default_basedn())
 DOMAIN_SID = str(db.get_domain_sid())
 max_rid = 0  # largest RID among the imported objectSids; at exit the lab's RID allocation is advanced past it
 
-# -fast-password: the first user given a password gets it through setpassword, which derives every hash (NT, the
+# fast_password: the first user given a password gets it through setpassword, which derives every hash (NT, the
 # Kerberos keys, supplementalCredentials); the NT hash it got (unsalted, so the same for every user with that
 # password) is then written to the others directly with the bypass control, which derives nothing else. Most of the
 # time of a user is the Kerberos keys (salted with the account name, so they cannot be shared).
@@ -123,9 +123,9 @@ def op_hello(req):
             try:
                 set_nt_hash(str(msg.dn), nt_hash)
             except ldb.LdbError as e:
-                return fail(e.args[0], "self-check: writing an NT hash directly was rejected (-fast-password is not usable with this Samba): %s" % e.args[1])
+                return fail(e.args[0], "self-check: writing an NT hash directly was rejected (fast_password is not usable with this Samba): %s" % e.args[1])
             if read_nt_hash(str(msg.dn)) != nt_hash:
-                return fail(1, "self-check: an NT hash written directly was not kept (-fast-password is not usable with this Samba)")
+                return fail(1, "self-check: an NT hash written directly was not kept (fast_password is not usable with this Samba)")
     finally:
         db.transaction_cancel()
     return ok(samba=str(ver), tested=str(ver).startswith(TESTED_SAMBA_PREFIX), base=BASE, domain_sid=DOMAIN_SID,

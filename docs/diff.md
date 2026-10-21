@@ -181,7 +181,7 @@ Only children found by identifier that moved with the parent as expected are lef
 
 **5-1. Deleted and recreated at the same DN** (the original is nowhere to be found).
 With markers (AD), the new object has no marker, so diff cannot say whether it was recreated, had its marker removed, or was added to the source after the clone: `UNMARKED`.
-With preserved identifiers (generic LDAP, `clone -native`) or a mapping file, its identifier differs from the cloned one: `REPLACED`. An object whose marker names *another* source object (a marker copied by the program under test) is `REPLACED` too.
+With preserved identifiers (generic LDAP, `[target.lab] native = true`) or a mapping file, its identifier differs from the cloned one: `REPLACED`. An object whose marker names *another* source object (a marker copied by the program under test) is `REPLACED` too.
 **Attributes are still compared, to see how the object differs from the source values** (a `DIFF` follows if there are differences).
 
 ```
@@ -196,9 +196,9 @@ DIFF        CN=Eve,OU=Users,OU=IDM,DC=example,DC=com
 **5-2. An OU with the same name was recreated after the OU was moved**: the original OU is still alive elsewhere, so it is not called `REPLACED`.
 Instead the original OU is shown as `RENAMED`, and the new OU at the original DN (and anything created in it) as `ONLY_TARGET`.
 
-### 5.5 Targets that hold the source identifiers (`clone -native`, generic LDAP)
+### 5.5 Targets that hold the source identifiers (`native = true`, generic LDAP)
 
-A target imported with [`clone -native`](lab.md#importing-with-the-same-objectguid-and-objectsid-clone--native-samba-only), or a generic server cloned with `[mapping] mode = "preserve"` (the default there), has the same identifier (`objectGUID`, `entryUUID`) as the source, so objects are matched by the identifier itself.
+A lab imported with [`[target.lab] native = true`](lab.md#importing-with-the-same-objectguid-and-objectsid-targetlab-native--true-samba-only), or a generic server cloned with `[mapping] mode = "preserve"` (the default there), has the same identifier (`objectGUID`, `entryUUID`) as the source, so objects are matched by the identifier itself.
 `diff` switches to this automatically when the identifier of the first object it compares under `base_dn` (found with the configured filters, so built-in and filtered-out objects never decide; `base_dn` itself when nothing is under it) is the same on both sides, whatever the mode.
 It does not switch on the domain GUID alone (a lab filled by `clone` over LDAP can share the domain GUID while object GUIDs differ).
 The summary shows `rename/move check: on (objectGUID preserved ...)`.

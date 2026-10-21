@@ -40,6 +40,33 @@ type Endpoint struct {
 	// TimeoutText bounds each LDAP operation ("30s", "2m"; "0" for no limit). Read it through Timeout.
 	TimeoutText string `toml:"timeout"`
 	timeout     time.Duration
+	// Lab ([target] only) says the target is a lab of ldap-cronin lab, and how clone writes it.
+	Lab *Lab `toml:"lab"`
+}
+
+// Lab is [target.lab]: which lab the target is, and whether clone writes its database directly.
+type Lab struct {
+	// Prefix and Instance name the lab's container (<prefix>-ad, or <prefix>-ad-<instance>), as lab --prefix and
+	// --instance do. lab up --like-source takes them from here.
+	Prefix   string `toml:"prefix"`
+	Instance string `toml:"instance"`
+	// Native makes clone stop the lab and write Samba's database directly, keeping the source's objectGUID and
+	// objectSid (Samba only; unsupported internals). url stays the lab's LDAP endpoint, which check, diff and
+	// schema read, and which must be the lab's port.
+	Native bool `toml:"native"`
+	// Image is the lab image clone creates the lab from when it does not exist (default: the offline package's).
+	Image string `toml:"image"`
+	// FastPassword (native only) gives the users the fixed password's NT hash directly: about 3 times faster,
+	// without Kerberos AES keys.
+	FastPassword bool `toml:"fast_password"`
+}
+
+// NativeLab is the target's [target.lab] when clone writes it directly, or nil.
+func (c *Config) NativeLab() *Lab {
+	if c.Target.Lab != nil && c.Target.Lab.Native {
+		return c.Target.Lab
+	}
+	return nil
 }
 
 // Timeout is the parsed per-operation timeout.
@@ -221,6 +248,17 @@ func (c *Config) validate() error {
 	}
 	if c.Target.LDIF != "" {
 		return errors.New("[target] ldif: a dump can only be a source")
+	}
+	if c.Source.Lab != nil {
+		return errors.New("[source.lab]: a lab is a target ([target.lab])")
+	}
+	if l := c.Target.Lab; l != nil {
+		if l.FastPassword && !l.Native {
+			return errors.New("[target.lab] fast_password is for native = true: it writes the lab's database directly")
+		}
+		if l.Native && c.Scope.ConfigurationRefs == plan.ConfigurationRefsClone {
+			return fmt.Errorf("[target.lab] native = true writes the domain partition only; [scope] configuration_refs = %q needs a clone over LDAP", plan.ConfigurationRefsClone)
+		}
 	}
 	if c.Source.LDIF != "" && (c.Source.URL != "" || c.Source.BindDN != "" || c.Source.CAFile != "" || c.Source.StartTLS || c.Source.InsecureSkipVerify) {
 		return errors.New("[source] ldif reads a dump instead of a server: leave out url, bind_dn and the connection settings")

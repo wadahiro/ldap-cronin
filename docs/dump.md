@@ -1,7 +1,7 @@
 # Dumps: read production once, clone from the file
 
 `ldap-cronin dump` reads a source, read only, into one LDIF file. Set it as `[source] ldif` and `clone`, `diff`,
-`check`, `schema`, `clone -native` and `lab up --like-source` read the file instead of the server:
+`check`, `schema` and `lab up --like-source` (and `clone` creating a lab like the source) read the file instead of the server:
 
 - production is connected once, at a time chosen for it, with an account that can only read;
 - every clone and diff after that is of the same moment of production, and never touches it;

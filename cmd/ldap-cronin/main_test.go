@@ -175,6 +175,14 @@ func TestErrorsExitWith2(t *testing.T) {
 	_, _, cfg := cli(t)
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
+	nativeCfg := filepath.Join(t.TempDir(), "native.toml")
+	raw, err := os.ReadFile(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(nativeCfg, []byte(strings.Replace(string(raw), "[scope]", "[target.lab]\nnative = true\n[scope]", 1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	for name, c := range map[string]struct {
 		ctx  context.Context
 		args []string
@@ -185,7 +193,9 @@ func TestErrorsExitWith2(t *testing.T) {
 		"missing config":   {context.Background(), []string{"diff", "-config", filepath.Join(t.TempDir(), "none.toml")}, "error:"},
 		"unknown flag":     {context.Background(), []string{"clone", "-bogus"}, "error:"},
 		"dump without -o":  {context.Background(), []string{"dump", "-url", "ldaps://src:636", "-bind-dn", "CN=a", "-base-dn", base}, "needs -url, -bind-dn, -base-dn and -o"},
-		"native + dry-run": {context.Background(), []string{"clone", "-native", "-dry-run", "-config", cfg}, "cannot be used together"},
+		"native + dry-run": {context.Background(), []string{"clone", "-dry-run", "-config", nativeCfg}, "produces no LDIF"},
+		"-native moved":    {context.Background(), []string{"clone", "-native", "-config", cfg}, "-native moved to the config: [target.lab]"},
+		"-lab-instance=":   {context.Background(), []string{"clone", "-lab-instance=x", "-config", cfg}, "moved to the config: [target.lab]"},
 		"interrupted":      {cancelled, []string{"clone", "-config", cfg}, "interrupted"},
 	} {
 		t.Run(name, func(t *testing.T) {

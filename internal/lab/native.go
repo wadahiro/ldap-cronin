@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"strings"
 	"sync"
 
@@ -94,6 +95,31 @@ type Native struct {
 }
 
 var _ directory.Directory = (*Native)(nil)
+
+// CheckTargetURL refuses a [target] url that is not this lab's: its port must be the lab's LDAPS port (ldaps://) or
+// LDAP port (ldap://). A native import writes the lab's database through docker, while check, diff and schema read
+// the url: they must be the same lab.
+func (l *Lab) CheckTargetURL(ctx context.Context, raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return err
+	}
+	labels, exists, err := l.inspectLabels(ctx, l.container())
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return fmt.Errorf("lab %s does not exist; create it first with lab up --like-source (or restore)", l.container())
+	}
+	label, kind := labelLDAPS, "LDAPS"
+	if u.Scheme == "ldap" {
+		label, kind = labelLDAP, "LDAP"
+	}
+	if want := labels[label]; u.Port() != want {
+		return fmt.Errorf("[target] url %s is not the lab %s, whose %s port is %s: give its url, or name the lab of the url in [target.lab]", raw, l.container(), kind, want)
+	}
+	return nil
+}
 
 // Name is the lab's container name (ldap-cronin-ad, or ldap-cronin-ad-<instance>).
 func (l *Lab) Name() string { return l.container() }
@@ -340,7 +366,7 @@ func (f NativeFinish) Summary() string {
 		parts = append(parts, fmt.Sprintf("largest imported RID=%d (next allocation=%d)", f.MaxRID, f.RIDNext))
 	}
 	if f.FastPasswords > 0 {
-		parts = append(parts, fmt.Sprintf("-fast-password: %d users got the NT hash directly (no Kerberos AES keys)", f.FastPasswords))
+		parts = append(parts, fmt.Sprintf("fast_password: %d users got the NT hash directly (no Kerberos AES keys)", f.FastPasswords))
 	}
 	return strings.Join(parts, " / ")
 }

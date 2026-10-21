@@ -32,7 +32,7 @@ The name is a pun on "clone" and "ronin", a masterless samurai: cRONIN is a **c*
 | `check -config f [-no-target] [-attrs]` | Say what `clone` would do, writing nothing: per object type the attributes the entries hold that it would leave behind (a schema extension of your own) with the `[attributes]` line that copies them, what the target's schema lacks and refuses, and the next steps to run. Exit code 1 when `clone` would refuse to start. `-no-target` reads the source alone; `-attrs` lists every attribute and what `clone` does with it |
 | `schema -config f [-apply [-y]]` | **AD**: compare the source's schema with the target's and print what the target lacks (attributes, classes, what a class both have allows) as LDIF for `ldapmodify` or `ldifde`; `-apply` writes it, after the same `[y/N]` question as `clone`. For a lab before its first clone, or as a file to review for a test AD |
 | `clone [-config f] [-dry-run [-with-password]] [-y] [-progress m]` | Add and update. Before the first write it shows the target (and the server name its root DSE gives) and the source, and asks `[y/N]`: only `y` writes, and without a terminal it stops unless `-y`. `-dry-run` does not connect to the target; it writes LDIF to standard output (progress logs go to standard error); `-with-password` puts the users' fixed password in it, so `ldapmodify` alone completes them |
-| `clone -native [-fast-password] [-lab-prefix p] [-lab-instance n]` | **Samba lab only**: import with the same `objectGUID` and `objectSid` as the source (into a lab created with `lab up --like-source`). Uses unsupported internals. `-fast-password` writes the fixed password's NT hash directly, about 3 times faster, without Kerberos AES keys. For the limitations see [docs/lab.md](docs/lab.md#importing-with-the-same-objectguid-and-objectsid-clone--native-samba-only) |
+| `clone` into a lab (`[target.lab]`) | **Lab only**: `clone` creates the lab like the source when it is missing (the same domain, and on AD the same domain SID and GUID), starts it, gives its schema the source's definitions it lacks, then clones. With `native = true` (**Samba only**) it imports with the same `objectGUID` and `objectSid` as the source, writing Samba's database directly (unsupported internals); `fast_password = true` writes the fixed password's NT hash directly, about 3 times faster, without Kerberos AES keys. See [docs/lab.md](docs/lab.md#the-lab-as-the-target-of-clone-targetlab) |
 | `diff [-config f] [-format text\|json] [-max-values n] [-progress m]` | Compare the source and the target. Exit code 1 if there are differences (2 on error). `-format json` writes JSON Lines for a program to read. For how to read the output see [docs/diff.md](docs/diff.md) |
 | `list-attrs [-profile ad\|ldap]` | Show the default attributes (allow list) per object type, reading nothing |
 | `lab up / down / reset / status` | Start and stop a test lab on docker: Samba4 AD, or OpenLDAP with `--profile ldap`. See [docs/lab.md](docs/lab.md) |
@@ -90,7 +90,7 @@ The target must be of the same type. The profile selects the default filters and
 | Object identity (renames) | `objectGUID` | `entryUUID` |
 | Large `member` values | `member;range=0-N` | plain read |
 | `lab` | yes (Samba lab) | yes (OpenLDAP lab, `--profile ldap`) |
-| `clone -native` | yes (Samba lab) | no (the relax control keeps `entryUUID` over LDAP) |
+| `[target.lab] native = true` | yes (Samba lab) | no (the relax control keeps `entryUUID` over LDAP) |
 
 Details per server type: [docs/active-directory.md](docs/active-directory.md) and [docs/generic-ldap.md](docs/generic-ldap.md).
 
@@ -147,7 +147,7 @@ ldap-cronin lab restore                         # pick from the list and restore
 - You can keep several snapshots. While the current lab keeps running, `lab restore baseline --instance dev2` starts another lab in the snapshot's state on a different port.
 - The markers `diff` uses are part of the data, so rename detection keeps working after a restore, in any instance.
 - The domain name is chosen at the first start, not when the image is built.
-- `lab up --like-source config.toml` then `clone -native` imports with the same `objectGUID` and `objectSid` as the source (Samba lab only, unsupported internals; see [docs/lab.md](docs/lab.md#importing-with-the-same-objectguid-and-objectsid-clone--native-samba-only)).
+- With `[target.lab]` in the configuration, `clone` creates the lab like the source itself; with `native = true` it imports with the same `objectGUID` and `objectSid` as the source (Samba lab only, unsupported internals; see [docs/lab.md](docs/lab.md#importing-with-the-same-objectguid-and-objectsid-targetlab-native--true-samba-only)).
 
 ### Taking it into an air-gapped environment
 

@@ -72,7 +72,7 @@ ldap-cronin dump -url ldaps://dc01.ad.example.com:636 \
 - The file holds the entries **as production has them, personal data included**, without any credential (password
   hashes, LAPS, BitLocker): keep it as you keep production's data (it is written readable by its owner only).
   `-mask mail,telephoneNumber` masks attributes in the file itself.
-- For fresh data, dump again (step 10). What is in the file and how it is read: [dump.md](dump.md).
+- For fresh data, dump again (step 8). What is in the file and how it is read: [dump.md](dump.md).
 
 Carry `prod.ldif.gz` to the machine where the lab runs. To read production on every run instead, see
 [Without a dump](#without-a-dump-reading-production-directly).
@@ -92,6 +92,10 @@ ldif = "prod.ldif.gz"
 url = "ldaps://localhost:12636"
 bind_dn = "CN=Administrator,CN=Users,DC=ad,DC=example,DC=com"
 insecure_skip_verify = true                 # the lab's certificate is self-signed
+
+[target.lab]                                # the target is a lab: clone creates it like the source when it is missing
+image = "ldap-cronin/samba-ad:local"        # what it is created from (step 1); ...:local-exchange for Exchange's schema
+# native = true                             # write its database directly, keeping objectGUID and objectSid (step 5)
 
 [scope]
 profile = "ad"                              # auto would ask the source; ad says it outright
@@ -129,13 +133,17 @@ Notes on the choices:
   attribute that is not in the allow lists.
 - Masked attributes must be plain strings: `member`, `sAMAccountName`, `userPrincipalName` and the like cannot be
   masked (a fixed string would break them).
+- `[target.lab]` makes the lab part of the target: `clone` creates it when it is missing, with the source's domain
+  (name, NetBIOS name, domain SID and GUID) and the url's port, with the target password as the lab's
+  Administrator password, and gives its schema what the source has beyond it. No `lab up` is needed.
 - The filters are evaluated on the dump as the server would: `&`, `|`, `!`, equality, presence, substrings,
   `>=`/`<=` and AD's bitwise rules (`:1.2.840.113556.1.4.803:=`, `.804`). Anything else is refused, naming it.
 
 ## 4. Look before writing
 
 ```sh
-./bin/ldap-cronin check -config config.toml -no-target    # the lab does not exist yet: the source side alone
+export LDAP_CRONIN_TARGET_PASSWORD='Lab-Adm1n-Passw0rd!'      # the lab's Administrator (clone creates it with it)
+./bin/ldap-cronin check -config config.toml
 ```
 
 `check` writes nothing. It reads the entries under `base_dn` (no values are printed) and says, per kind, which
@@ -144,7 +152,7 @@ to do next:
 
 ```
 source: the dump prod.ldif.gz (server dc01.ad.example.com)
-target: not read (-no-target)
+target: the lab ldap-cronin-ad does not exist yet: clone creates it like the source, and gives its schema the source's definitions it lacks
 
 [ou] 12 entries: clone copies every attribute they hold that a client can write
 [group] 40 entries: clone copies every attribute they hold that a client can write
@@ -161,12 +169,12 @@ next:
        extra_include = ["acmeEmployeeCode", "codePage", "extensionAttribute3"]
      or copy every attribute a client can write: [attributes] mode = "all"
   2. check again: ldap-cronin check -config config.toml
-     (with the target, so it can say what the target's schema lacks)
-  3. clone: ldap-cronin clone -config config.toml
+  3. clone: ldap-cronin clone -config config.toml (it creates it like the source first)
 ```
 
 Put the line in `config.toml`, keeping the attributes your applications read (or every one), or copy them all with [`mode = "all"`](#copy-everything-mode--all). Once the
-lab exists, `check` without `-no-target` also says what its schema lacks and what it refuses (step 6).
+lab exists, `check` also says what its schema lacks and what it refuses. `-no-target` reads the source alone (on a
+machine that reaches production only, say).
 `-attrs` adds a table of every attribute of every kind, held or named, and what `clone` does with it.
 
 To see the very LDIF `clone` would write:
@@ -204,156 +212,101 @@ still in it; `clone` leaves those out by itself.
 
 ## Part 1: the Samba4 lab
 
-### 5. Start a lab with the source's domain
-
-```sh
-export SAMBA_ADMIN_PASSWORD='Lab-Adm1n-Passw0rd!'            # the lab's Administrator; or let the lab generate one
-./bin/ldap-cronin lab up --like-source config.toml --image ldap-cronin/samba-ad:local
-# with Exchange's schema (step 1): --image ldap-cronin/samba-ad:local-exchange
-```
-
-`--like-source` reads the domain name, NetBIOS name, domain SID and GUID from `[source]` (here the dump, so no
-password is asked) and creates the Samba domain with them. `--realm ad.example.com` would do for a plain clone; the same
-SID and GUID also allow `clone -native` later. The domain is fixed when the lab is created; `lab reset` starts
-over.
-
-`lab up` ends with the connection details and the `[target]` section to use, which is the one already in
-`config.toml` (LDAPS on port 12636; `--ldaps-port` changes it).
-
-### 6. Give the lab the source's schema extensions
-
-Production may have attributes and classes the lab lacks: an extension of your own (an employee code), or a
-product's. Do this **before the first `clone`**, so the snapshot of step 9 carries them and every restore has them.
-
-A lab made from the image with Exchange's schema (step 1) has it already; what is checked here is what production
-has beyond it (another Exchange version's, your own, another product's).
-
-```sh
-export LDAP_CRONIN_TARGET_PASSWORD="$SAMBA_ADMIN_PASSWORD"
-./bin/ldap-cronin check -config config.toml                       # now with the lab; writes nothing
-```
-
-With the lab, `check` also reads its schema. When the lab lacks attributes the allow lists name, `clone` would
-refuse to start, and `check` says so (exit code 1) with the command that fixes it:
-
-```
-[user] 1150 entries: clone copies every attribute they hold that a client can write
-  (and 9 more only the server writes; -attrs lists every attribute)
-...
-clone refuses to start: the target schema lacks 1 attributes the allow lists name:
-  acmeEmployeeCode (ou, group, user, computer, contact)
-the target schema lacks definitions of the source's (ldap-cronin schema adds them):
-  attributes to add: 2
-    acmeEmployeeCode
-    acmeSponsor
-  classes to add: 1
-    acmePerson
-  classes to extend: 1
-    user: auxiliaryClass acmePerson
-
-next:
-  1. give the target the source's definitions: ldap-cronin schema -config config.toml -apply
-     (a test AD: ldap-cronin schema -config config.toml > schema.ldif, for a Schema Admin; it cannot be undone)
-  2. check again: ldap-cronin check -config config.toml
-  3. clone: ldap-cronin clone -config config.toml
-```
-
-To look through the definitions first, `schema -config config.toml > schema.ldif` writes them as LDIF
-([what is in it](#give-the-target-their-definitions)). Then write them to the lab, and check that nothing is left:
-
-```sh
-./bin/ldap-cronin schema -config config.toml -apply
-./bin/ldap-cronin check -config config.toml                       # exit code 0, next: clone
-```
-
-When `check` names nothing to do, go on to step 7.
-The lab's schema can be changed freely: if something went wrong, `lab reset -y` and start again from step 5.
-Having the definitions does not copy the values yet: name the attributes in `[attributes] extra_include`, or copy
-everything with [`mode = "all"`](#copy-everything-mode--all).
-
-### 7. Clone
+### 5. Clone
 
 ```sh
 ./bin/ldap-cronin clone -config config.toml
 ```
 
-It asks for the source password and the **fixed password for cloned users** (unless `[accounts] fixed_password`
-sets it): every cloned user (and computer) gets it, since password hashes are never copied. It must satisfy the target's password policy (the lab's is
-Samba's default complexity).
+It asks for the **fixed password for cloned users** (unless `[accounts] fixed_password` sets it): every cloned user
+(and computer) gets it, since password hashes are never copied. It must satisfy the target's password policy (the
+lab's is Samba's default complexity).
+
+Before it does anything, it says what it is about to do to the lab, and asks:
+
+```
+clone writes the lab ldap-cronin-ad:
+  target (written): the lab ldap-cronin-ad (ldaps://localhost:12636)
+    create it like the source: domain ad.example.com (NetBIOS AD), domain SID S-1-5-21-..., GUID ...
+    give its schema the source's definitions it lacks
+    add and update the entries under OU=IDM,DC=ad,DC=example,DC=com over LDAP
+    base_dn: OU=IDM,DC=ad,DC=example,DC=com
+  source (read only): the dump prod.ldif.gz (server dc01.ad.example.com)
+Write to this target? [y/N]:
+```
+
+Only `y` (or `yes`) goes on; Enter alone stops with nothing done. In a script, where nothing can answer, pass `-y`.
+The source is never written to, whatever the command.
+
+Then, in order:
+
+1. **The lab**, when it does not exist: a Samba AD with the source's domain name, NetBIOS name, domain SID and GUID
+   (they can only be chosen when a domain is created, so this is the one moment to take them), listening on the
+   port of `[target] url`, its Administrator password the target password. The domain is fixed from then on:
+   `lab reset -y` and `clone` again start over. A lab that exists is used as it is (started if stopped); one of
+   another domain is refused, untouched.
+2. **The schema**: what the source's schema has beyond the lab's (an extension of your own, an Exchange version
+   other than the image's) is added, as `ldap-cronin schema -apply` would. A lab's schema can be reset with the
+   lab; a real AD's cannot, which is why part 2 does it by hand.
+3. **The entries**: the OUs and parents, then groups, users, computers and contacts (users and computers are added
+   disabled, given the password, then their source `userAccountControl`), then `member`, `manager` and the other
+   references. It prints each write (`add`, `update`) and the counts at the end.
 
 While it runs, the bottom of the terminal shows the phase, how many of how many, the rate and the time left;
 `clone -config config.toml > clone.log` keeps the log in a file and the screen for the status alone.
 
-Before the first write it shows where it is about to write, and asks:
-
-```
-clone adds and updates entries under base_dn on the target
-  target (written): ldaps://localhost:12636 (server dc1.ad.example.com)
-    bind_dn: CN=Administrator,CN=Users,DC=ad,DC=example,DC=com
-    base_dn: OU=IDM,DC=ad,DC=example,DC=com
-  source (read only): ldaps://dc01.ad.example.com:636 (server dc01.ad.example.com)
-Write to this target? [y/N]:
-```
-
-Only `y` (or `yes`) goes on; Enter alone stops with nothing written. In a script, where nothing can answer, pass
-`-y`. The source is never written to, whatever the command: its connection refuses every write.
-
-What it does, in order: the OUs and parents, then groups, users, computers and contacts (users and computers are
-added disabled, given the password, then their source `userAccountControl`), then `member`, `manager` and the other
-references. It prints each write (`add`, `update`) and the counts at the end.
-
 A run can be stopped with Ctrl-C and started again: `clone` only adds what is missing and updates what differs,
 and never deletes. A second run right after the first writes nothing.
 
-### Or: clone with the source's objectGUID and objectSid (`clone -native`)
+### Or: keep the source's objectGUID and objectSid (`native = true`)
 
-Over LDAP the lab gives every object its own `objectGUID` and `objectSid`. When the program under test keeps
-them (a GUID as the key of a user, a SID in an ACL or a token), import them as they are instead of step 7's
-`clone`. This works only into the Samba lab, and only one made with `--like-source` (step 5), whose domain SID the
-imported SIDs belong to:
+Over LDAP the lab gives every object its own `objectGUID` and `objectSid`. When the program under test keeps them
+(a GUID as the key of a user, a SID in an ACL or a token), have the clone import them as they are:
 
-```sh
-./bin/ldap-cronin clone -native -config config.toml
+```toml
+[target.lab]
+image = "ldap-cronin/samba-ad:local"
+native = true                               # Samba lab only
+# fast_password = true                      # see below
 ```
 
-It does not connect to the lab over LDAP. It stops the lab, writes Samba's database directly from a helper
-container of the lab image, and starts the lab again, also after a failure or Ctrl-C:
+`clone` then does the same steps, but writes the entries into Samba's database directly: it stops the lab, writes
+from a helper container of the lab image, and starts the lab again, also after a failure or Ctrl-C:
 
 ```
-Stopping lab ldap-cronin-ad (only for the duration of the import; it resumes afterwards)
+==> Stopping lab ldap-cronin-ad (only for the duration of the import; it resumes afterwards)
+add    OU=IDM,DC=ad,DC=example,DC=com
 ...
 native: dbcheck: Checked 3854 objects (0 errors) / largest imported RID=1110 (next allocation=1111)
-Resuming lab ldap-cronin-ad
+==> Resuming lab ldap-cronin-ad
 ```
 
-It asks for the source password and the fixed password as `clone` does, then names the lab and asks `[y/N]` before
-stopping it (`-y` skips it). Like `clone` it can run again (it adds what is missing and updates what differs). At the end it runs Samba's database check
-(`dbcheck`), and moves Samba's RID allocation past the imported RIDs, so a user the program under test creates
-later does not collide with them. It writes no markers in `adminDisplayName`: `diff` matches the objects by
-`objectGUID`, and its summary says so:
+That is why the lab must have the source's domain SID (an objectSid is the domain SID and a number within it): a
+lab created by `clone` has it; one created otherwise is refused before anything is written. At the end it runs
+Samba's database check (`dbcheck`), and moves Samba's RID allocation past the imported RIDs, so a user the program
+under test creates later does not collide with them. It writes no markers in `adminDisplayName`: `diff` matches the
+objects by `objectGUID`, and its summary says so:
 
 ```
 rename/move check: on (objectGUID preserved: the target holds the source's objectGUID)
 ```
 
 It relies on Samba internals that are not a supported usage (verified on 4.19.5; a self-check at the start fails
-before writing anything when they do not work). The limitations are in
-[lab.md](lab.md#importing-with-the-same-objectguid-and-objectsid-clone--native-samba-only).
+before writing anything when they do not work), and it has no dry-run (there is no LDIF). The limitations are in
+[lab.md](lab.md#importing-with-the-same-objectguid-and-objectsid-targetlab-native--true-samba-only).
 
-**Faster: `-fast-password`.** Giving the fixed password is most of the time of a user: Samba derives the NT hash
-and the Kerberos keys from it. With `-fast-password`, the first user gets the password as usual and every other
-user gets the NT hash it got, written directly. 5,000 users and 50 groups took 24s instead of 75s (an LDAP
-`clone` took 60s).
+**Faster: `fast_password = true`.** Giving the fixed password is most of the time of a user: Samba derives the NT
+hash and the Kerberos keys from it. With it, the first user gets the password as usual and every other user gets
+the NT hash it got, written directly. 5,000 users and 50 groups took 24s instead of 75s (an LDAP `clone` took 60s).
 
-```sh
-./bin/ldap-cronin clone -native -fast-password -config config.toml
-# native: ... / -fast-password: 4999 users got the NT hash directly (no Kerberos AES keys)
+```
+native: ... / fast_password: 4999 users got the NT hash directly (no Kerberos AES keys)
 ```
 
 Those users have **no Kerberos AES keys**. They log on with the fixed password over LDAP and NTLM, and over Kerberos
-with RC4, but not where only AES is allowed. When the test needs production's logon behavior, leave the flag off.
+with RC4, but not where only AES is allowed. When the test needs production's logon behavior, leave it off.
 
-### 8. Check the clone
+### 6. Check the clone
 
 ```sh
 ./bin/ldap-cronin diff -config config.toml; echo "exit=$?"
@@ -387,13 +340,13 @@ not compared:
 `references not compared` are the values the warnings of `clone` named: diff leaves them out, and compares every
 other member.
 
-### 9. Save the state
+### 7. Save the state
 
 ```sh
 ./bin/ldap-cronin lab snapshot baseline --note "right after clone"
 ```
 
-### 10. The test cycle
+### 8. The test cycle
 
 ```sh
 # ... the program under test changes the lab (ldaps://localhost:12636) ...
@@ -426,7 +379,7 @@ again (it brings the lab up to date with the new dump), and `lab snapshot baseli
 The same configuration works against a Windows AD; only `[target]` and a few preparations change. There are no
 snapshots here: restoring a test domain is your backup's job, and `clone` never deletes anything.
 
-### 11. Prepare the test domain
+### 9. Prepare the test domain
 
 - **Same domain name** as the source (`ad.example.com`), isolated from production: no trust, no replication, its
   own DNS.
@@ -451,9 +404,11 @@ snapshots here: restoring a test domain is your backup's job, and `clone` never 
   ```
 
   Without it `clone` warns and still works.
-- The source's schema extensions: step 13, once the configuration points at the test domain.
+- The source's schema extensions: step 11, once the configuration points at the test domain.
 
-### 12. Point the configuration at it
+### 10. Point the configuration at it
+
+Replace `[target]`, and remove `[target.lab]`: a test domain is a server `clone` writes over LDAP, never creates.
 
 ```toml
 [target]
@@ -466,7 +421,7 @@ timeout = "2m"
 workers = 4                                       # a real DC also serves others; start low
 ```
 
-### 13. Give the test domain the source's schema extensions
+### 11. Give the test domain the source's schema extensions
 
 Everything here is LDAP, so it is done from your machine like the clone. **A schema change cannot be undone in
 AD**: an attribute or class can only be made defunct, and the schema belongs to the whole forest. Add only what
@@ -483,11 +438,11 @@ production has, to a forest that exists for testing.
 
    On a Windows machine of the domain, `netdom query fsmo` says the same.
 
-2. **An account in Schema Admins.** The tool's account of step 11 is not one, and should not be: add a
+2. **An account in Schema Admins.** The tool's account of step 9 is not one, and should not be: add a
    test-domain administrator to Schema Admins for the change, and remove it afterwards. Membership takes effect at
    the next logon (bind).
 
-3. **Write the file and read it.** The configuration of step 12 reads the test domain's schema through any DC:
+3. **Write the file and read it.** The configuration of step 10 reads the test domain's schema through any DC:
 
    ```sh
    ./bin/ldap-cronin schema -config config.toml > schema.ldif
@@ -519,7 +474,7 @@ production has, to a forest that exists for testing.
 
 Then remove the account from Schema Admins.
 
-### 14. Dry-run, clone, diff
+### 12. Dry-run, clone, diff
 
 ```sh
 ./bin/ldap-cronin check -config config.toml                         # now against the test domain
@@ -529,7 +484,7 @@ Then remove the account from Schema Admins.
 ```
 
 Run it outside business hours: every object is several writes, replicated to every DC (the load per user is in
-[operations.md](operations.md#load-on-the-target-ad-clone)). Then test as in step 10, with `diff` against the test
+[operations.md](operations.md#load-on-the-target-ad-clone)). Then test as in step 8, with `diff` against the test
 domain; to start a test over, re-run `clone`, which puts back what was changed (it does not remove what the
 program added: `diff` lists those as `ONLY_TARGET`).
 
@@ -566,7 +521,7 @@ needs their definitions in its schema, and the clone copies them once an allow l
 Every line under a kind is an attribute your entries hold that the clone leaves behind, with the number of entries
 holding it; `the target schema lacks it` marks the ones the target cannot hold yet, and `next:` gives the
 `extra_include` line that copies them. `extensionAttribute1`-`15` and
-`msExch*` come from the Exchange schema, which the lab gets in step 6.
+`msExch*` come from the Exchange schema, which a lab made from the image of step 1 has.
 
 ### Give the target their definitions
 
@@ -625,8 +580,8 @@ objectClass: classSchema
 ...
 ```
 
-How to apply it: to the lab in [step 6](#6-give-the-lab-the-sources-schema-extensions), to a test AD in
-[step 13](#13-give-the-test-domain-the-sources-schema-extensions).
+How to apply it: a lab gets it from `clone` itself ([step 5](#5-clone)); a test AD as in
+[step 11](#11-give-the-test-domain-the-sources-schema-extensions).
 
 ### Copy and compare them
 
@@ -662,7 +617,7 @@ exclude = ["homeDirectory", "homeDrive", "profilePath", "scriptPath"]   # still 
 ```
 
 ```sh
-./bin/ldap-cronin schema -config config.toml -apply        # the lab: your extensions first (see above)
+./bin/ldap-cronin schema -config config.toml -apply        # a test AD: your extensions first (a lab: clone does it)
 ./bin/ldap-cronin check -config config.toml -attrs         # what each kind's entries hold, and what is copied
 ./bin/ldap-cronin clone -config config.toml
 ./bin/ldap-cronin diff -config config.toml
@@ -698,8 +653,10 @@ exclude = ["homeDirectory", "homeDrive", "profilePath", "scriptPath"]   # still 
 | `aborted: nothing was written (pass -y to skip the confirmation)` | The answer to `Write to this target? [y/N]` was not `y`, or there was no terminal to ask on. Check the target it showed; in a script, pass `-y` |
 | `... Constraint Violation ... setting userParameters is not supported over LDAP` | A Samba target refusing `userParameters`. This version leaves it out by itself; with an older one, `exclude` it. Re-run `clone`: it goes on from where it stopped |
 | `base_dn ... must be below the root` | `base_dn` is the domain root, or not in the domain; clone an OU |
-| `... already exists on the target but its ... differs` | Only with `clone -native`: the lab holds another object at that DN. Use a fresh lab |
-| `warning: [mapping] attribute adminDisplayName is not indexed on the target` | Index it (step 11); the lab does this itself |
+| `... already exists on the target but its ... differs` | Only with `native = true`: the lab holds another object at that DN. Use a fresh lab (`lab reset -y`, then `clone`) |
+| `the lab's domain differs from the source's ...` | `native = true` into a lab not made like the source (by `lab up --realm`, say): `lab reset -y`, then `clone` creates it like the source |
+| `[target] url ... is not the lab ...` | `[target] url` and `[target.lab]` name different labs: give the lab's port in the url, or the url's lab in `[target.lab]` |
+| `warning: [mapping] attribute adminDisplayName is not indexed on the target` | Index it (step 9); the lab does this itself |
 | `x509: certificate signed by unknown authority` | Give the CA with `ca_file` |
 | `skip member values naming ...: it names ...` | A reference clone cannot write, with what it names: a principal of a trusted domain (class `foreignSecurityPrincipal`), a built-in the target lacks, an entry of the configuration partition (`showInAddressBook` naming an Exchange address list). One warning per entry named; the summary counts the values per attribute and reason, and `diff` counts them instead of comparing them. `[attributes] exclude` an attribute the test does not need |
-| `lab up` refuses with a different domain | A lab already exists for another domain: `lab reset -y`, or use `--instance` |
+| `the existing container has different settings: domain ...` | The lab was made for another domain (or other ports): `lab reset -y`, then `clone` makes it anew |

@@ -51,16 +51,16 @@ Flags (clone/diff):
   -dry-run         (clone only) Do not connect to the target; print what would be done as LDIF
   -with-password   (clone -dry-run) The LDIF carries the users' fixed password, and on AD the userAccountControl set
                    after it, so ldapmodify alone gives users that can log on; without it they are comments
-  -y, -yes         (clone only) Write without asking: clone shows the target (with -native the lab) and the source
-                   and asks [y/N] first
-  -native          (clone only) Import into the lab's Samba keeping the source's objectGUID and objectSid (Samba only. lab help)
-  -lab-prefix <p>, -lab-instance <name>   (clone -native) The lab to import into
-  -fast-password   (clone -native) Give the users the fixed password's NT hash directly instead of having Samba
-                   derive every hash: about 3 times faster; the users then have no Kerberos AES keys (RC4 only)
+  -y, -yes         (clone only) Write without asking: clone shows the target (a lab: what it does to it) and the
+                   source and asks [y/N] first
   -format <f>      (diff only) text (default), or json: JSON Lines, one object per difference, then the summary
   -max-values <n>  (diff only, text) Show at most n values per direction of a multi-valued difference (default: 0, all)
   -progress <m>    auto (default): on a terminal a status kept at the bottom of the screen (phase, count, rate, time
                    left) while the log scrolls above it, elsewhere a line every 10s; plain: the lines; off
+
+A lab target ([target.lab] in the config): clone creates the lab like the source if it is missing (the same domain,
+and on AD the same domain SID and GUID), starts it if stopped, gives its schema the source's definitions it lacks,
+then clones; with native = true it writes Samba's database directly, keeping objectGUID and objectSid (lab help).
 
 Flags (dump):
   -url <url>, -bind-dn <dn>   The source (the password: LDAP_CRONIN_SOURCE_PASSWORD, or asked)
@@ -190,21 +190,16 @@ func runClone(ctx context.Context, args []string, out io.Writer) error {
 	cfgPath := fs.String("config", "config.toml", "config file")
 	dryRun := fs.Bool("dry-run", false, "print LDIF instead of writing")
 	withPassword := fs.Bool("with-password", false, "with -dry-run: the LDIF carries the users' fixed password and what follows it, so ldapmodify alone completes them")
-	native := fs.Bool("native", false, "import into a lab Samba keeping objectGUID/objectSid (Samba only)")
-	fastPassword := fs.Bool("fast-password", false, "with -native: give the users the fixed password's NT hash directly, about 3 times faster, without Kerberos AES keys")
 	yes := yesFlag(fs)
 	progressMode := progressFlag(fs)
-	var labFlags labCommon
-	fs.StringVar(&labFlags.prefix, "lab-prefix", lab.DefaultPrefix, "lab container name prefix (with -native)")
-	fs.StringVar(&labFlags.instance, "lab-instance", "", "lab instance (with -native; default: the main lab)")
+	for _, a := range args {
+		switch strings.TrimLeft(strings.SplitN(a, "=", 2)[0], "-") {
+		case "native", "fast-password", "lab-prefix", "lab-instance":
+			return fmt.Errorf("%s moved to the config: [target.lab] (native, fast_password, prefix, instance)", a)
+		}
+	}
 	if err := fs.Parse(args); err != nil {
 		return err
-	}
-	if *native && *dryRun {
-		return errors.New("-native and -dry-run cannot be used together")
-	}
-	if *fastPassword && !*native {
-		return errors.New("-fast-password is for -native: it writes the lab's database directly")
 	}
 	if *withPassword && !*dryRun {
 		return errors.New("-with-password is for -dry-run: clone itself always sets the password")
@@ -220,13 +215,17 @@ func runClone(ctx context.Context, args []string, out io.Writer) error {
 	defer s.Close()
 	askBeforeWriting(s, *yes)
 	s.WithPassword = *withPassword
+	lt := s.Cfg.Target.Lab
+	if *dryRun && s.Cfg.NativeLab() != nil {
+		return errors.New("[target.lab] native = true writes the lab's database directly, which produces no LDIF: a dry-run is for a clone over LDAP")
+	}
 
 	// The dry-run stdout carries only LDIF that can be passed straight to ldapmodify; progress logs go to stderr.
 	log := out
 	title := "clone → " + s.Cfg.Target.URL
 	switch {
-	case *native:
-		title = "clone -native → the lab"
+	case lt != nil && !*dryRun:
+		title = "clone → the lab " + s.Cfg.Target.URL
 	case *dryRun:
 		log, title = os.Stderr, "clone -dry-run (LDIF)"
 	}
@@ -236,12 +235,12 @@ func runClone(ctx context.Context, args []string, out io.Writer) error {
 	out, log = display.Writer(out), display.Writer(log)
 
 	var report *clone.Report
-	if *native {
-		l, lerr := newLab(labFlags, out, display.Writer(os.Stderr))
+	if lt != nil && !*dryRun {
+		l, lerr := labOf(lt, out, display.Writer(os.Stderr))
 		if lerr != nil {
 			return lerr
 		}
-		report, err = s.Native(ctx, l, lab.NativeOptions{FastPassword: *fastPassword}, out)
+		report, err = s.CloneLab(ctx, l, out, log)
 	} else {
 		report, err = s.Clone(ctx, *dryRun, out, log)
 	}
@@ -250,6 +249,15 @@ func runClone(ctx context.Context, args []string, out io.Writer) error {
 		report.WriteSummary(log)
 	}
 	return err
+}
+
+// labOf is the lab [target.lab] names, with the lab commands' defaults (its state in the current directory).
+func labOf(lt *config.Lab, out, errW io.Writer) (*lab.Lab, error) {
+	c := labCommon{stateDir: ".", prefix: lt.Prefix, instance: lt.Instance}
+	if c.prefix == "" {
+		c.prefix = lab.DefaultPrefix
+	}
+	return newLab(c, out, errW)
 }
 
 // progressFlag is -progress: how clone and diff show how far they are.
@@ -384,8 +392,14 @@ func runCheck(ctx context.Context, args []string, out io.Writer) (int, error) {
 	display, bar := progress.Start(mode, os.Stderr, "check "+source)
 	defer display.Stop()
 	s.Progress, s.Warn = bar, display.Writer(s.Warn)
+	opts := app.CheckOptions{NoTarget: *noTarget, Attrs: *attrs, Config: *cfgPath}
+	if lt := s.Cfg.Target.Lab; lt != nil {
+		if opts.Lab, err = labOf(lt, io.Discard, display.Writer(os.Stderr)); err != nil {
+			return 0, err
+		}
+	}
 	var report bytes.Buffer
-	code, err := s.Check(ctx, app.CheckOptions{NoTarget: *noTarget, Attrs: *attrs, Config: *cfgPath}, &report)
+	code, err := s.Check(ctx, opts, &report)
 	display.Stop()
 	if _, werr := out.Write(report.Bytes()); err == nil {
 		err = werr

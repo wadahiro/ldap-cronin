@@ -5,6 +5,18 @@ Keep the data created by `clone` as a snapshot, and bring it back in a few secon
 
 It needs only docker (no docker compose), and can be carried into an environment with no internet access ([offline package](#using-the-offline-package)).
 
+The simplest way: name the lab in the configuration, and `clone` creates it like the source
+([below](#the-lab-as-the-target-of-clone-targetlab)):
+
+```sh
+ldap-cronin clone -config config.toml            # [target.lab]: creates the lab like the source, then the data
+ldap-cronin lab snapshot baseline                # save the state right after the clone
+ldap-cronin diff -config config.toml             # later: see what another program changed
+ldap-cronin lab restore baseline                 # restore the original state (a few seconds)
+```
+
+Or by hand:
+
 ```sh
 ldap-cronin lab up --realm corp.example.local    # start a Samba4 AD
 ldap-cronin clone -config config.toml            # create the data
@@ -37,7 +49,7 @@ and `--instance` (the instance to operate on; the default lab if omitted).
 ldap-cronin lab up                                  # asks for the domain name and the administrator password (interactive)
 ldap-cronin lab up --realm corp.example.local       # specify the domain name
 ldap-cronin lab up --with-sample-source             # also start a clone source with sample data, for trying the tool out
-ldap-cronin lab up --like-source config.toml        # create it with the same domain name, SID and GUID as the source (for clone -native; see below)
+ldap-cronin lab up --like-source config.toml        # create it with the same domain name, SID and GUID as the source (what clone does for [target.lab])
 ```
 
 - **The domain name is fixed at the first start, not at image build.** The same image can use a different domain name in each environment. To change it, run `lab reset` and create the lab again.
@@ -68,7 +80,7 @@ ldap-cronin lab snapshot baseline                                    # later com
 - **`--schema-dir DIR`**: every `*.ldif` in it is applied in name order when the directory is created: schemas as `olcSchemaConfig` entries (`cn=<name>,cn=schema,cn=config`), and `changetype: modify` against `cn=config` for overlays, ACLs, indexes or `ppolicy`. A failing file stops the container, and `lab up` shows its log. The result lives in the configuration volume, so snapshots and other instances carry it; it is ignored for a lab that already exists.
 - **Ports** default to 13389 / 13636 (the sample source 14389 / 14636), so it can run next to a Samba lab. The two kinds need separate `--state-dir`, since `.env` holds one lab's settings.
 - **Snapshots** hold `/var/lib/ldap` (the database and the certificate) and `/etc/ldap/slapd.d` (the configuration). They record the kind, so restoring one into a Samba lab is refused; a new instance (`lab restore NAME --instance dev2`) takes the snapshot's kind by itself.
-- `clone -native` does not apply: the relax control already keeps `entryUUID` over LDAP.
+- `native = true` does not apply: the relax control already keeps `entryUUID` over LDAP.
 
 ## Snapshots
 
@@ -178,29 +190,65 @@ With `[mapping] mode = "preserve"` (the OpenLDAP lab) the identifiers are the so
 
 The lab image indexes `adminDisplayName` when the domain is created, before any data exists (Samba does not index values written before the index existed until a reindex), and on every start of an older lab. If you configure another marker attribute (`[mapping] attribute`), index it before the first `clone` as on a real AD ([active-directory.md](active-directory.md#when-the-target-is-a-real-ad)); for a lab that already holds markers in it, run `samba-tool dbcheck --reindex` in the container once afterwards.
 
-## Importing with the same objectGUID and objectSid (`clone -native`, Samba only)
+## The lab as the target of clone (`[target.lab]`)
+
+```toml
+[target]
+url = "ldaps://localhost:12636"
+bind_dn = "CN=Administrator,CN=Users,DC=ad,DC=example,DC=com"
+insecure_skip_verify = true
+[target.lab]
+image = "ldap-cronin/samba-ad:local"     # what clone creates it from (default: the offline package's image)
+# instance = "dev2"                      # another instance (it must exist: instances come from snapshots)
+# prefix = "ldap-cronin"
+# native = true                          # see the next section
+# fast_password = true
+```
+
+With `[target.lab]`, `clone`:
+
+1. **creates the lab when it does not exist** (the default instance only), as `lab up --like-source` does: the
+   source's domain name, and on AD its NetBIOS name, domain SID and GUID, which can only be chosen when a domain is
+   created. It listens on the port of `[target] url` (the other port: the default, or `AD_LDAP_PORT` /
+   `AD_LDAPS_PORT`), and its Administrator password is the target password (`LDAP_CRONIN_TARGET_PASSWORD`, or
+   asked), saved in `.env` like a password given to `lab up`. A stopped lab is started; a lab of another domain or
+   other ports is refused, untouched;
+2. **gives its schema the source's definitions it lacks**, as `schema -apply` would (a lab's schema is reset with the
+   lab; a real AD's cannot be, so there it stays a step of its own);
+3. clones over LDAP, or with `native = true` writes Samba's database directly (next section).
+
+It asks once, before any of it, listing what it will do. `[target] url` must be the lab's: its port is checked
+against the lab's before anything is written. `check` says what `clone` will do to the lab (create it, start it,
+add to its schema), and reads it over LDAP when it runs. `diff`, `schema` and `lab snapshot` work as with any
+target. `[target.lab]` belongs in the configuration of a lab only: a real AD target has none.
+
+## Importing with the same objectGUID and objectSid (`[target.lab] native = true`, Samba only)
 
 A normal `clone` creates objects over LDAP, so the target assigns new `objectGUID` and `objectSid` values. **For a lab (Samba) only, you can import with the same `objectGUID` and `objectSid` as the source**, for testing applications that depend on them.
 
-```sh
-# 1. Create a lab with the same domain as the source (name, NetBIOS name, domain SID and GUID); this connects to the source and reads them
-ldap-cronin lab up --like-source config.toml
-# 2. Import into the lab (it does not connect to the target LDAP; it stops the lab and writes directly to the Samba database)
-ldap-cronin clone -native -config config.toml
-# 3. diff matches objects by objectGUID directly (it is the same on both sides)
-ldap-cronin diff -config config.toml
+```toml
+[target.lab]
+native = true
 ```
 
-- `lab up --like-source <config>` reads the domain's `objectSid` / `objectGUID`, the domain name and the NetBIOS name from `[source]` and creates Samba with the same values. `--domain-sid` / `--domain-guid` set them directly and take precedence. **They apply only when the domain is created** (to change them, `lab reset` and recreate).
-- `clone -native` selects the lab with `-lab-prefix` (default `ldap-cronin`) and `-lab-instance`. It names the lab and asks `[y/N]` before stopping it, as `clone` does before writing (`-y` skips it). The lab container is stopped only during the import and resumed afterwards, also on failure. If the lab's domain (root DN, SID, GUID) differs from the source, it refuses without writing anything.
+```sh
+ldap-cronin clone -config config.toml     # creates the lab like the source if missing, then imports into its database
+ldap-cronin diff -config config.toml      # matches objects by objectGUID directly (it is the same on both sides)
+```
+
+- An `objectSid` is the domain's SID and a number within it, so the lab must have the source's domain SID: a lab
+  `clone` (or `lab up --like-source`) created has it. **It is chosen only when the domain is created**; a lab made
+  otherwise (`lab up --realm`) is refused before anything is written: `lab reset` and `clone` again.
+- `clone` names the lab and lists what it will do before stopping it (`-y` skips the question). The lab container is stopped only during the import and resumed afterwards, also on failure. If the lab's domain (root DN, SID, GUID) differs from the source, it refuses without writing anything.
+- It has no dry-run: nothing goes over LDAP, so there is no LDIF.
 - After the import it runs `dbcheck` (Samba's database check) and fails on errors. It also advances the RID allocation so RIDs of users created over LDAP later do not collide with imported ones.
 - It can be re-run: an object that already exists with the same `objectGUID` gets only its attribute differences updated. **If an object with a different `objectGUID` exists at the same DN, it fails without rewriting** (`objectGUID` cannot be changed).
 - It writes no marker and no mapping file: neither is needed when the `objectGUID` is the same.
-- `-fast-password` makes it about 3 times faster: 5,000 users and 50 groups took 24s instead of 75s (an LDAP `clone`
+- `fast_password = true` makes it about 3 times faster: 5,000 users and 50 groups took 24s instead of 75s (an LDAP `clone`
   took 60s). Most of the time of a user goes into the hashes Samba derives from the password (the NT hash, and the
-  Kerberos keys salted with the account name). With this flag the first user gets the fixed password as usual; the
+  Kerberos keys salted with the account name). With it the first user gets the fixed password as usual; the
   others get the NT hash it got, written directly. **Those users then have no Kerberos AES keys:** they log on over
-  LDAP, NTLM and Kerberos with RC4, but not where only AES is allowed. Leave the flag off when the test needs the
+  LDAP, NTLM and Kerberos with RC4, but not where only AES is allowed. Leave it off when the test needs the
   production behavior. The self-check at the start also tries it (and rolls it back), and the summary says how many
   users got the hash directly.
 - `diff` switches to matching by `objectGUID` automatically when the `objectGUID` is the same on both sides; the summary shows `rename/move check: on (objectGUID preserved ...)`. The decision uses the `objectGUID` of the first object `diff` compares under `base_dn`, found with the configured filters (`base_dn` itself only when nothing is under it, because a container that exists in the lab from the start, such as `CN=Users`, has the lab's own `objectGUID`). **The domain GUID alone is not enough**: after a plain LDAP `clone` into a `--like-source` lab, the domain GUID matches but the objects' GUIDs differ.
@@ -210,7 +258,7 @@ ldap-cronin diff -config config.toml
 - **Samba only.** It cannot be used with a real AD (Windows AD does not let you create an object with a chosen `objectGUID`, either over LDAP or directly).
 - **This is not a supported way of using Samba.** It uses Samba internals (the replication path, with system privileges and the `provision` and `relax` controls). It depends on the Samba version, and only **4.19.5** has been verified.
   At the start of each run it tries the same operation (and rolls it back) and fails immediately if it does not work. On another version it warns and continues, provided this self-check passes.
-- **Password hashes are not copied** (they cannot be read over LDAP). User passwords are the fixed password, as in a normal `clone` (with `-fast-password`, without Kerberos AES keys).
+- **Password hashes are not copied** (they cannot be read over LDAP). User passwords are the fixed password, as in a normal `clone` (with `fast_password`, without Kerberos AES keys).
 - `whenCreated` and `uSNCreated` become the lab's local values (not the source's).
 - **RIDs can collide.** If the RID of a source user is the same as that of one of the lab's standard objects (RID 1000, 1101, 1102), importing that object fails with an error that names the colliding object
   (it is never skipped silently). For a source built on Samba the configuration is the same, so collisions normally do not occur.

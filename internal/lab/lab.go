@@ -188,6 +188,9 @@ type UpOptions struct {
 	SchemaDir  string
 	Reload     bool
 	SkipVerify bool
+	// Brief leaves out of the summary the configuration to use and the next steps: clone, which made the lab from
+	// its configuration, says them itself.
+	Brief bool
 }
 
 func (l *Lab) checkDocker(ctx context.Context) error {
@@ -538,6 +541,35 @@ func (l *Lab) state(ctx context.Context, name string) (string, error) {
 		"{{if .State.Running}}{{if .State.Health}}{{.State.Health.Status}}{{else}}running{{end}}{{else}}exited{{end}}", name)
 }
 
+// Container states, as State reports them.
+const (
+	Missing = "missing"
+	Stopped = "exited"
+	Running = "running"
+)
+
+// State is whether the lab's container exists and runs: Missing, Stopped or Running (healthy or starting).
+func (l *Lab) State(ctx context.Context) (string, error) {
+	if err := l.checkDocker(ctx); err != nil {
+		return "", err
+	}
+	_, exists, err := l.inspectLabels(ctx, l.container())
+	if err != nil || !exists {
+		return Missing, err
+	}
+	st, err := l.state(ctx, l.container())
+	if err != nil {
+		return "", err
+	}
+	if st == "exited" {
+		return Stopped, nil
+	}
+	return Running, nil
+}
+
+// IsMain is whether this is the default lab, the one up creates (other instances come from a snapshot).
+func (l *Lab) IsMain() bool { return l.isMain() }
+
 // waitHealthy waits until the health check reports healthy. If the container stops, it prints the logs and fails.
 func (l *Lab) waitHealthy(ctx context.Context, name string) error {
 	for i := 0; i < healthRetries; i++ {
@@ -603,6 +635,9 @@ func (l *Lab) summary(s Settings, nb string, generated bool, o UpOptions) {
 		fmt.Fprintf(w, "  Admin password  : %s   <- auto-generated; also saved in .env\n", s.AdminPassword)
 	} else {
 		fmt.Fprintf(w, "  Admin password  : (the one you specified; saved in .env)\n")
+	}
+	if o.Brief {
+		return
 	}
 	fmt.Fprintf(w, "\nExample tool configuration ([target] in config.toml):\n\n")
 	fmt.Fprintf(w, "  [target]\n  url = \"ldaps://localhost:%d\"\n  bind_dn = \"%s\"\n  insecure_skip_verify = true   # because of the self-signed certificate\n\n", s.LDAPSPort, srv.AdminDN(s.Domain))
