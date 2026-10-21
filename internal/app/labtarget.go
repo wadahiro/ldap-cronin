@@ -41,11 +41,13 @@ func (s *Session) CloneLab(ctx context.Context, l *lab.Lab, out, log io.Writer) 
 	}
 	var steps []string
 	var up *lab.UpOptions
-	switch state {
-	case lab.Missing:
-		if !l.IsMain() {
-			return nil, fmt.Errorf("lab %s does not exist; clone creates the default lab only (leave out [target.lab] instance), another instance comes from a snapshot (lab restore --instance)", l.Name())
-		}
+	if state == lab.Missing && !l.IsMain() {
+		return nil, fmt.Errorf("lab %s does not exist; clone creates the default lab only (leave out [target.lab] instance), another instance comes from a snapshot (lab restore --instance)", l.Name())
+	}
+	if state != lab.Running {
+		// The settings of a lab like the source, also to start a stopped one: lab up then checks the existing
+		// container against them (another domain, other ports are refused), and asks for nothing, whatever .env
+		// the current directory holds.
 		settings, err := s.LikeSource(ctx)
 		if err != nil {
 			return nil, err
@@ -57,14 +59,15 @@ func (s *Session) CloneLab(ctx context.Context, l *lab.Lab, out, log io.Writer) 
 			return nil, err
 		}
 		up = &lab.UpOptions{Flags: settings, Image: lt.Image, Brief: true}
-		identity := ""
-		if settings.DomainSID != "" {
-			identity = fmt.Sprintf(" (NetBIOS %s), domain SID %s, GUID %s", settings.NetBIOS, settings.DomainSID, settings.DomainGUID)
+		if state == lab.Stopped {
+			steps = append(steps, "start it")
+		} else {
+			identity := ""
+			if settings.DomainSID != "" {
+				identity = fmt.Sprintf(" (NetBIOS %s), domain SID %s, GUID %s", settings.NetBIOS, settings.DomainSID, settings.DomainGUID)
+			}
+			steps = append(steps, fmt.Sprintf("create it like the source: domain %s%s", settings.Domain, identity))
 		}
-		steps = append(steps, fmt.Sprintf("create it like the source: domain %s%s", settings.Domain, identity))
-	case lab.Stopped:
-		up = &lab.UpOptions{Image: lt.Image, Brief: true}
-		steps = append(steps, "start it")
 	}
 	if s.Job.Profile.SchemaCopy != nil {
 		steps = append(steps, "give its schema the source's definitions it lacks")

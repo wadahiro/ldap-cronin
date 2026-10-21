@@ -107,9 +107,34 @@ func TestCloneCreatesTheLabLikeTheSourceAndGivesItTheSchema(t *testing.T) {
 	if code, err := s.Diff(ctx, app.DiffOutput{}, &diffOut); err != nil || code != app.ExitSame {
 		t.Fatalf("%d %v\n%s", code, err, diffOut.String())
 	}
+	// A stopped lab is started, from another directory too (no .env there): nothing is asked, nothing is written.
+	must(l.Down(ctx))
+	elsewhere := *l
+	elsewhere.Dirs = lab.Dirs{State: t.TempDir(), Snapshots: t.TempDir()}
+	elsewhere.Prompt = askNothing{t}
+	log.Reset()
+	if rep, err := s.CloneLab(ctx, &elsewhere, &log, &log); err != nil || rep.Added != 0 {
+		t.Fatalf("a clone into the stopped lab: %+v %v\n%s\n%s", rep, err, log.String(), errw.String())
+	}
 	// A second clone finds the lab running and its schema complete, and writes nothing.
 	log.Reset()
 	if rep, err := s.CloneLab(ctx, l, &log, &log); err != nil || rep.Added != 0 || strings.Contains(log.String(), "adding them") {
 		t.Fatalf("a second clone: %+v %v\n%s", rep, err, log.String())
 	}
+}
+
+// askNothing fails the test at any question: clone must not ask what the config and the source already say.
+type askNothing struct{ t *testing.T }
+
+func (a askNothing) Domain(string, string) (string, error) {
+	a.t.Error("clone asked for the domain")
+	return "", lab.ErrNotInteractive
+}
+func (a askNothing) NewPassword() (string, error) {
+	a.t.Error("clone asked for a password")
+	return "", lab.ErrNotInteractive
+}
+func (a askNothing) Choose(string, []string, int) (int, error) {
+	a.t.Error("clone asked to choose")
+	return 0, lab.ErrNotInteractive
 }
