@@ -5,11 +5,12 @@ Keep the data created by `clone` as a snapshot, and bring it back in a few secon
 
 It needs only docker (no docker compose), and can be carried into an environment with no internet access ([offline package](#using-the-offline-package)).
 
-The simplest way: name the lab in the configuration, and `clone` creates it like the source
-([below](#the-lab-as-the-target-of-clone-targetlab)):
+The simplest way: name the lab in the configuration, and `lab up --config` makes it like the source
+([below](#the-lab-made-like-the-source-lab-up---config-and-targetlab)):
 
 ```sh
-ldap-cronin clone -config config.toml            # [target.lab]: creates the lab like the source, then the data
+ldap-cronin lab up --config config.toml          # [target.lab]: the lab, like the source of config.toml
+ldap-cronin clone -config config.toml            # the data
 ldap-cronin lab snapshot baseline                # save the state right after the clone
 ldap-cronin diff -config config.toml             # later: see what another program changed
 ldap-cronin lab restore baseline                 # restore the original state (a few seconds)
@@ -49,7 +50,7 @@ and `--instance` (the instance to operate on; the default lab if omitted).
 ldap-cronin lab up                                  # asks for the domain name and the administrator password (interactive)
 ldap-cronin lab up --realm corp.example.local       # specify the domain name
 ldap-cronin lab up --with-sample-source             # also start a clone source with sample data, for trying the tool out
-ldap-cronin lab up --like-source config.toml        # create it with the same domain name, SID and GUID as the source (what clone does for [target.lab])
+ldap-cronin lab up --config config.toml             # make it like the source of a config: the same domain name, SID and GUID ([target.lab], below)
 ```
 
 - **The domain name is fixed at the first start, not at image build.** The same image can use a different domain name in each environment. To change it, run `lab reset` and create the lab again.
@@ -70,7 +71,7 @@ The same commands with an OpenLDAP 2.6 image of our own (`docker/ldap`, Ubuntu 2
 ```sh
 ldap-cronin lab up --profile ldap --suffix dc=example,dc=org        # start OpenLDAP; the admin is cn=admin,<suffix>
 ldap-cronin lab up --profile ldap --schema-dir ./schema              # with the production schema and cn=config changes
-ldap-cronin lab up --like-source config.toml                         # a generic source gives an OpenLDAP lab with its naming context
+ldap-cronin lab up --config config.toml                              # a generic source gives an OpenLDAP lab with its naming context
 ldap-cronin lab snapshot baseline                                    # later commands need no --profile
 ```
 
@@ -190,7 +191,7 @@ With `[mapping] mode = "preserve"` (the OpenLDAP lab) the identifiers are the so
 
 The lab image indexes `adminDisplayName` when the domain is created, before any data exists (Samba does not index values written before the index existed until a reindex), and on every start of an older lab. If you configure another marker attribute (`[mapping] attribute`), index it before the first `clone` as on a real AD ([active-directory.md](active-directory.md#when-the-target-is-a-real-ad)); for a lab that already holds markers in it, run `samba-tool dbcheck --reindex` in the container once afterwards.
 
-## The lab as the target of clone (`[target.lab]`)
+## The lab made like the source (`lab up --config` and `[target.lab]`)
 
 ```toml
 [target]
@@ -198,29 +199,38 @@ url = "ldaps://localhost:12636"
 bind_dn = "CN=Administrator,CN=Users,DC=ad,DC=example,DC=com"
 insecure_skip_verify = true
 [target.lab]
-image = "ldap-cronin/samba-ad:local"     # what clone creates it from (default: the offline package's image)
+image = "ldap-cronin/samba-ad:local"     # what lab up --config creates it from (default: the offline package's image)
 # instance = "dev2"                      # another instance (it must exist: instances come from snapshots)
 # prefix = "ldap-cronin"
 # native = true                          # see the next section
 # fast_password = true
 ```
 
-With `[target.lab]`, `clone`:
+```sh
+ldap-cronin lab up --config config.toml   # the lab, like the source
+ldap-cronin check -config config.toml     # what clone will do, reading the lab
+ldap-cronin clone -config config.toml     # the data
+```
 
-1. **creates the lab when it does not exist** (the default instance only), as `lab up --like-source` does: the
-   source's domain name, and on AD its NetBIOS name, domain SID and GUID, which can only be chosen when a domain is
-   created. It listens on the port of `[target] url` (the other port: the default, or `AD_LDAP_PORT` /
-   `AD_LDAPS_PORT`), and its Administrator password is the target password (`LDAP_CRONIN_TARGET_PASSWORD`, or
-   asked), saved in `.env` like a password given to `lab up`. A stopped lab is started; a lab of another domain or
-   other ports is refused, untouched;
-2. **gives its schema the source's definitions it lacks**, as `schema -apply` would (a lab's schema is reset with the
-   lab; a real AD's cannot be, so there it stays a step of its own);
-3. clones over LDAP, or with `native = true` writes Samba's database directly (next section).
+`lab up --config <file>` takes everything from the config:
 
-It asks once, before any of it, listing what it will do. `[target] url` must be the lab's: its port is checked
-against the lab's before anything is written. `check` says what `clone` will do to the lab (create it, start it,
-add to its schema), and reads it over LDAP when it runs. `diff`, `schema` and `lab snapshot` work as with any
-target. `[target.lab]` belongs in the configuration of a lab only: a real AD target has none.
+1. **It creates the lab when it does not exist** (the default instance only): the source's domain name, and on AD its
+   NetBIOS name, domain SID and GUID, which can only be chosen when a domain is created; for a generic source an
+   OpenLDAP lab with its naming context. It listens on the port of `[target] url` (the other port: the default, or
+   `AD_LDAP_PORT` / `AD_LDAPS_PORT`), and its Administrator password is the target password
+   (`LDAP_CRONIN_TARGET_PASSWORD`, or asked), saved in `.env` like a password given to `lab up`. The prefix,
+   instance and image come from `[target.lab]` (`--prefix`, `--instance` and `--image` take precedence); the
+   settings of a lab given by hand (`--realm`, the ports, ...) are refused with it. A stopped lab is started; a lab
+   of another domain or other ports is refused, untouched.
+2. **It gives the lab's schema the source's definitions it lacks**, as `schema -apply` would (a lab's schema goes with
+   the lab; a real AD's cannot be undone, so there it stays a step of its own). Run again after a new dump, it adds
+   what the source's schema has gained.
+
+`[target.lab]` says the target is that lab: `[target] url` must be its, which `lab up --config`, `check` and `clone`
+check against the lab's port. `check` says whether the lab exists and runs (exit code 1 until it does, with the
+`lab up --config` to run), and reads it like any target. `clone` refuses a lab that does not exist or is stopped,
+naming the command. `diff`, `schema` and `lab snapshot` work as with any target. `[target.lab]` belongs in the
+configuration of a lab only: a real AD target has none.
 
 ## Importing with the same objectGUID and objectSid (`[target.lab] native = true`, Samba only)
 
@@ -232,13 +242,14 @@ native = true
 ```
 
 ```sh
-ldap-cronin clone -config config.toml     # creates the lab like the source if missing, then imports into its database
+ldap-cronin lab up --config config.toml   # the lab, with the source's domain SID and GUID
+ldap-cronin clone -config config.toml     # imports into its database
 ldap-cronin diff -config config.toml      # matches objects by objectGUID directly (it is the same on both sides)
 ```
 
 - An `objectSid` is the domain's SID and a number within it, so the lab must have the source's domain SID: a lab
-  `clone` (or `lab up --like-source`) created has it. **It is chosen only when the domain is created**; a lab made
-  otherwise (`lab up --realm`) is refused before anything is written: `lab reset` and `clone` again.
+  `lab up --config` made has it. **It is chosen only when the domain is created**; a lab made otherwise
+  (`lab up --realm`) is refused before anything is written: `lab reset`, then `lab up --config` again.
 - `clone` names the lab and lists what it will do before stopping it (`-y` skips the question). The lab container is stopped only during the import and resumed afterwards, also on failure. If the lab's domain (root DN, SID, GUID) differs from the source, it refuses without writing anything.
 - It has no dry-run: nothing goes over LDAP, so there is no LDIF.
 - After the import it runs `dbcheck` (Samba's database check) and fails on errors. It also advances the RID allocation so RIDs of users created over LDAP later do not collide with imported ones.
@@ -251,7 +262,7 @@ ldap-cronin diff -config config.toml      # matches objects by objectGUID direct
   LDAP, NTLM and Kerberos with RC4, but not where only AES is allowed. Leave it off when the test needs the
   production behavior. The self-check at the start also tries it (and rolls it back), and the summary says how many
   users got the hash directly.
-- `diff` switches to matching by `objectGUID` automatically when the `objectGUID` is the same on both sides; the summary shows `rename/move check: on (objectGUID preserved ...)`. The decision uses the `objectGUID` of the first object `diff` compares under `base_dn`, found with the configured filters (`base_dn` itself only when nothing is under it, because a container that exists in the lab from the start, such as `CN=Users`, has the lab's own `objectGUID`). **The domain GUID alone is not enough**: after a plain LDAP `clone` into a `--like-source` lab, the domain GUID matches but the objects' GUIDs differ.
+- `diff` switches to matching by `objectGUID` automatically when the `objectGUID` is the same on both sides; the summary shows `rename/move check: on (objectGUID preserved ...)`. The decision uses the `objectGUID` of the first object `diff` compares under `base_dn`, found with the configured filters (`base_dn` itself only when nothing is under it, because a container that exists in the lab from the start, such as `CN=Users`, has the lab's own `objectGUID`). **The domain GUID alone is not enough**: after a plain LDAP `clone` into a lab made by `lab up --config`, the domain GUID matches but the objects' GUIDs differ.
 
 ### Limitations (read these)
 
@@ -269,7 +280,7 @@ ldap-cronin diff -config config.toml      # matches objects by objectGUID direct
 Carry the tar.gz built by `make bundle` into an environment with docker but no internet access.
 `make bundle EXCHANGE_ISO=<Exchange setup .iso>` builds one whose Samba4 AD image has Exchange's schema (its name ends
 in `-exchange`); it holds Microsoft's files, so it goes into your own environment only. In the unpacked directory,
-`clone` into a `[target.lab]` without `image` takes the package's image.
+`lab up --config` with a `[target.lab]` without `image` takes the package's image.
 `setup.sh <command>` in the unpacked directory is the same as `ldap-cronin lab <command>` (with no arguments, or a flag first, it runs `up`).
 
 ```sh

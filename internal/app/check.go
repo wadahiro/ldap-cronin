@@ -88,7 +88,7 @@ func (s *Session) Check(ctx context.Context, o CheckOptions, out io.Writer) (int
 		warning  string
 		refusal  string // why else clone would refuse to start
 	)
-	// A lab clone makes: what clone does to it first, and whether it can be read now.
+	// A lab: whether lab up --config has made it (and started it), so it can be read and written.
 	var labNote string
 	inLab := s.Cfg.Target.Lab != nil && o.Lab != nil
 	if inLab && !o.NoTarget {
@@ -96,12 +96,7 @@ func (s *Session) Check(ctx context.Context, o CheckOptions, out io.Writer) (int
 		if err != nil {
 			return 0, err
 		}
-		switch state {
-		case lab.Missing:
-			labNote = "does not exist yet: clone creates it like the source"
-		case lab.Stopped:
-			labNote = "is stopped: clone starts it"
-		default:
+		if labNote = labNotReady(state, o.Lab, o.Config); labNote == "" {
 			if err := o.Lab.CheckTargetURL(ctx, s.Cfg.Target.URL); err != nil {
 				refusal = err.Error()
 			}
@@ -112,7 +107,7 @@ func (s *Session) Check(ctx context.Context, o CheckOptions, out io.Writer) (int
 	case o.NoTarget:
 		fmt.Fprintln(out, "target: not read (-no-target)")
 	case labNote != "":
-		fmt.Fprintf(out, "target: the lab %s %s, and gives its schema the source's definitions it lacks\n", o.Lab.Name(), labNote)
+		fmt.Fprintf(out, "target: %s\n", labNote)
 	default:
 		s.Progress.Phase("the target's schema", -1)
 		dst, closeTarget, err := s.Target(ctx)
@@ -234,9 +229,7 @@ func (s *Session) Check(ctx context.Context, o CheckOptions, out io.Writer) (int
 	}
 	fmt.Fprintln(out)
 
-	if len(blocking) > 0 && inLab {
-		fmt.Fprintf(out, "the lab's schema lacks %d attributes the allow lists name; clone adds them first:\n", len(blocking))
-	} else if len(blocking) > 0 {
+	if len(blocking) > 0 {
 		fmt.Fprintf(out, "clone refuses to start: the target schema lacks %d attributes the allow lists name:\n", len(blocking))
 		for _, b := range blocking {
 			fmt.Fprintf(out, "  %s\n", b)
@@ -251,7 +244,7 @@ func (s *Session) Check(ctx context.Context, o CheckOptions, out io.Writer) (int
 	}
 	if changes != nil && !changes.Empty() {
 		if inLab {
-			fmt.Fprintln(out, "the lab's schema lacks definitions of the source's (clone adds them first):")
+			fmt.Fprintln(out, "the lab's schema lacks definitions of the source's (lab up --config adds them):")
 		} else {
 			fmt.Fprintln(out, "the target schema lacks definitions of the source's (ldap-cronin schema adds them):")
 		}
@@ -278,7 +271,7 @@ func (s *Session) Check(ctx context.Context, o CheckOptions, out io.Writer) (int
 		step++
 		fmt.Fprintf(out, "  %d. "+format+"\n", append([]any{step}, a...)...)
 	}
-	needSchema := !inLab && (len(blocking) > 0 || len(lacking) > 0 || (changes != nil && !changes.Empty()))
+	needSchema := len(blocking) > 0 || len(lacking) > 0 || (changes != nil && !changes.Empty())
 	if len(suggest) > 0 {
 		names := append([]string(nil), s.Cfg.Attributes.Extra...)
 		seen := profile.Set(names)
@@ -298,26 +291,27 @@ func (s *Session) Check(ctx context.Context, o CheckOptions, out io.Writer) (int
 			fmt.Fprintln(out, "     or copy every attribute a client can write: [attributes] mode = \"all\"")
 		}
 	}
+	if labNote != "" {
+		next("make the lab: ldap-cronin lab up --config %s", o.Config)
+	}
 	if needSchema {
-		if prof.SchemaCopy != nil {
+		if inLab {
+			next("give the lab's schema the source's definitions: ldap-cronin lab up --config %s", o.Config)
+		} else if prof.SchemaCopy != nil {
 			next("give the target the source's definitions: ldap-cronin schema %s -apply", cfg)
 			fmt.Fprintf(out, "     (a test AD: ldap-cronin schema %s > schema.ldif, for a Schema Admin; it cannot be undone)\n", cfg)
 		} else {
 			next("give the target's schema the attributes it lacks (above)")
 		}
 	}
-	if len(suggest) > 0 || needSchema || o.NoTarget {
+	if len(suggest) > 0 || needSchema || o.NoTarget || labNote != "" {
 		next("check again: ldap-cronin check %s", cfg)
 	}
 	if o.NoTarget {
 		fmt.Fprintln(out, "     (with the target, so it can say what the target's schema lacks)")
 	}
-	if labNote != "" {
-		next("clone: ldap-cronin clone %s (it %s first)", cfg, strings.TrimSuffix(strings.TrimPrefix(labNote, "does not exist yet: clone "), "is stopped: clone "))
-	} else {
-		next("clone: ldap-cronin clone %s", cfg)
-	}
-	if (len(blocking) > 0 && !inLab) || refusal != "" {
+	next("clone: ldap-cronin clone %s", cfg)
+	if len(blocking) > 0 || refusal != "" || labNote != "" {
 		return CheckBlocked, nil
 	}
 	return CheckReady, nil

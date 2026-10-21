@@ -196,6 +196,8 @@ func TestErrorsExitWith2(t *testing.T) {
 		"native + dry-run": {context.Background(), []string{"clone", "-dry-run", "-config", nativeCfg}, "produces no LDIF"},
 		"-native moved":    {context.Background(), []string{"clone", "-native", "-config", cfg}, "-native moved to the config: [target.lab]"},
 		"-lab-instance=":   {context.Background(), []string{"clone", "-lab-instance=x", "-config", cfg}, "moved to the config: [target.lab]"},
+		"--like-source":    {context.Background(), []string{"lab", "up", "--like-source", cfg}, "--like-source is now --config"},
+		"--config + realm": {context.Background(), []string{"lab", "up", "--config", cfg, "--realm", "x.test"}, "takes the domain, the ports"},
 		"interrupted":      {cancelled, []string{"clone", "-config", cfg}, "interrupted"},
 	} {
 		t.Run(name, func(t *testing.T) {

@@ -93,8 +93,9 @@ func TestNativeImportKeepsObjectGUIDAndObjectSid(t *testing.T) {
 	srcGUID, err := ad.GUIDText([]byte(root.Values("objectGUID")[0]))
 	must(err)
 
-	// The lab is the target of the config ([target.lab] native = true): check says clone will create it, and clone
-	// creates it like the source (the same domain SID and GUID) and imports into it.
+	// The lab is the target of the config ([target.lab] native = true): before lab up --config made it, check says
+	// to make it and clone refuses; lab up --config makes it like the source (the same domain SID and GUID), and
+	// clone imports into it.
 	cfg, err := config.Parse([]byte(fmt.Sprintf("[source]\nurl = \"ldaps://%s:%d\"\nbind_dn = %q\ninsecure_skip_verify = true\n"+
 		"[target]\nurl = \"ldaps://%s:%d\"\nbind_dn = %q\ninsecure_skip_verify = true\n"+
 		"[target.lab]\nprefix = %q\nimage = %q\nnative = true\nfast_password = true\n"+
@@ -105,13 +106,21 @@ func TestNativeImportKeepsObjectGUIDAndObjectSid(t *testing.T) {
 	s, err := app.Open(context.Background(), cfg, app.Secrets{SourceBind: pw, TargetBind: pw, UserPassword: func() (string, error) { return fixed, nil }}, app.LDAP, &bytes.Buffer{})
 	must(err)
 	defer s.Close()
+	s.ConfigPath = "c.toml"
 	var report bytes.Buffer
 	code, err := s.Check(context.Background(), app.CheckOptions{Config: "c.toml", Lab: dstLab}, &report)
 	must(err)
-	if code != app.CheckReady || !strings.Contains(report.String(), "does not exist yet: clone creates it like the source") {
+	if code != app.CheckBlocked || !strings.Contains(report.String(), "does not exist yet: ldap-cronin lab up --config c.toml creates it like the source") ||
+		!strings.Contains(report.String(), "make the lab: ldap-cronin lab up --config c.toml") {
 		t.Fatalf("check before the lab exists (exit %d):\n%s", code, report.String())
 	}
 	var cloned bytes.Buffer
+	if _, err := s.CloneLab(context.Background(), dstLab, &cloned, &cloned); err == nil || !strings.Contains(err.Error(), "lab up --config c.toml creates it") {
+		t.Fatalf("clone before lab up --config: %v", err)
+	}
+	if err := s.LabUp(context.Background(), dstLab, lab.UpOptions{}, &cloned); err != nil {
+		t.Fatalf("%v\n%s\n%s", err, cloned.String(), errw.String())
+	}
 	rep, err := s.CloneLab(context.Background(), dstLab, &cloned, &cloned)
 	if err != nil {
 		t.Fatalf("%v\n%s\n%s", err, cloned.String(), errw.String())

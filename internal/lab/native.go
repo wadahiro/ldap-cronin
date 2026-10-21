@@ -109,7 +109,7 @@ func (l *Lab) CheckTargetURL(ctx context.Context, raw string) error {
 		return err
 	}
 	if !exists {
-		return fmt.Errorf("lab %s does not exist; create it first with lab up --like-source (or restore)", l.container())
+		return fmt.Errorf("lab %s does not exist; create it first with lab up --config (or restore)", l.container())
 	}
 	label, kind := labelLDAPS, "LDAPS"
 	if u.Scheme == "ldap" {

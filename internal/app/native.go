@@ -66,7 +66,7 @@ func (s *Session) Native(ctx context.Context, l *lab.Lab, opts lab.NativeOptions
 	}
 	// Asked before the lab is stopped: a No leaves it as it was.
 	if s.Confirm != nil {
-		if err := s.ask(ctx, "clone -native stops the lab and adds and updates entries under base_dn in its database", "the lab "+l.Name()+" (Samba's database, written directly)"); err != nil {
+		if err := s.ask(ctx, "clone stops the lab and adds and updates entries under base_dn in its database ([target.lab] native = true)", "the lab "+l.Name()+" (Samba's database, written directly)"); err != nil {
 			return nil, err
 		}
 	}
@@ -112,7 +112,7 @@ func checkSameDomain(info lab.NativeInfo, src profile.Domain) error {
 		diffs = append(diffs, fmt.Sprintf("domain GUID: lab %s / source %s", info.DomainGUID, src.GUID))
 	}
 	if len(diffs) > 0 {
-		return fmt.Errorf("the lab's domain differs from the source's (%s). Create a lab with the same domain as the source by running lab reset, then lab up --like-source <config file>", strings.Join(diffs, ", "))
+		return fmt.Errorf("the lab's domain differs from the source's (%s). Create a lab with the same domain as the source by running lab reset, then lab up --config <config file>", strings.Join(diffs, ", "))
 	}
 	return nil
 }

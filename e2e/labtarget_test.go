@@ -19,10 +19,10 @@ import (
 	"github.com/wadahiro/ldap-cronin/internal/lab"
 )
 
-// A config whose [target.lab] names a lab that does not exist: clone creates it like the source, gives its schema
-// the source's extension, and clones over LDAP, so the extension's values are copied without a schema step of the
-// user's; diff then finds nothing.
-func TestCloneCreatesTheLabLikeTheSourceAndGivesItTheSchema(t *testing.T) {
+// A config whose [target.lab] names a lab that does not exist: lab up --config creates it like the source and gives
+// its schema the source's extension, and clone writes over LDAP, so the extension's values are copied without a
+// schema step of the user's; diff then finds nothing.
+func TestLabUpConfigMakesTheLabLikeTheSourceAndGivesItTheSchema(t *testing.T) {
 	image := os.Getenv("E2E_LAB_IMAGE")
 	if image == "" {
 		t.Skip("E2E_LAB_IMAGE is not set (tests/e2e.sh sets it)")
@@ -91,13 +91,17 @@ func TestCloneCreatesTheLabLikeTheSourceAndGivesItTheSchema(t *testing.T) {
 	t.Cleanup(s.Close)
 
 	var log bytes.Buffer
-	rep, err := s.CloneLab(ctx, l, &log, &log)
-	if err != nil {
+	if err := s.LabUp(ctx, l, lab.UpOptions{}, &log); err != nil {
 		t.Fatalf("%v\n%s\n%s", err, log.String(), errw.String())
 	}
-	t.Logf("clone:\n%s", log.String())
-	if rep.Added == 0 || !strings.Contains(log.String(), "the lab's schema lacks definitions of the source's; adding them:") {
-		t.Fatalf("the lab is created, given the schema and cloned into: %+v\n%s", rep, log.String())
+	t.Logf("lab up --config:\n%s", log.String())
+	if !strings.Contains(log.String(), "the lab's schema lacks definitions of the source's; adding them:") {
+		t.Fatalf("the lab is created and given the schema:\n%s", log.String())
+	}
+	log.Reset()
+	rep, err := s.CloneLab(ctx, l, &log, &log)
+	if err != nil || rep.Added == 0 {
+		t.Fatalf("clone into the lab: %+v %v\n%s", rep, err, log.String())
 	}
 	dst := dial(t, fmt.Sprintf("ldaps://%s:%d", host, ldaps))
 	if e, err := dst.Get(ctx, ann, []string{attr}); err != nil || e == nil || strings.Join(e.Values(attr), "") != "E-1" {
@@ -107,18 +111,20 @@ func TestCloneCreatesTheLabLikeTheSourceAndGivesItTheSchema(t *testing.T) {
 	if code, err := s.Diff(ctx, app.DiffOutput{}, &diffOut); err != nil || code != app.ExitSame {
 		t.Fatalf("%d %v\n%s", code, err, diffOut.String())
 	}
-	// A stopped lab is started, from another directory too (no .env there): nothing is asked, nothing is written.
+	// A stopped lab: clone refuses it; lab up --config starts it, from another directory too (no .env there),
+	// asking nothing; its schema is complete, and a second clone writes nothing.
 	must(l.Down(ctx))
+	if _, err := s.CloneLab(ctx, l, &log, &log); err == nil || !strings.Contains(err.Error(), "is stopped") {
+		t.Fatalf("a clone into the stopped lab: %v", err)
+	}
 	elsewhere := *l
 	elsewhere.Dirs = lab.Dirs{State: t.TempDir(), Snapshots: t.TempDir()}
 	elsewhere.Prompt = askNothing{t}
 	log.Reset()
-	if rep, err := s.CloneLab(ctx, &elsewhere, &log, &log); err != nil || rep.Added != 0 {
-		t.Fatalf("a clone into the stopped lab: %+v %v\n%s\n%s", rep, err, log.String(), errw.String())
+	if err := s.LabUp(ctx, &elsewhere, lab.UpOptions{}, &log); err != nil || strings.Contains(log.String(), "adding them") {
+		t.Fatalf("lab up --config of the stopped lab: %v\n%s\n%s", err, log.String(), errw.String())
 	}
-	// A second clone finds the lab running and its schema complete, and writes nothing.
-	log.Reset()
-	if rep, err := s.CloneLab(ctx, l, &log, &log); err != nil || rep.Added != 0 || strings.Contains(log.String(), "adding them") {
+	if rep, err := s.CloneLab(ctx, l, &log, &log); err != nil || rep.Added != 0 {
 		t.Fatalf("a second clone: %+v %v\n%s", rep, err, log.String())
 	}
 }

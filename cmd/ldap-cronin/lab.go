@@ -57,9 +57,11 @@ Flags (up):
   --netbios <name>          NetBIOS domain name (default: the uppercased first label of the domain name; up to 15 characters)
   --ldap-port <n>           Published LDAP port (default 12389; OpenLDAP 13389)
   --ldaps-port <n>          Published LDAPS port (default 12636; OpenLDAP 13636)
-  --like-source <config>    Connect to the source and create a lab like it: for AD the same domain name, NetBIOS name, and domain
-                            SID and GUID (for native import: clone -native. docs/lab.md); for a generic server an OpenLDAP lab
-                            with the source's naming context as the suffix
+  --config <file>           Make the lab of the config's [target.lab] like its source (a server or a dump): for AD the same
+                            domain name, NetBIOS name, domain SID and GUID (which [target.lab] native = true needs) and the
+                            source's schema extensions; for a generic server an OpenLDAP lab with the source's naming context.
+                            Its ports are those of [target] url, its administrator password the target password. A stopped
+                            lab is started; run again, it adds what the source's schema has gained. Then check and clone
   --domain-sid <sid>        Create the domain with this SID (S-1-5-21-a-b-c)
   --domain-guid <guid>      Create the domain with this GUID
   --with-sample-source      Also start a disposable clone source loaded with sample data, for checking that things work
@@ -129,7 +131,7 @@ func runLab(ctx context.Context, args []string, out, errW io.Writer) error {
 		suffix    string
 		password  string
 		netbios   string
-		likeSrc   string
+		cfgPath   string
 		domSID    string
 		domGUID   string
 		ldapPort  int
@@ -144,7 +146,7 @@ func runLab(ctx context.Context, args []string, out, errW io.Writer) error {
 		fs.StringVar(&netbios, "netbios", "", "")
 		fs.IntVar(&ldapPort, "ldap-port", 0, "")
 		fs.IntVar(&ldapsPort, "ldaps-port", 0, "")
-		fs.StringVar(&likeSrc, "like-source", "", "")
+		fs.StringVar(&cfgPath, "config", "", "")
 		fs.StringVar(&domSID, "domain-sid", "", "")
 		fs.StringVar(&domGUID, "domain-guid", "", "")
 		fs.BoolVar(&up.WithSource, "with-sample-source", false, "")
@@ -169,6 +171,11 @@ func runLab(ctx context.Context, args []string, out, errW io.Writer) error {
 		fmt.Fprint(errW, labUsage)
 		return fmt.Errorf("unknown lab command: %q", sub)
 	}
+	for _, a := range rest {
+		if f := strings.SplitN(strings.TrimLeft(a, "-"), "=", 2)[0]; f == "like-source" && a != f {
+			return errors.New("--like-source is now --config <file>: lab up --config makes the lab of [target.lab] like the source")
+		}
+	}
 	positional, err := parseInterleaved(fs, rest)
 	if err != nil {
 		return err
@@ -181,21 +188,12 @@ func runLab(ctx context.Context, args []string, out, errW io.Writer) error {
 		name = positional[0]
 	}
 
+	if sub == "up" && cfgPath != "" {
+		return labUpFromConfig(ctx, fs, c, cfgPath, up, labFlagsGiven{realm, suffix, password, netbios, domSID, domGUID, ldapPort, ldapsPort}, out, errW)
+	}
 	l, err := newLab(c, out, errW)
 	if err != nil {
 		return err
-	}
-	if sub == "up" && likeSrc != "" {
-		base, err := likeSource(ctx, likeSrc)
-		if err != nil {
-			return fmt.Errorf("--like-source: %w", err)
-		}
-		if c.profile == "" {
-			c.profile = base.Profile // a generic source gets an OpenLDAP lab
-		} else if c.profile != base.Profile {
-			return fmt.Errorf("--like-source: the source is a %s server, not %s", base.Profile, c.profile)
-		}
-		up.Flags = base
 	}
 	// status lists every kind; the rest work on one lab, whose kind is known now.
 	if sub != "status" && sub != "snapshots" && sub != "snapshot-rm" {
@@ -272,14 +270,42 @@ func mergeLike(base, flags lab.Settings) lab.Settings {
 	return out
 }
 
-// likeSource connects to the source of a config file and returns the settings for a lab of the same domain.
-func likeSource(ctx context.Context, cfgPath string) (lab.Settings, error) {
+// labFlagsGiven are lab up's settings of a lab, which --config takes from the config instead.
+type labFlagsGiven struct {
+	realm, suffix, password, netbios, sid, guid string
+	ldapPort, ldapsPort                         int
+}
+
+// labUpFromConfig is lab up --config: the lab [target.lab] names (its prefix and instance, unless given as flags),
+// made like the source of the config, its ports those of [target] url, its Administrator password the target's.
+func labUpFromConfig(ctx context.Context, fs *flag.FlagSet, c labCommon, cfgPath string, up lab.UpOptions, given labFlagsGiven, out, errW io.Writer) error {
+	if given != (labFlagsGiven{}) || up.WithSource || c.profile != "" || up.SchemaDir != "" {
+		return errors.New("lab up --config takes the domain, the ports, the password and the kind of lab from the config ([source], [target] and [target.lab]): leave out --realm, --suffix, --admin-password, --netbios, --domain-sid, --domain-guid, --ldap-port, --ldaps-port, --profile, --schema-dir and --with-sample-source")
+	}
 	s, err := openSession(ctx, cfgPath)
 	if err != nil {
-		return lab.Settings{}, err
+		return err
 	}
 	defer s.Close()
-	return s.LikeSource(ctx)
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+	if lt := s.Cfg.Target.Lab; lt != nil {
+		if lt.Prefix != "" && !set["prefix"] {
+			c.prefix = lt.Prefix
+		}
+		if lt.Instance != "" && !set["instance"] {
+			c.instance = lt.Instance
+		}
+	}
+	l, err := newLab(c, out, errW)
+	if err != nil {
+		return err
+	}
+	if err := s.LabUp(ctx, l, up, out); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "\nThe lab %s is like the source of %s (%s).\nNext: ldap-cronin check -config %s, then ldap-cronin clone -config %s\n", l.Name(), cfgPath, s.Cfg.Target.URL, cfgPath, cfgPath)
+	return nil
 }
 
 // parseInterleaved lets flags appear both before and after the positional argument (the snapshot name).

@@ -197,7 +197,7 @@ func (c *Classifier) classify(ctx context.Context, v string, chk *refCheck) erro
 }
 
 // configuration classifies a value naming the configuration partition, which clone is to create: it can when the
-// source holds the entry and the target's partition is the source's (a lab made with lab up --like-source), as the
+// source holds the entry and the target's partition is the source's (a lab made with lab up --config), as the
 // value is written as it is.
 func (c *Classifier) configuration(ctx context.Context, v string, chk *refCheck) error {
 	c.configOnce.Do(func() {

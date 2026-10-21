@@ -100,11 +100,12 @@ To try the tool out, start one more Samba with sample data (disposable; not save
 
 ## Importing with the same objectGUID and objectSid as the source (Samba lab only)
 
-Name the lab in config.toml with `native = true`; `clone` builds it with the same domain SID and GUID as the source (read from the source, or a dump of it) and imports objects with their `objectGUID` and `objectSid`. No extra components are needed.
+Name the lab in config.toml with `native = true`; `lab up --config` builds it with the same domain SID and GUID as the source (read from the source, or a dump of it), and `clone` imports objects with their `objectGUID` and `objectSid`. No extra components are needed.
 
     [target.lab]
     native = true
 
+    ./ldap-cronin lab up --config config.toml
     ./ldap-cronin clone -config config.toml
 
 This uses unsupported Samba internals. Read docs/lab.md for the limitations (Samba only, verified on 4.19.5, password hashes do not become identical).

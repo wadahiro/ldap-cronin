@@ -167,7 +167,12 @@ func openSession(ctx context.Context, cfgPath string) (*app.Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	return app.Open(ctx, cfg, secretsFor(cfg), dial, os.Stderr)
+	s, err := app.Open(ctx, cfg, secretsFor(cfg), dial, os.Stderr)
+	if err != nil {
+		return nil, err
+	}
+	s.ConfigPath = cfgPath
+	return s, nil
 }
 
 // secretsFor takes the fixed password of the cloned users from [accounts] fixed_password when the environment does not

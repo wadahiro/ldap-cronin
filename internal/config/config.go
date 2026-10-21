@@ -47,7 +47,7 @@ type Endpoint struct {
 // Lab is [target.lab]: which lab the target is, and whether clone writes its database directly.
 type Lab struct {
 	// Prefix and Instance name the lab's container (<prefix>-ad, or <prefix>-ad-<instance>), as lab --prefix and
-	// --instance do. lab up --like-source takes them from here.
+	// --instance do. lab up --config takes them from here.
 	Prefix   string `toml:"prefix"`
 	Instance string `toml:"instance"`
 	// Native makes clone stop the lab and write Samba's database directly, keeping the source's objectGUID and

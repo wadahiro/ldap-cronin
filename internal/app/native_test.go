@@ -16,7 +16,7 @@ func TestCheckSameDomain(t *testing.T) {
 	}
 	src.SID = "S-1-5-21-9-9-9"
 	err := checkSameDomain(info, src)
-	if err == nil || !strings.Contains(err.Error(), "domain SID") || !strings.Contains(err.Error(), "--like-source") {
+	if err == nil || !strings.Contains(err.Error(), "domain SID") || !strings.Contains(err.Error(), "lab up --config") {
 		t.Fatalf("a different SID must be refused with a hint: %v", err)
 	}
 }
