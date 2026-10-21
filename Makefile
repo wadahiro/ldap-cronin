@@ -19,7 +19,9 @@ IMAGE        ?= ldap-cronin/samba-ad
 LDAP_IMAGE   ?= ldap-cronin/openldap
 IMAGE_TAG    ?= $(VERSION)
 PLATFORM     ?= linux/amd64
-BUNDLE_NAME  := $(BINARY)-offline-$(VERSION)-$(subst /,-,$(PLATFORM))
+# With EXCHANGE_ISO the Samba4 AD image carries Exchange's schema: its tag, and the bundle's name, end in -exchange.
+AD_TAG       := $(IMAGE_TAG)$(if $(EXCHANGE_ISO),-exchange)
+BUNDLE_NAME  := $(BINARY)-offline-$(VERSION)-$(subst /,-,$(PLATFORM))$(if $(EXCHANGE_ISO),-exchange)
 BUNDLE_DIR   := $(DIST_DIR)/$(BUNDLE_NAME)
 SHA256       := $(shell command -v sha256sum >/dev/null 2>&1 && echo sha256sum || echo "shasum -a 256")
 
@@ -105,23 +107,23 @@ else
 	rm -f docker/ad/exchange/*.ldf
 	bsdtar -xf "$(EXCHANGE_ISO)" -C docker/ad/exchange --strip-components 2 'Setup/Data/PostWindows2003_schema*.ldf' 'Setup/Data/SchemaVersion.ldf'
 	@# The schema files are Microsoft's: they are in the image only, and removed from the build context whatever happens.
-	docker build --platform $(PLATFORM) -t $(IMAGE):$(IMAGE_TAG)-exchange docker/ad; status=$$?; rm -f docker/ad/exchange/*.ldf; exit $$status
-	@echo "$(IMAGE):$(IMAGE_TAG)-exchange writes Exchange's schema to every lab it creates (lab up --image $(IMAGE):$(IMAGE_TAG)-exchange). Do not publish it."
+	docker build --platform $(PLATFORM) -t $(IMAGE):$(AD_TAG) docker/ad; status=$$?; rm -f docker/ad/exchange/*.ldf; exit $$status
+	@echo "$(IMAGE):$(AD_TAG) writes Exchange's schema to every lab it creates (lab up --image $(IMAGE):$(AD_TAG)). Do not publish it."
 endif
 	docker build --platform $(PLATFORM) -t $(LDAP_IMAGE):$(IMAGE_TAG) docker/ldap
 
 .PHONY: bundle
-bundle: image ## Build a tar.gz into dist/ to carry into an air-gapped environment (image, tool binaries, setup.sh; compose is not included)
+bundle: image ## Build a tar.gz into dist/ to carry into an air-gapped environment (image, tool binaries, setup.sh; compose is not included). EXCHANGE_ISO=<iso>: its Samba4 AD has Exchange's schema
 	rm -rf $(BUNDLE_DIR)
 	mkdir -p $(BUNDLE_DIR)/images $(BUNDLE_DIR)/bin
 	# One save for both images, so the Ubuntu layers they share are stored once.
-	docker save $(IMAGE):$(IMAGE_TAG) $(LDAP_IMAGE):$(IMAGE_TAG) -o $(BUNDLE_DIR)/images/lab.tar
+	docker save $(IMAGE):$(AD_TAG) $(LDAP_IMAGE):$(IMAGE_TAG) -o $(BUNDLE_DIR)/images/lab.tar
 	@for arch in amd64 arm64; do \
 	  echo "build $(BUNDLE_DIR)/bin/$(BINARY)-linux-$$arch"; \
 	  CGO_ENABLED=0 GOOS=linux GOARCH=$$arch go build -trimpath -ldflags '$(LDFLAGS)' \
 	    -o $(BUNDLE_DIR)/bin/$(BINARY)-linux-$$arch $(PKG) || exit 1; \
 	done
-	printf 'ad=%s\nldap=%s\n' "$(IMAGE):$(IMAGE_TAG)" "$(LDAP_IMAGE):$(IMAGE_TAG)" > $(BUNDLE_DIR)/IMAGE
+	printf 'ad=%s\nldap=%s\n' "$(IMAGE):$(AD_TAG)" "$(LDAP_IMAGE):$(IMAGE_TAG)" > $(BUNDLE_DIR)/IMAGE
 	cp offline/setup.sh offline/README-OFFLINE.md config.example.toml README.md $(BUNDLE_DIR)/
 	cp -r docs $(BUNDLE_DIR)/docs
 	chmod +x $(BUNDLE_DIR)/setup.sh
@@ -130,6 +132,7 @@ bundle: image ## Build a tar.gz into dist/ to carry into an air-gapped environme
 	@echo
 	@ls -lh $(DIST_DIR)/$(BUNDLE_NAME).tar.gz
 	@echo "destination: tar xzf $(BUNDLE_NAME).tar.gz && cd $(BUNDLE_NAME) && ./setup.sh"
+	$(if $(EXCHANGE_ISO),@echo "It holds Microsoft's Exchange schema files (in the image): carry it to your own environment only and never publish it.")
 
 .PHONY: clean
 clean: ## Remove generated files

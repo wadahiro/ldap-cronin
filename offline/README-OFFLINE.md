@@ -8,7 +8,7 @@ A package for using `ldap-cronin` with a local AD-compatible Samba4, or OpenLDAP
 |---|---|
 | `setup.sh` | Entry point. Picks the `ldap-cronin` binary for your architecture and passes the arguments to the `lab` subcommand |
 | `bin/ldap-cronin-linux-{amd64,arm64}` | The tool binaries (statically linked; nothing else is needed) |
-| `images/lab.tar` | The Samba4 AD and OpenLDAP docker images (one `docker save`, so their shared layers are stored once) |
+| `images/lab.tar` | The Samba4 AD and OpenLDAP docker images (one `docker save`, so their shared layers are stored once). In a package whose name ends in `-exchange`, the Samba4 AD image writes Exchange's schema to every lab it creates; it holds Microsoft's files: keep the package in your own environment |
 | `IMAGE` / `SHA256SUMS` | The image names (`ad=` / `ldap=`) / checksums to verify that nothing was corrupted in transit |
 | `config.example.toml` | An example tool configuration |
 | `README.md` / `docs/` | The full documentation of the tool. `docs/lab.md` has the details of this lab and of snapshots |

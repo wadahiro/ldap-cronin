@@ -267,6 +267,9 @@ ldap-cronin diff -config config.toml      # matches objects by objectGUID direct
 ## Using the offline package
 
 Carry the tar.gz built by `make bundle` into an environment with docker but no internet access.
+`make bundle EXCHANGE_ISO=<Exchange setup .iso>` builds one whose Samba4 AD image has Exchange's schema (its name ends
+in `-exchange`); it holds Microsoft's files, so it goes into your own environment only. In the unpacked directory,
+`clone` into a `[target.lab]` without `image` takes the package's image.
 `setup.sh <command>` in the unpacked directory is the same as `ldap-cronin lab <command>` (with no arguments, or a flag first, it runs `up`).
 
 ```sh

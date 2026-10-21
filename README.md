@@ -151,7 +151,7 @@ ldap-cronin lab restore                         # pick from the list and restore
 
 ### Taking it into an air-gapped environment
 
-Where there is no internet access, build a tar.gz with `make bundle` on a connected machine (the Samba4 and OpenLDAP images, the binaries and `setup.sh`) and carry it over. `setup.sh <command>` is the same as `ldap-cronin lab <command>`.
+Where there is no internet access, build a tar.gz with `make bundle` on a connected machine (the Samba4 and OpenLDAP images, the binaries and `setup.sh`) and carry it over. `setup.sh <command>` is the same as `ldap-cronin lab <command>`. `make bundle EXCHANGE_ISO=<Exchange setup .iso>` gives the Samba4 AD Exchange's schema (keep that package in your own environment: it holds Microsoft's files). The [tutorial](docs/tutorial-ad.md#where-the-lab-runs-has-no-internet-access) goes through it.
 
 ```sh
 tar xzf ldap-cronin-offline-*.tar.gz && cd ldap-cronin-offline-*

@@ -43,8 +43,35 @@ definitions), written when its domain is created, before Samba starts: the lab i
 image holds Microsoft's files: keep it on your machine, never push it. On a Windows test domain, Exchange's own
 setup prepares the schema.
 
-For a machine without internet access, build the offline package instead (`make bundle`, see
-[lab.md](lab.md#using-the-offline-package)); `setup.sh` in it then takes the place of `ldap-cronin lab`.
+### Where the lab runs has no internet access
+
+Build an offline package on a machine that has it, and carry the one file over. It holds the tool for Linux
+(amd64 and arm64), the lab images (Samba4 AD and OpenLDAP, with Exchange's schema when asked) and `setup.sh`;
+the destination needs docker only.
+
+```sh
+# on the connected machine: PLATFORM is the destination's docker architecture (uname -m: x86_64 = amd64)
+make bundle PLATFORM=linux/amd64
+# with Exchange's schema in its Samba4 AD (the ISO of the version production runs, as above)
+make bundle PLATFORM=linux/amd64 EXCHANGE_ISO=~/Downloads/ExchangeServerSE-x64.iso
+# -> dist/ldap-cronin-offline-<version>-linux-amd64[-exchange].tar.gz
+```
+
+The `-exchange` package holds Microsoft's schema files inside its image: carry it into your own environment only,
+never publish it or put it where others can download it.
+
+At the destination, unpack it and work in its directory; the dump (step 2) goes there too:
+
+```sh
+tar xzf ldap-cronin-offline-*.tar.gz && cd ldap-cronin-offline-*
+./setup.sh status          # places ./ldap-cronin for this machine's architecture, and starts nothing
+cp /path/to/prod.ldif.gz . # the dump, taken where production can be reached
+```
+
+From there, `./ldap-cronin` takes the place of `./bin/ldap-cronin` in the steps below. Leave `image` out of
+`[target.lab]` (step 3): run from the package's directory, `clone` takes the package's image, checks the files
+against `SHA256SUMS` and loads it into docker the first time. The package's `README-OFFLINE.md` has the rest
+([lab.md](lab.md#using-the-offline-package)).
 
 ## 2. Read production once: the dump
 
@@ -94,7 +121,8 @@ bind_dn = "CN=Administrator,CN=Users,DC=ad,DC=example,DC=com"
 insecure_skip_verify = true                 # the lab's certificate is self-signed
 
 [target.lab]                                # the target is a lab: clone creates it like the source when it is missing
-image = "ldap-cronin/samba-ad:local"        # what it is created from (step 1); ...:local-exchange for Exchange's schema
+image = "ldap-cronin/samba-ad:local"        # what it is created from (step 1); ...:local-exchange for Exchange's schema;
+                                            # leave it out in the offline package's directory (its image is used)
 # native = true                             # write its database directly, keeping objectGUID and objectSid (step 5)
 
 [scope]
