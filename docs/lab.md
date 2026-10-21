@@ -304,6 +304,8 @@ ldap-cronin lab up --config config.toml --dry-run
 
 - The password is never in the user data nor in an argument: `lab up` will put it into a SecureString parameter on
   standard input, the instance reads it, and `lab up` deletes it once the domain is ready.
+- The target password must pass Windows' complexity rule (at least 8 characters, three of upper case, lower case,
+  digits and symbols): it becomes the Administrator's before the domain exists.
 - `native` and `image` are refused (Windows lets no one choose a domain SID or an objectGUID). `check` and `clone`
   refuse an EC2 lab for now (`check -no-target` reads the source alone).
 - What it needs and what is still unverified: [design/ec2-lab.md](design/ec2-lab.md).

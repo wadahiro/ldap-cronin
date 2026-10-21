@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -33,9 +34,18 @@ func TestEC2LabIsLikeTheSource(t *testing.T) {
 	}
 }
 
-// A docker lab has no EC2 plan; neither has an OpenLDAP-like source, which Windows Server cannot stand for.
+// A docker lab has no EC2 plan; neither has a generic LDAP source, which Windows Server cannot stand for.
 func TestEC2LabRefusesWhatIsNotOne(t *testing.T) {
 	if _, err := newWorld().openWith(t, "[target.lab]\n").EC2Lab(context.Background()); err == nil {
 		t.Error("a docker lab")
+	}
+	s, err := newWorld().tryOpen(ec2LabSection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	s.Job.Profile.Native = nil // as a generic LDAP profile has none
+	if _, err := s.EC2Lab(context.Background()); err == nil || !strings.Contains(err.Error(), "for an AD source") {
+		t.Errorf("a generic LDAP source: %v", err)
 	}
 }

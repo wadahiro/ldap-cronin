@@ -50,10 +50,14 @@ const (
 var (
 	ec2DomainPattern  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9.-]*$`)
 	ec2NetBIOSPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,14}$`)
+	ec2NamePattern    = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 )
 
 // Check refuses settings the instance could not use, or that would not stay inside the PowerShell's quotes.
 func (e EC2Lab) Check() error {
+	if !ec2NamePattern.MatchString(e.Name) {
+		return fmt.Errorf("lab name %q: lowercase letters, digits and hyphens (the prefix and the instance)", e.Name)
+	}
 	if !ec2DomainPattern.MatchString(e.Domain) || !strings.Contains(e.Domain, ".") {
 		return fmt.Errorf("an EC2 lab needs a DNS domain name (ad.example.com), got %q", e.Domain)
 	}
@@ -112,11 +116,11 @@ func (e EC2Lab) tags() string {
 func (e EC2Lab) UpCommands() []AWSCommand {
 	region := []string{"--region", e.Region}
 	return []AWSCommand{
-		{Args: append([]string{"ssm", "put-parameter"}, append(region, "--cli-input-json", "file:///dev/stdin")...),
-			Stdin: fmt.Sprintf(`{"Name": %q, "Type": "SecureString", "Overwrite": true, "Value": <the target password>}`, e.PasswordParameter),
-			Why:   "the Administrator password, for the instance to read (on standard input: never an argument)"},
 		{Args: append([]string{"ssm", "get-parameter"}, append(region, "--name", e.AMIParameter(), "--query", "Parameter.Value", "--output", "text")...),
 			Why: "the latest Windows Server " + e.windows() + " image"},
+		{Args: append([]string{"ssm", "put-parameter"}, append(region, "--cli-input-json", "file:///dev/stdin")...),
+			Stdin: fmt.Sprintf(`{"Name": %q, "Type": "SecureString", "Overwrite": true, "Value": <the target password>}`, e.PasswordParameter),
+			Why:   "the Administrator password, for the instance to read (on standard input: never an argument), written last before the instance"},
 		{Args: append([]string{"ec2", "run-instances"}, append(region,
 			"--image-id", "<ami>", "--instance-type", e.instanceType(), "--subnet-id", e.Subnet,
 			"--iam-instance-profile", "Name="+e.InstanceProfile, "--metadata-options", "HttpTokens=required",

@@ -18,7 +18,9 @@ controller, and using the lab as a production copy.
 1. **The plan** (this): `[target.lab]` keys, the user data, and `lab up --config --dry-run`, which prints the user
    data and the aws commands without calling AWS. `lab up --config` without `--dry-run`, `check` and `clone` refuse
    an EC2 lab ("not there yet").
-2. **lab up**: run the commands, wait for the instance, delete the parameter, forward LDAPS.
+2. **lab up**: run the commands, wait for the instance, delete the parameter, forward LDAPS. The parameter is
+   deleted on every way out, a failure or a timeout while waiting included; the target password is checked against
+   Windows' complexity rule (4) before it is written.
 3. **status, down, snapshot, restore, reset** on the resources tagged with the lab's name.
 4. **check and clone** of an EC2 lab, as of a docker one.
 
@@ -44,6 +46,10 @@ controller, and using the lab as a production copy.
 - The aws command v2 and the Session Manager plugin, credentials allowed to `ssm:PutParameter`, `ssm:GetParameter`,
   `ssm:DeleteParameter`, `ssm:SendCommand`, `ssm:GetCommandInvocation`, `ssm:StartSession`, `ec2:RunInstances`,
   `ec2:CreateTags`, `ec2:DescribeInstances` and `iam:PassRole` for the instance profile.
+- A target password Windows accepts: `Set-LocalUser` and `Install-ADDSForest` apply the local complexity rule
+  before the domain exists (at least 8 characters, three of upper case, lower case, digits and symbols, and not the
+  account name). The second phase relaxes the domain's policy for the cloned users only; a weaker password stops
+  the first phase, and the forest is never made.
 - `subnet`: a subnet whose instances reach Systems Manager (a NAT gateway, or VPC endpoints for `ssm`,
   `ssmmessages` and `ec2messages`).
 - `instance_profile`: a role with `AmazonSSMManagedInstanceCore` (which allows `ssm:GetParameter`), and

@@ -38,6 +38,7 @@ func TestEC2LabRefusesWhatTheScriptCannotTake(t *testing.T) {
 		"a quote in the domain":    func(e *EC2Lab) { e.Domain = "ad'.example.com" },
 		"a long NetBIOS name":      func(e *EC2Lab) { e.NetBIOS = "ABCDEFGHIJKLMNOP" },
 		"no port":                  func(e *EC2Lab) { e.LocalPort = 0 },
+		"a brace in the name":      func(e *EC2Lab) { e.Name = "ldap-cronin-ad-x}]" },
 	} {
 		e := testEC2Lab()
 		change(&e)
@@ -57,7 +58,7 @@ func TestEC2UpCommands(t *testing.T) {
 		all = append(all, c.Shell())
 	}
 	text := strings.Join(all, "\n")
-	put := cmds[0]
+	put := cmds[1]
 	if put.Args[0] != "ssm" || put.Args[1] != "put-parameter" || !strings.Contains(put.Shell(), "--cli-input-json file:///dev/stdin") ||
 		!strings.Contains(put.Stdin, `"SecureString"`) || !strings.Contains(put.Stdin, "<the target password>") {
 		t.Errorf("the password parameter: %s / %s", put.Shell(), put.Stdin)
@@ -73,8 +74,11 @@ func TestEC2UpCommands(t *testing.T) {
 			t.Errorf("the commands lack %q:\n%s", want, text)
 		}
 	}
+	if cmds[0].Args[1] != "get-parameter" || cmds[2].Args[1] != "run-instances" {
+		t.Errorf("the password must be written after the image is found, just before the instance: %s, %s", cmds[0].Shell(), cmds[2].Shell())
+	}
 	e.Windows, e.InstanceType = "2025", "m5.xlarge"
-	if text := e.UpCommands()[1].Shell() + e.UpCommands()[2].Shell(); !strings.Contains(text, "Windows_Server-2025-") || !strings.Contains(text, "m5.xlarge") {
+	if text := e.UpCommands()[0].Shell() + e.UpCommands()[2].Shell(); !strings.Contains(text, "Windows_Server-2025-") || !strings.Contains(text, "m5.xlarge") {
 		t.Errorf("windows and instance_type: %s", text)
 	}
 }

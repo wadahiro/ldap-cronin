@@ -68,7 +68,7 @@ func TestWriteEC2PlanShowsTheUserDataAndTheCommands(t *testing.T) {
 	}
 	text := out.String()
 	for _, want := range []string{"dry run: nothing is done on AWS", "==> The user data of the instance\n<powershell>", "</powershell>\n<persist>true</persist>\n",
-		"\n# 1. the Administrator password", "\naws ssm put-parameter --region ap-northeast-1 --cli-input-json file:///dev/stdin\n",
+		"\n# 2. the Administrator password", "\naws ssm put-parameter --region ap-northeast-1 --cli-input-json file:///dev/stdin\n",
 		"#    standard input: {\"Name\": \"/ldap-cronin/ldap-cronin-ad/admin-password\", \"Type\": \"SecureString\"",
 		"\n# 7. LDAPS of the instance at localhost:12636"} {
 		if !strings.Contains(text, want) {
