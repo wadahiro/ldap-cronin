@@ -19,6 +19,8 @@ IMAGE        ?= ldap-cronin/samba-ad
 LDAP_IMAGE   ?= ldap-cronin/openldap
 IMAGE_TAG    ?= $(VERSION)
 PLATFORM     ?= linux/amd64
+# A shell leaves ~ unexpanded after = (zsh by default, fish), and the recipe quotes the path: expand it here.
+override EXCHANGE_ISO := $(patsubst ~/%,$(HOME)/%,$(EXCHANGE_ISO))
 # With EXCHANGE_ISO the Samba4 AD image carries Exchange's schema: its tag, and the bundle's name, end in -exchange.
 AD_TAG       := $(IMAGE_TAG)$(if $(EXCHANGE_ISO),-exchange)
 BUNDLE_NAME  := $(BINARY)-offline-$(VERSION)-$(subst /,-,$(PLATFORM))$(if $(EXCHANGE_ISO),-exchange)
@@ -104,6 +106,7 @@ ifeq ($(EXCHANGE_ISO),)
 	docker build --platform $(PLATFORM) -t $(IMAGE):$(IMAGE_TAG) docker/ad
 else
 	@command -v bsdtar >/dev/null || { echo "bsdtar reads the ISO (macOS has it; Debian/Ubuntu: apt install libarchive-tools)"; exit 1; }
+	@test -f "$(EXCHANGE_ISO)" || { echo "EXCHANGE_ISO: no such file: $(EXCHANGE_ISO)"; exit 1; }
 	rm -f docker/ad/exchange/*.ldf
 	bsdtar -xf "$(EXCHANGE_ISO)" -C docker/ad/exchange --strip-components 2 'Setup/Data/PostWindows2003_schema*.ldf' 'Setup/Data/SchemaVersion.ldf'
 	@# The schema files are Microsoft's: they are in the image only, and removed from the build context whatever happens.
