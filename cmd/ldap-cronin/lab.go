@@ -61,7 +61,9 @@ Flags (up):
                             domain name, NetBIOS name, domain SID and GUID (which [target.lab] native = true needs) and the
                             source's schema extensions; for a generic server an OpenLDAP lab with the source's naming context.
                             Its ports are those of [target] url, its administrator password the target password. A stopped
-                            lab is started; run again, it adds what the source's schema has gained. Then check and clone
+                            lab is started; run again, it adds what the source's schema has gained. Then check and clone.
+                            With [target.lab] platform = "ec2", a Windows Server domain controller on Amazon EC2 (in progress)
+  --dry-run                 With --config of an EC2 lab: print the instance's user data and the aws commands, run nothing
   --domain-sid <sid>        Create the domain with this SID (S-1-5-21-a-b-c)
   --domain-guid <guid>      Create the domain with this GUID
   --with-sample-source      Also start a disposable clone source loaded with sample data, for checking that things work
@@ -136,6 +138,7 @@ func runLab(ctx context.Context, args []string, out, errW io.Writer) error {
 		domGUID   string
 		ldapPort  int
 		ldapsPort int
+		dryRun    bool
 	)
 	switch sub {
 	case "up":
@@ -155,6 +158,7 @@ func runLab(ctx context.Context, args []string, out, errW io.Writer) error {
 		fs.StringVar(&up.Image, "image", "", "")
 		fs.BoolVar(&up.Reload, "reload", false, "")
 		fs.BoolVar(&up.SkipVerify, "skip-verify", false, "")
+		fs.BoolVar(&dryRun, "dry-run", false, "")
 	case "reset":
 		fs.BoolVar(&reset.Yes, "y", false, "")
 		fs.BoolVar(&reset.Yes, "yes", false, "")
@@ -189,7 +193,10 @@ func runLab(ctx context.Context, args []string, out, errW io.Writer) error {
 	}
 
 	if sub == "up" && cfgPath != "" {
-		return labUpFromConfig(ctx, fs, c, cfgPath, up, labFlagsGiven{realm, suffix, password, netbios, domSID, domGUID, ldapPort, ldapsPort}, out, errW)
+		return labUpFromConfig(ctx, fs, c, cfgPath, up, dryRun, labFlagsGiven{realm, suffix, password, netbios, domSID, domGUID, ldapPort, ldapsPort}, out, errW)
+	}
+	if dryRun {
+		return errors.New("--dry-run is for lab up --config of an EC2 lab ([target.lab] platform = \"ec2\")")
 	}
 	l, err := newLab(c, out, errW)
 	if err != nil {
@@ -278,7 +285,7 @@ type labFlagsGiven struct {
 
 // labUpFromConfig is lab up --config: the lab [target.lab] names (its prefix and instance, unless given as flags),
 // made like the source of the config, its ports those of [target] url, its Administrator password the target's.
-func labUpFromConfig(ctx context.Context, fs *flag.FlagSet, c labCommon, cfgPath string, up lab.UpOptions, given labFlagsGiven, out, errW io.Writer) error {
+func labUpFromConfig(ctx context.Context, fs *flag.FlagSet, c labCommon, cfgPath string, up lab.UpOptions, dryRun bool, given labFlagsGiven, out, errW io.Writer) error {
 	if given != (labFlagsGiven{}) || up.WithSource || c.profile != "" || up.SchemaDir != "" {
 		return errors.New("lab up --config takes the domain, the ports, the password and the kind of lab from the config ([source], [target] and [target.lab]): leave out --realm, --suffix, --admin-password, --netbios, --domain-sid, --domain-guid, --ldap-port, --ldaps-port, --profile, --schema-dir and --with-sample-source")
 	}
@@ -297,6 +304,25 @@ func labUpFromConfig(ctx context.Context, fs *flag.FlagSet, c labCommon, cfgPath
 			c.instance = lt.Instance
 		}
 	}
+	if lt := s.Cfg.Target.Lab; lt.OnEC2() {
+		for _, f := range []string{"image", "reload", "skip-verify", "state-dir", "snapshot-dir", "bundle-dir"} {
+			if set[f] {
+				return fmt.Errorf("--%s is for a docker lab: [target.lab] platform is \"ec2\"", f)
+			}
+		}
+		lt.Prefix, lt.Instance = c.prefix, c.instance
+		e, err := s.EC2Lab(ctx)
+		if err != nil {
+			return err
+		}
+		if !dryRun {
+			return fmt.Errorf("lab up of an EC2 lab is not there yet: lab up --config %s --dry-run shows the user data and the aws commands it will run", cfgPath)
+		}
+		return writeEC2Plan(out, e)
+	}
+	if dryRun {
+		return errors.New("--dry-run is for an EC2 lab ([target.lab] platform = \"ec2\"): a docker lab is made on this machine, nothing to show first")
+	}
 	l, err := newLab(c, out, errW)
 	if err != nil {
 		return err
@@ -305,6 +331,27 @@ func labUpFromConfig(ctx context.Context, fs *flag.FlagSet, c labCommon, cfgPath
 		return err
 	}
 	fmt.Fprintf(out, "\nThe lab %s is like the source of %s (%s).\nNext: ldap-cronin check -config %s, then ldap-cronin clone -config %s\n", l.Name(), cfgPath, s.Cfg.Target.URL, cfgPath, cfgPath)
+	return nil
+}
+
+// writeEC2Plan is lab up --dry-run of an EC2 lab: what it will do on AWS, done there by no one. The password is
+// never in it: the user data reads it from the parameter, which the first command writes from standard input.
+func writeEC2Plan(out io.Writer, e lab.EC2Lab) error {
+	userData, err := e.UserData()
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "The EC2 lab %s (dry run: nothing is done on AWS): a domain controller of %s (NetBIOS %s)\n", e.Name, e.Domain, e.NetBIOS)
+	fmt.Fprintf(out, "\n==> The user data of the instance\n%s\n", strings.TrimRight(userData, "\n"))
+	fmt.Fprintln(out, "\n==> The aws commands lab up will run (<ami> and <instance> are what an earlier one returned)")
+	for i, c := range e.UpCommands() {
+		fmt.Fprintln(out)
+		fmt.Fprintf(out, "# %d. %s\n", i+1, c.Why)
+		fmt.Fprintln(out, c.Shell())
+		if c.Stdin != "" {
+			fmt.Fprintf(out, "#    standard input: %s\n", c.Stdin)
+		}
+	}
 	return nil
 }
 

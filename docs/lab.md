@@ -275,6 +275,39 @@ ldap-cronin diff -config config.toml      # matches objects by objectGUID direct
   (it is never skipped silently). For a source built on Samba the configuration is the same, so collisions normally do not occur.
 - The import runs in a helper container (Python from the lab image) with the volumes mounted, so **the lab image must have Python and Samba** (the offline package's image does).
 
+## A Windows Server lab on Amazon EC2 (`[target.lab] platform = "ec2"`, in progress)
+
+**Not usable yet, and not tested on AWS.** For tests that need a real Windows Server domain controller rather than
+Samba, `lab up --config` will make one on EC2: a new forest with the source's domain name and NetBIOS name, LDAPS
+forwarded through Systems Manager to the port of `[target] url`, its Administrator password the target password.
+Today only the plan exists: `--dry-run` prints the instance's user data and the `aws` commands `lab up` will run, and
+calls nothing.
+
+```toml
+[target]
+url = "ldaps://localhost:12636"         # where the port forwarding listens
+bind_dn = "CN=Administrator,CN=Users,DC=ad,DC=example,DC=com"
+insecure_skip_verify = true             # the domain controller's certificate is self-signed
+[target.lab]
+platform = "ec2"
+region = "ap-northeast-1"
+subnet = "subnet-0123456789abcdef0"     # its instances must reach Systems Manager
+instance_profile = "ldap-cronin-lab"    # a role with AmazonSSMManagedInstanceCore
+# instance_type = "t3.large"
+# windows = "2022"                      # 2016, 2019, 2022 or 2025
+# password_parameter = "/ldap-cronin/ldap-cronin-ad/admin-password"
+```
+
+```sh
+ldap-cronin lab up --config config.toml --dry-run
+```
+
+- The password is never in the user data nor in an argument: `lab up` will put it into a SecureString parameter on
+  standard input, the instance reads it, and `lab up` deletes it once the domain is ready.
+- `native` and `image` are refused (Windows lets no one choose a domain SID or an objectGUID). `check` and `clone`
+  refuse an EC2 lab for now (`check -no-target` reads the source alone).
+- What it needs and what is still unverified: [design/ec2-lab.md](design/ec2-lab.md).
+
 ## Using the offline package
 
 Carry the tar.gz built by `make bundle` into an environment with docker but no internet access.

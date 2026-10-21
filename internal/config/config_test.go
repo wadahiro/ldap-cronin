@@ -73,6 +73,12 @@ func TestParseRejectsInvalid(t *testing.T) {
 		"fast_password over LDAP":    strings.Replace(valid, "[scope]", "[target.lab]\nfast_password = true\n[scope]", 1),
 		"native with configuration_refs": strings.Replace(valid, "[scope]",
 			"[target.lab]\nnative = true\n[scope]\nconfiguration_refs = \"clone\"", 1),
+		"an EC2 key on docker": strings.Replace(valid, "[scope]", "[target.lab]\nregion = \"ap-northeast-1\"\n[scope]", 1),
+		"an unknown platform":  strings.Replace(valid, "[scope]", "[target.lab]\nplatform = \"azure\"\n[scope]", 1),
+		"EC2 without a subnet": strings.Replace(valid, "[scope]", "[target.lab]\nplatform = \"ec2\"\nregion = \"r\"\ninstance_profile = \"p\"\n[scope]", 1),
+		"EC2 native":           strings.Replace(valid, "[scope]", "[target.lab]\n"+ec2Lab+"native = true\n[scope]", 1),
+		"EC2 with an image":    strings.Replace(valid, "[scope]", "[target.lab]\n"+ec2Lab+"image = \"x\"\n[scope]", 1),
+		"EC2 unknown windows":  strings.Replace(valid, "[scope]", "[target.lab]\n"+ec2Lab+"windows = \"2012\"\n[scope]", 1),
 		"configuration_refs without references = clone": strings.Replace(valid, "[scope]",
 			"[scope]\nreferences = \"existing\"\nconfiguration_refs = \"clone\"", 1),
 	}
@@ -109,7 +115,20 @@ func TestTargetLabSaysWhichLabAndHowItIsWritten(t *testing.T) {
 	if c, _ := Parse([]byte(valid)); c.Target.Lab != nil || c.NativeLab() != nil {
 		t.Fatal("without the section the target is a server")
 	}
+	if c.Target.Lab.OnEC2() {
+		t.Fatal("docker is the default platform")
+	}
+	c, err = Parse([]byte(strings.Replace(valid, "[scope]", "[target.lab]\n"+ec2Lab+"windows = \"2025\"\ninstance_type = \"m5.xlarge\"\n[scope]", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l := c.Target.Lab; !l.OnEC2() || l.Region != "ap-northeast-1" || l.Windows != "2025" || l.InstanceType != "m5.xlarge" {
+		t.Fatalf("an EC2 lab: %+v", l)
+	}
 }
+
+// ec2Lab is the least an EC2 lab needs.
+const ec2Lab = "platform = \"ec2\"\nregion = \"ap-northeast-1\"\nsubnet = \"subnet-0123\"\ninstance_profile = \"ldap-cronin-lab\"\n"
 
 func TestAutoProfileDefersAttributeRulesToTheResolvedProfile(t *testing.T) {
 	raw := valid + "\n[attributes]\nextra_include = [\"objectGUID\"]\n"

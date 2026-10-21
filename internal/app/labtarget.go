@@ -156,3 +156,49 @@ func (i indent) Write(p []byte) (int, error) {
 	_, err := io.WriteString(i.w, "  "+strings.ReplaceAll(text, "\n", "\n  ")+"\n")
 	return len(p), err
 }
+
+// EC2Lab is the EC2 lab [target.lab] platform = "ec2" describes, like the source: its domain name and NetBIOS name
+// are the source's (Windows lets no one choose a domain SID), its LDAPS forwarded to the port of [target] url.
+func (s *Session) EC2Lab(ctx context.Context) (lab.EC2Lab, error) {
+	lt := s.Cfg.Target.Lab
+	if !lt.OnEC2() {
+		return lab.EC2Lab{}, errors.New("[target.lab] platform is not \"ec2\"")
+	}
+	if s.Job.Profile.Native == nil {
+		return lab.EC2Lab{}, fmt.Errorf("an EC2 lab is a Windows Server domain controller, for an AD source; this source is %q", s.Job.Profile.Name)
+	}
+	settings, err := s.LikeSource(ctx)
+	if err != nil {
+		return lab.EC2Lab{}, err
+	}
+	netbios, err := settings.EffectiveNetBIOS()
+	if err != nil {
+		return lab.EC2Lab{}, err
+	}
+	var port lab.Settings
+	if err := portsFromURL(&port, s.Cfg.Target.URL); err != nil {
+		return lab.EC2Lab{}, err
+	}
+	prefix := lt.Prefix
+	if prefix == "" {
+		prefix = lab.DefaultPrefix
+	}
+	name := prefix + "-" + lab.ProfileAD
+	if lt.Instance != "" && lt.Instance != lab.MainInstance {
+		name += "-" + lt.Instance
+	}
+	e := lab.EC2Lab{
+		Name: name, Domain: settings.Domain, NetBIOS: netbios,
+		Region: lt.Region, Subnet: lt.Subnet, InstanceType: lt.InstanceType, Windows: lt.Windows, InstanceProfile: lt.InstanceProfile,
+		PasswordParameter: lt.PasswordParameter, LocalPort: port.LDAPSPort,
+	}
+	if e.PasswordParameter == "" {
+		e.PasswordParameter = "/ldap-cronin/" + name + "/admin-password"
+	}
+	if mode, attr, err := s.Cfg.MappingFor(s.Job.Profile); err != nil {
+		return lab.EC2Lab{}, err
+	} else if mode == config.MappingMarker {
+		e.MarkerAttribute = attr
+	}
+	return e, e.Check()
+}

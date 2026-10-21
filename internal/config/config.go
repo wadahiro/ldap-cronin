@@ -46,6 +46,9 @@ type Endpoint struct {
 
 // Lab is [target.lab]: which lab the target is, and whether clone writes its database directly.
 type Lab struct {
+	// Platform is where the lab runs: docker (the default: Samba4 or OpenLDAP in a container) or ec2 (a Windows
+	// Server domain controller on Amazon EC2, made through the aws command).
+	Platform string `toml:"platform"`
 	// Prefix and Instance name the lab's container (<prefix>-ad, or <prefix>-ad-<instance>), as lab --prefix and
 	// --instance do. lab up --config takes them from here.
 	Prefix   string `toml:"prefix"`
@@ -59,7 +62,27 @@ type Lab struct {
 	// FastPassword (native only) gives the users the fixed password's NT hash directly: about 3 times faster,
 	// without Kerberos AES keys.
 	FastPassword bool `toml:"fast_password"`
+
+	// platform = "ec2": where and how the instance runs. The aws command's own configuration (credentials, profile)
+	// applies; Region overrides its region.
+	Region          string `toml:"region"`
+	Subnet          string `toml:"subnet"`           // a subnet whose instances reach Systems Manager
+	InstanceType    string `toml:"instance_type"`    // default t3.large
+	Windows         string `toml:"windows"`          // Windows Server 2016, 2019, 2022 (default) or 2025
+	InstanceProfile string `toml:"instance_profile"` // with AmazonSSMManagedInstanceCore
+	// PasswordParameter is the Systems Manager parameter (SecureString) the target password goes through to the
+	// instance, which makes it its Administrator's: never in the user data. Default /ldap-cronin/<lab>/admin-password.
+	PasswordParameter string `toml:"password_parameter"`
 }
+
+// Platforms of [target.lab].
+const (
+	PlatformDocker = "docker"
+	PlatformEC2    = "ec2"
+)
+
+// OnEC2 is whether the lab runs on Amazon EC2.
+func (l *Lab) OnEC2() bool { return l != nil && l.Platform == PlatformEC2 }
 
 // NativeLab is the target's [target.lab] when clone writes it directly, or nil.
 func (c *Config) NativeLab() *Lab {
@@ -253,6 +276,35 @@ func (c *Config) validate() error {
 		return errors.New("[source.lab]: a lab is a target ([target.lab])")
 	}
 	if l := c.Target.Lab; l != nil {
+		ec2 := map[string]string{"region": l.Region, "subnet": l.Subnet, "instance_type": l.InstanceType, "windows": l.Windows,
+			"instance_profile": l.InstanceProfile, "password_parameter": l.PasswordParameter}
+		switch l.Platform {
+		case "", PlatformDocker:
+			for key, v := range ec2 {
+				if v != "" {
+					return fmt.Errorf("[target.lab] %s is for platform = %q", key, PlatformEC2)
+				}
+			}
+		case PlatformEC2:
+			if l.Native {
+				return errors.New("[target.lab] native = true is for a Samba lab (platform = \"docker\"): Windows lets no one choose an objectGUID or a domain SID")
+			}
+			if l.Image != "" {
+				return errors.New("[target.lab] image is a docker image: on EC2 the lab is Windows Server (windows = \"2022\")")
+			}
+			for _, key := range []string{"region", "subnet", "instance_profile"} {
+				if ec2[key] == "" {
+					return fmt.Errorf("[target.lab] platform = %q needs %s", PlatformEC2, key)
+				}
+			}
+			switch l.Windows {
+			case "", "2016", "2019", "2022", "2025":
+			default:
+				return fmt.Errorf("[target.lab] windows must be 2016, 2019, 2022 or 2025, got %q", l.Windows)
+			}
+		default:
+			return fmt.Errorf("[target.lab] platform must be %q or %q, got %q", PlatformDocker, PlatformEC2, l.Platform)
+		}
 		if l.FastPassword && !l.Native {
 			return errors.New("[target.lab] fast_password is for native = true: it writes the lab's database directly")
 		}
