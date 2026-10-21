@@ -145,3 +145,46 @@ func TestTheProgressOnATerminal(t *testing.T) {
 		t.Fatalf("the screen after the run:\n%s\n\nwant what a run without progress shows:\n%s", strings.Join(s.text(), "\n"), strings.Join(bare.text(), "\n"))
 	}
 }
+
+// check shows the kind it reads and then the target's schema, and once done the screen holds its report alone, as a
+// run without progress writes it.
+func TestTheProgressOfCheckOnATerminal(t *testing.T) {
+	const width = 60
+	master, tty, err := pty.Open()
+	if err != nil {
+		t.Skipf("no pseudo-terminal: %v", err)
+	}
+	defer master.Close()
+	if err := pty.Setsize(master, &pty.Winsize{Rows: 40, Cols: width}); err != nil {
+		t.Fatal(err)
+	}
+	var stream bytes.Buffer
+	read := make(chan struct{})
+	go func() { io.Copy(&stream, master); close(read) }()
+
+	_, _, cfg := cli(t)
+	saved := os.Stderr
+	os.Stderr = tty
+	code := run(context.Background(), []string{"check", "-config", cfg}, tty, tty)
+	os.Stderr = saved
+	tty.Close()
+	<-read
+	raw := stream.String()
+	for _, want := range []string{"check ldaps://src:636", "[1/6] ou", "[3/6] user", "[6/6] the target's schema"} {
+		if !strings.Contains(raw, want) {
+			t.Errorf("the status never showed %q:\n%q", want, raw)
+		}
+	}
+	s := &screen{width: width}
+	s.feed(stream.Bytes())
+
+	var plain bytes.Buffer // the same config: check writes nothing
+	if again := run(context.Background(), []string{"check", "-progress", "off", "-config", cfg}, &plain, &plain); again != code {
+		t.Fatalf("check exits %d without progress, %d with it\n%s", again, code, plain.String())
+	}
+	bare := &screen{width: width}
+	bare.feed(bytes.ReplaceAll(plain.Bytes(), []byte("\n"), []byte("\r\n")))
+	if got, want := strings.Join(s.text(), "\n"), strings.Join(bare.text(), "\n"); got != want {
+		t.Fatalf("the screen after check:\n%s\n\nwant what a run without progress shows:\n%s", got, want)
+	}
+}

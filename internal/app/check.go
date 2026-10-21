@@ -37,7 +37,12 @@ type CheckOptions struct {
 func (s *Session) Check(ctx context.Context, o CheckOptions, out io.Writer) (int, error) {
 	prof := s.Job.Profile
 	cfg := "-config " + o.Config
-	usage, err := plan.Survey(ctx, s.Src, s.Job)
+	phases := len(s.Job.Kinds)
+	if !o.NoTarget {
+		phases++
+	}
+	s.Progress.Phases(phases)
+	usage, err := plan.Survey(ctx, s.Src, s.Job, s.Progress)
 	if err != nil {
 		return 0, err
 	}
@@ -82,6 +87,7 @@ func (s *Session) Check(ctx context.Context, o CheckOptions, out io.Writer) (int
 	if o.NoTarget {
 		fmt.Fprintln(out, "target: not read (-no-target)")
 	} else {
+		s.Progress.Phase("the target's schema", -1)
 		dst, closeTarget, err := s.Target(ctx)
 		if err != nil {
 			return 0, err
@@ -210,17 +216,18 @@ func (s *Session) Check(ctx context.Context, o CheckOptions, out io.Writer) (int
 			fmt.Fprintf(out, "  %s\n", l)
 		}
 	}
+	// One empty line between the parts: after the notes when there were any.
+	if notes := len(blocking) > 0 || refusal != "" || len(left.missing)+len(left.refused) > 0 || warning != "" || (changes != nil && !changes.Empty()); notes {
+		fmt.Fprintln(out)
+	}
 	if o.Attrs {
-		if notes := len(blocking) > 0 || refusal != "" || len(left.missing)+len(left.refused) > 0 || warning != "" || (changes != nil && !changes.Empty()); notes {
-			fmt.Fprintln(out)
-		}
 		if err := s.writeAttrTable(out, usage, has, refused); err != nil {
 			return 0, err
 		}
 	}
 
 	// The next steps, in order, with what to paste and what to run.
-	fmt.Fprintln(out, "\nnext:")
+	fmt.Fprintln(out, "next:")
 	step := 0
 	next := func(format string, a ...any) {
 		step++

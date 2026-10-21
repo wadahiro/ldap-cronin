@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -73,6 +74,7 @@ Flags (check):
   -config <file>   TOML config file (default: config.toml)
   -no-target       Read the source alone (a machine that reaches only production, a dump before the lab exists)
   -attrs           Also list every attribute of every kind, held or named, and what clone does with it
+  -progress <m>    As for clone and diff: the kind being read and how many entries so far
 
 Flags (schema):
   -config <file>   TOML config file (default: config.toml); reads the schemas of [source] and [target]
@@ -361,7 +363,12 @@ func runCheck(ctx context.Context, args []string, out io.Writer) (int, error) {
 	cfgPath := fs.String("config", "config.toml", "config file")
 	noTarget := fs.Bool("no-target", false, "read the source alone")
 	attrs := fs.Bool("attrs", false, "also list every attribute of every kind and what clone does with it")
+	progressMode := progressFlag(fs)
 	if err := fs.Parse(args); err != nil {
+		return 0, err
+	}
+	mode, err := progress.ParseMode(*progressMode)
+	if err != nil {
 		return 0, err
 	}
 	s, err := openSession(ctx, *cfgPath)
@@ -369,7 +376,21 @@ func runCheck(ctx context.Context, args []string, out io.Writer) (int, error) {
 		return 0, err
 	}
 	defer s.Close()
-	return s.Check(ctx, app.CheckOptions{NoTarget: *noTarget, Attrs: *attrs, Config: *cfgPath}, out)
+	// The report is written at the end, after the status is gone, so it reads as one block.
+	source := s.Cfg.Source.URL
+	if s.Cfg.Source.LDIF != "" {
+		source = s.Cfg.Source.LDIF
+	}
+	display, bar := progress.Start(mode, os.Stderr, "check "+source)
+	defer display.Stop()
+	s.Progress, s.Warn = bar, display.Writer(s.Warn)
+	var report bytes.Buffer
+	code, err := s.Check(ctx, app.CheckOptions{NoTarget: *noTarget, Attrs: *attrs, Config: *cfgPath}, &report)
+	display.Stop()
+	if _, werr := out.Write(report.Bytes()); err == nil {
+		err = werr
+	}
+	return code, err
 }
 
 func listAttrs(_ context.Context, args []string, out io.Writer) error {

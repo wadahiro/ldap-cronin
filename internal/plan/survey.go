@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/wadahiro/ldap-cronin/internal/directory"
+	"github.com/wadahiro/ldap-cronin/internal/progress"
 )
 
 // Usage is, for one kind, how many entries under base_dn hold each attribute.
@@ -19,14 +20,17 @@ type Usage struct {
 
 // Survey reads every user attribute of the entries of each kind under base_dn and counts the entries holding each,
 // so a deployment sees which attributes (a schema extension of its own) it would leave behind. It reads as much as a
-// clone does, so it is a command of its own (check), never a step of clone or diff. No value is kept.
-func Survey(ctx context.Context, src directory.Directory, job Job) ([]Usage, error) {
+// clone does, so it is a command of its own (check), never a step of clone or diff. No value is kept. Each kind is a
+// phase of bar, which counts the entries read.
+func Survey(ctx context.Context, src directory.Directory, job Job, bar *progress.Bar) ([]Usage, error) {
 	out := make([]Usage, 0, len(job.Kinds))
 	for i := range job.Kinds {
 		k := &job.Kinds[i]
 		u := Usage{Kind: k, Attrs: map[string]int{}, Names: map[string]string{}}
+		bar.Phase(k.Name, -1)
 		err := src.Walk(ctx, job.BaseDN, k.Filter, []string{directory.AllAttrs}, func(e directory.Entry) error {
 			u.Entries++
+			bar.Add(1)
 			seen := map[string]bool{}
 			for n, v := range e.Attrs {
 				if len(v) == 0 {
