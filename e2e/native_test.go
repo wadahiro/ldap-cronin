@@ -129,7 +129,7 @@ func TestNativeImportKeepsObjectGUIDAndObjectSid(t *testing.T) {
 	// clone imports into it.
 	cfg, err := config.Parse([]byte(fmt.Sprintf("[source]\nurl = \"ldaps://%s:%d\"\nbind_dn = %q\ninsecure_skip_verify = true\n"+
 		"[target]\nurl = \"ldaps://%s:%d\"\nbind_dn = %q\ninsecure_skip_verify = true\n"+
-		"[target.lab]\nprefix = %q\nimage = %q\nnative = true\nfast_password = true\n"+
+		"[target.lab]\nprefix = %q\nimage = %q\nnative = true\nfast_password = true\nacl = \"source\"\n"+
 		"[scope]\nbase_dn = %q\n[attributes]\nextra_include = [\"carLicense\", \"seeAlso\"]\n[mask]\nattributes = [\"mail\"]\n",
 		host, srcLDAPS, admin, host, dstLDAPS, admin, dstLab.Prefix, image, cloneBase)))
 	must(err)
@@ -188,7 +188,7 @@ func TestNativeImportKeepsObjectGUIDAndObjectSid(t *testing.T) {
 	defer dst.Close()
 
 	// objectGUID, objectSid and what the server keeps match for all objects ([target.lab] server_attributes defaults to "source").
-	// nTSecurityDescriptor too, byte for byte ([target.lab] acl defaults to "source"): the domain root's is the
+	// nTSecurityDescriptor too, byte for byte ([target.lab] acl = "source"): the domain root's is the
 	// source's as well, so the inherited ACEs are.
 	names := []string{"objectGUID", "objectSid", "whenCreated", "lastLogonTimestamp", "lastLogon", "logonCount", "lockoutTime", "badPwdCount", "sIDHistory", "mS-DS-CreatorSID", "nTSecurityDescriptor"}
 	checked := 0

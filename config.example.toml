@@ -22,7 +22,7 @@ insecure_skip_verify = true
 # instance = "dev2"            # another instance (it must exist); prefix = "ldap-cronin"
 # native = true                # Samba only: write its database directly, keeping objectGUID and objectSid
 # fast_password = true         # with native: the fixed password's NT hash written directly, ~3x faster, no Kerberos AES keys
-# acl = "lab"                  # with native: the lab's own ACLs instead of the source's (the default: owner, group, DACL)
+# acl = "source"               # with native: the source's ACLs (owner, group, DACL), the domain root's included; default "lab"
 # server_attributes = "lab"    # with native: the lab's own whenCreated, logon times, lockout and sIDHistory instead of the source's (the default)
 # platform = "ec2"             # a Windows Server domain controller on Amazon EC2 instead (in progress: lab up --config
 #                              # --dry-run shows the plan only; docs/lab.md). It needs region, subnet, instance_profile;

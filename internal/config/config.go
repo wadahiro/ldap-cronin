@@ -66,9 +66,9 @@ type Lab struct {
 	// server keeps (whenCreated, lastLogonTimestamp, lastLogon, logonCount, lockoutTime, badPwdCount, sIDHistory,
 	// mS-DS-CreatorSID); "lab" leaves the lab's own.
 	ServerAttributes string `toml:"server_attributes"`
-	// ACL (native only): "source" (the default) gives the lab's objects the source's owner, group and DACL, and the
-	// domain root and the containers above base_dn theirs, so the inherited ACEs are the source's too; "lab" leaves
-	// the lab's own.
+	// ACL (native only): "source" gives the lab's objects the source's owner, group and DACL, and the domain root and
+	// the containers above base_dn theirs, so the inherited ACEs are the source's too; "lab" (the default) leaves the
+	// lab's own. Off by default: few tests read ACLs, and the domain root's changes the whole lab.
 	ACL string `toml:"acl"`
 
 	// platform = "ec2": where and how the instance runs. The aws command's own configuration (credentials, profile)
@@ -571,7 +571,7 @@ func (c *Config) JobFor(p profile.Profile) (plan.Job, error) {
 	job := plan.Job{Profile: p, RootDN: c.Scope.RootDN, BaseDN: c.Scope.BaseDN, Masker: mask.New(c.Mask.Value, c.Mask.Attributes),
 		References: c.Scope.References, ConfigurationRefs: c.Scope.ConfigurationRefs,
 		OutsideGroups: c.Scope.OutsideGroups, BuiltinGroups: c.Scope.BuiltinGroups,
-		ACL: c.Target.Lab != nil && c.Target.Lab.Native && c.Target.Lab.ACL != ServerAttributesLab}
+		ACL: c.Target.Lab != nil && c.Target.Lab.Native && c.Target.Lab.ACL == ServerAttributesSource}
 	for _, spec := range p.Kinds { // the profile's order, whatever order the config lists them in
 		if !contains(c.objects(p), spec.Name) {
 			continue
