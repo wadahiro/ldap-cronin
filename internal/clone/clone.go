@@ -115,6 +115,9 @@ var errSkipped = errors.New("skipped")
 
 func Run(ctx context.Context, src, dst directory.Directory, job plan.Job, opt Options, out io.Writer) (*Report, error) {
 	read := plan.Read{Identity: opt.Marker != nil || opt.Preserve || opt.Mapping != nil || opt.Native, CarryOver: opt.Native}
+	if job.Profile.Account != nil {
+		read.Extra = append(read.Extra, job.Profile.Account.SourceExtra()...)
+	}
 	if opt.Preserve {
 		if job.Profile.Preserve == nil {
 			return nil, fmt.Errorf("the %s profile cannot preserve identifiers over LDAP", job.Profile.Name)
@@ -847,6 +850,19 @@ func (r *runner) warn(format string, args ...any) {
 
 // desired returns what the target entry should hold before references are applied: e without the DN reference
 // attributes (applied later), and with the marker when there is one.
+// sourceExtra reports whether name is read from the source for the account's last step only (profile.Account).
+func (r *runner) sourceExtra(name string) bool {
+	if r.prof.Account == nil {
+		return false
+	}
+	for _, x := range r.prof.Account.SourceExtra() {
+		if strings.EqualFold(x, name) {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *runner) desired(e directory.Entry) (directory.Entry, error) {
 	out := directory.Entry{DN: e.DN, Attrs: map[string][]string{}}
 	keep := r.opt.Native || r.opt.Preserve
@@ -854,7 +870,7 @@ func (r *runner) desired(e directory.Entry) (directory.Entry, error) {
 		// The identifier is assigned by the target, so it is not copied (it is read for the marker or the mapping).
 		// A native import and a preserving Add, however, pass it through so the target object has the source's.
 		// creatorsName and modifiersName hold DNs but are written at creation, not with the references.
-		if (r.plan.IsRef(n) && !r.creationOnly(n)) || len(v) == 0 || (!keep && strings.EqualFold(n, r.prof.Identity.Attr())) {
+		if (r.plan.IsRef(n) && !r.creationOnly(n)) || len(v) == 0 || (!keep && strings.EqualFold(n, r.prof.Identity.Attr())) || r.sourceExtra(n) {
 			continue
 		}
 		out.Attrs[n] = v

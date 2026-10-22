@@ -18,6 +18,9 @@ type Account interface {
 	AddEntry(e directory.Entry, password string) directory.Entry
 	// ReadExtra lists attributes to read along with an existing entry, for Finish.
 	ReadExtra() []string
+	// SourceExtra lists attributes of the source entry Finish reads (pwdLastSet: whether the user must change the
+	// password at the next logon). They are read with it and never written as they are.
+	SourceExtra() []string
 	// PasswordAttr is the attribute the fixed password is written to (unicodePwd, userPassword).
 	PasswordAttr() string
 	// Owned lists allow-listed attributes that only Finish writes. clone leaves them out of its own comparison so
@@ -53,6 +56,8 @@ const (
 	uacDisabled         = 0x2
 	uacPasswdNotReqd    = 0x20
 	uacWorkstationTrust = 0x1000
+	uacServerTrust      = 0x2000
+	uacInterdomainTrust = 0x800
 )
 
 func (adAccount) AddEntry(e directory.Entry, _ string) directory.Entry {
@@ -68,17 +73,27 @@ func (adAccount) AddEntry(e directory.Entry, _ string) directory.Entry {
 	return out
 }
 
-func (adAccount) ReadExtra() []string  { return []string{attrUAC, attrPwdLastSet} }
-func (adAccount) Owned() []string      { return []string{attrUAC} }
-func (adAccount) PasswordAttr() string { return attrUnicodePwd }
+func (adAccount) ReadExtra() []string   { return []string{attrUAC, attrPwdLastSet} }
+func (adAccount) SourceExtra() []string { return []string{attrPwdLastSet} }
+func (adAccount) Owned() []string       { return []string{attrUAC} }
+func (adAccount) PasswordAttr() string  { return attrUnicodePwd }
 
 // Finish sets the password only on creation, or when creation was interrupted before the password was set
-// (pwdLastSet=0), so a re-run does not roll back a password changed by the program under test.
+// (pwdLastSet=0), so a re-run does not roll back a password changed by the program under test. A user who must
+// change the password at the next logon on the source (pwdLastSet=0 there) must on the target too: pwdLastSet=0
+// right after the password (a computer's 0 is a password never set, not one to change). A re-run then sets the
+// same password again, which changes nothing; once the user (or the program under test) has changed it,
+// pwdLastSet is no longer 0 and it is left alone.
 func (adAccount) Finish(ctx context.Context, dst directory.Directory, want directory.Entry, password string, cur *directory.Entry) ([]string, error) {
 	created := cur == nil
 	if password != "" && (created || isUnset(cur.Values(attrPwdLastSet))) {
 		if err := dst.Replace(ctx, want.DN, map[string][]string{attrUnicodePwd: {EncodePassword(password)}}); err != nil {
 			return nil, fmt.Errorf("set password (LDAPS is required; the password must also satisfy the target's password policy): %w", err)
+		}
+		if isUnset(want.Values(attrPwdLastSet)) && !isTrust(want) {
+			if err := dst.Replace(ctx, want.DN, map[string][]string{attrPwdLastSet: {"0"}}); err != nil {
+				return nil, fmt.Errorf("must change the password at the next logon (pwdLastSet=0): %w", err)
+			}
 		}
 	}
 	values := want.Values(attrUAC)
@@ -96,6 +111,13 @@ func (adAccount) Finish(ctx context.Context, dst directory.Directory, want direc
 		return nil, nil
 	}
 	return []string{attrUAC}, nil
+}
+
+// isTrust reports whether e is a computer (or another trust) account, which logs on with its own password: its
+// pwdLastSet=0 is a password never set (a pre-staged computer), not a user to make change it.
+func isTrust(e directory.Entry) bool {
+	n, err := strconv.ParseInt(strings.TrimSpace(first(e.Values(attrUAC))), 10, 64)
+	return err == nil && n&(uacWorkstationTrust|uacServerTrust|uacInterdomainTrust) != 0
 }
 
 func isUnset(values []string) bool { return len(values) == 1 && values[0] == "0" }
@@ -131,9 +153,10 @@ func (ldapAccount) AddEntry(e directory.Entry, password string) directory.Entry 
 	return out
 }
 
-func (ldapAccount) ReadExtra() []string  { return nil }
-func (ldapAccount) Owned() []string      { return nil }
-func (ldapAccount) PasswordAttr() string { return attrUserPassword }
+func (ldapAccount) ReadExtra() []string   { return nil }
+func (ldapAccount) SourceExtra() []string { return nil }
+func (ldapAccount) Owned() []string       { return nil }
+func (ldapAccount) PasswordAttr() string  { return attrUserPassword }
 
 func (ldapAccount) Finish(context.Context, directory.Directory, directory.Entry, string, *directory.Entry) ([]string, error) {
 	return nil, nil

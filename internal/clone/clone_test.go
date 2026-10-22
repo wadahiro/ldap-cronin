@@ -359,3 +359,33 @@ func TestDNsThatDifferOnlyByAnEscapedCommaAreTwoObjects(t *testing.T) {
 		t.Fatalf("%+v", diffs)
 	}
 }
+
+// A user who must change the password at the next logon on the source (pwdLastSet=0) must on the target too, and
+// is not added to what clone writes as it is (AD refuses another pwdLastSet). A re-run sets the same password
+// again; once the user has changed it, it is left alone.
+func TestMustChangePasswordIsReproduced(t *testing.T) {
+	src, dst := seedSource(), fakedir.New(domain)
+	src.Lookup(alice).Attrs["pwdLastSet"] = []string{"0"}
+	job, opt := options(t, allKinds()...), Options{UserPassword: "Fixed1!", Workers: 1}
+	if _, err := Run(context.Background(), src, dst, job, opt, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	a := dst.Lookup(alice)
+	if a.Values("unicodePwd") == nil || strings.Join(a.Values("pwdLastSet"), "") != "0" {
+		t.Fatalf("alice must change her password: %v", a.Attrs)
+	}
+	for _, e := range dst.Entries {
+		if e.DN != alice && len(e.Values("unicodePwd")) > 0 && strings.Join(e.Values("pwdLastSet"), "") == "0" {
+			t.Fatalf("%s must not: %v", e.DN, e.Attrs)
+		}
+	}
+	// She changed it: a re-run leaves it.
+	a.Attrs["unicodePwd"] = []string{"hers"}
+	a.Attrs["pwdLastSet"] = []string{"134000000000000000"}
+	if _, err := Run(context.Background(), src, dst, job, opt, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(dst.Lookup(alice).Values("unicodePwd"), ""); got != "hers" {
+		t.Fatalf("her own password was replaced: %q", got)
+	}
+}
