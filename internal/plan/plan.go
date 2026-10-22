@@ -621,3 +621,50 @@ func (p *Plan) Walk(ctx context.Context, k *Kind, names []string, fn func(direct
 		return fn(p.job.Masker.Apply(e))
 	})
 }
+
+// WildcardBase reports whether b is OU=*,<parent>: every OU right under parent, as base DNs (ExpandBases).
+func WildcardBase(b string) (parent string, ok bool) {
+	typ, val, ok := dn.FirstRDN(b)
+	if !ok || !strings.EqualFold(typ, "ou") || strings.TrimSpace(val) != "*" {
+		return "", false
+	}
+	return dn.Parent(b), true
+}
+
+// ExpandBases replaces each OU=*,<parent> of bases with the OUs right under parent the source holds, but the
+// built-in ones (systemAttr TRUE: Domain Controllers): the containers beside them (CN=Users, CN=System) and what
+// they hold are left out. The other base DNs are kept as they are.
+func ExpandBases(ctx context.Context, src directory.Directory, systemAttr string, bases []string) ([]string, error) {
+	var out []string
+	for _, b := range bases {
+		parent, ok := WildcardBase(b)
+		if !ok {
+			out = append(out, b)
+			continue
+		}
+		attrs := []string{"objectClass"}
+		if systemAttr != "" {
+			attrs = append(attrs, systemAttr)
+		}
+		var found []string
+		err := src.Walk(ctx, parent, "(objectClass=organizationalUnit)", attrs, func(e directory.Entry) error {
+			if !dn.Equal(dn.Parent(e.DN), parent) {
+				return nil
+			}
+			if systemAttr != "" && strings.EqualFold(first(e.Values(systemAttr)), "TRUE") {
+				return nil
+			}
+			found = append(found, e.DN)
+			return nil
+		})
+		if err != nil {
+			return nil, fmt.Errorf("base_dn %s: %w", b, err)
+		}
+		if len(found) == 0 {
+			return nil, fmt.Errorf("base_dn %s: the source has no OU right under %s", b, parent)
+		}
+		sort.Slice(found, func(i, j int) bool { return dn.Normalize(found[i]) < dn.Normalize(found[j]) })
+		out = append(out, found...)
+	}
+	return out, nil
+}

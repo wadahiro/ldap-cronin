@@ -58,6 +58,11 @@ func Write(ctx context.Context, src directory.Directory, prof profile.Profile, o
 			return Counts{}, fmt.Errorf("%s cannot be masked: it names entries or identifies the object", a)
 		}
 	}
+	bases, err := plan.ExpandBases(ctx, src, prof.SystemAttr, o.BaseDNs)
+	if err != nil {
+		return Counts{}, err
+	}
+	o.BaseDNs = bases // the header lists what was dumped, the OUs a wildcard stood for at the time
 	if err := plan.CheckBases(o.BaseDNs); err != nil {
 		return Counts{}, err
 	}

@@ -85,7 +85,10 @@ func (w *world) openWith(t *testing.T, more string) *Session {
 	return s
 }
 
-func (w *world) tryOpen(more string) (*Session, error) {
+func (w *world) tryOpen(more string) (*Session, error) { return w.tryOpenBase(base, more) }
+
+// tryOpenBase is tryOpen with another base_dn (as written in the config: a wildcard, say).
+func (w *world) tryOpenBase(baseDN, more string) (*Session, error) {
 	cfg, err := config.Parse([]byte(`
 [source]
 url = "ldaps://src:636"
@@ -95,7 +98,7 @@ url = "ldaps://dst:636"
 bind_dn = "CN=a"
 [scope]
 profile = "ad"
-base_dn = "` + base + `"
+base_dn = "` + baseDN + `"
 ` + more + `
 `))
 	if err != nil {

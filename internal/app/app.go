@@ -114,6 +114,23 @@ func Open(ctx context.Context, cfg *config.Config, secrets Secrets, dial Dialer,
 		src.Close()
 		return nil, err
 	}
+	if job.BaseDNs, err = plan.ExpandBases(ctx, src, prof.SystemAttr, job.BaseDNs); err != nil {
+		src.Close()
+		return nil, fmt.Errorf("[scope] %w", err)
+	}
+	if err := plan.CheckBases(job.BaseDNs); err != nil {
+		src.Close()
+		return nil, fmt.Errorf("[scope] %w", err)
+	}
+	if d, ok := conn.(*ldifdir.Dir); ok && len(d.Meta().BaseDNs) > 0 {
+		dumped := plan.Job{BaseDNs: d.Meta().BaseDNs}
+		for _, b := range job.BaseDNs {
+			if !dumped.InBase(b) {
+				src.Close()
+				return nil, fmt.Errorf("[scope] base_dn %s is not in the dump, which holds %s", b, strings.Join(dumped.BaseDNs, "; "))
+			}
+		}
+	}
 	s := &Session{Cfg: cfg, Job: job, Src: src.View(prof.Ranged), Warn: warn, secrets: secrets, dial: dial, src: src}
 	if cfg.Attributes.All() {
 		if err := s.writableAttrs(ctx); err != nil {
@@ -139,14 +156,6 @@ func openSource(ctx context.Context, cfg *config.Config, secrets Secrets, dial D
 		return nil, err
 	}
 	m := d.Meta()
-	if len(m.BaseDNs) > 0 {
-		dumped := plan.Job{BaseDNs: m.BaseDNs}
-		for _, b := range cfg.Scope.BaseDNs {
-			if !dumped.InBase(b) {
-				return nil, fmt.Errorf("[scope] base_dn %s is not in the dump, which holds %s", b, strings.Join(m.BaseDNs, "; "))
-			}
-		}
-	}
 	fmt.Fprintf(warn, "source: the dump %s of %s, taken %s (%d entries)\n", cfg.Source.LDIF, m.Server, m.DumpedAt, m.Entries)
 	if len(m.Masked) > 0 {
 		fmt.Fprintf(warn, "  masked in the dump: %s\n", strings.Join(m.Masked, ", "))

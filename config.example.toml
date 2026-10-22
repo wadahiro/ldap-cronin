@@ -38,6 +38,8 @@ insecure_skip_verify = true
 base_dn = "OU=IDM,DC=ad,DC=example,DC=com"
 # base_dn = ["OU=Tokyo,DC=ad,DC=example,DC=com", "OU=Osaka,DC=ad,DC=example,DC=com"]   # several OUs as one scope:
 #                                    # a reference from one to another is a reference of the scope (none below another)
+# base_dn = "OU=*,DC=ad,DC=example,DC=com"   # every OU right under the domain but Domain Controllers: CN=Users,
+#                                    # CN=Computers and the like are left out, but for what a reference names
 # objects = ["ou", "group", "user"] # every kind of the profile if omitted (ad: also computer and contact)
 # references = "clone"               # an entry outside the scope that a reference names (a member outside base_dn):
 #                                    # clone (default) creates it as its kind, without its own references, so every

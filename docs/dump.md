@@ -38,7 +38,8 @@ whatever the bind account may read. The header lists them.
 `[scope] base_dn` of a clone from a dump must be its `-base-dn` or below it. `-base-dn` may be given several times
 (several OUs, none below another, in one domain): the dump holds each, its header lists them (`# base-dn:` once
 each), and every `base_dn` of the config must be in one of them. A reference from one to another is a reference of
-the scope, not an entry outside it.
+the scope, not an entry outside it. `-base-dn 'OU=*,DC=...'` dumps every OU right under the domain but
+Domain Controllers (the containers beside them left out), and the header lists the OUs it stood for.
 
 ## The file
 
