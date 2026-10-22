@@ -32,6 +32,9 @@ type EC2Lab struct {
 	LocalPort int
 	// MarkerAttribute, when set, is indexed (searchFlags bit 1), as the Samba lab indexes it.
 	MarkerAttribute string
+	// LDAPSName, when set, is one more DNS name of the LDAPS certificate, besides the DC's and the domain's: the
+	// name a client verifying the certificate connects by.
+	LDAPSName string
 }
 
 // AWSCommand is one aws command lab up runs; Stdin, when set, says what it is given on standard input (never shown).
@@ -60,6 +63,9 @@ func (e EC2Lab) Check() error {
 	}
 	if !ec2DomainPattern.MatchString(e.Domain) || !strings.Contains(e.Domain, ".") {
 		return fmt.Errorf("an EC2 lab needs a DNS domain name (ad.example.com), got %q", e.Domain)
+	}
+	if e.LDAPSName != "" && (!ec2DomainPattern.MatchString(e.LDAPSName) || !strings.Contains(e.LDAPSName, ".")) {
+		return fmt.Errorf("ldaps_name %q: a DNS name (ldap.test.example.com)", e.LDAPSName)
 	}
 	if !ec2NetBIOSPattern.MatchString(e.NetBIOS) {
 		return fmt.Errorf("NetBIOS name %q: letters, digits and hyphens, at most 15", e.NetBIOS)

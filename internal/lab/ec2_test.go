@@ -27,6 +27,14 @@ func TestEC2UserDataMakesTheSourcesDomainAndReadsThePasswordFromTheParameter(t *
 	if strings.Contains(ud, "{{") {
 		t.Errorf("a field is left unfilled:\n%s", ud)
 	}
+	if !strings.Contains(ud, "$ExtraName = ''") {
+		t.Error("without ldaps_name the certificate has no other name")
+	}
+	e := testEC2Lab()
+	e.LDAPSName = "ldap.test.example.com"
+	if ud, err := e.UserData(); err != nil || !strings.Contains(ud, "$ExtraName = 'ldap.test.example.com'") {
+		t.Errorf("ldaps_name: %v", err)
+	}
 }
 
 // What would leave the script's quotes, or a domain Windows cannot create, is refused before anything is made.
@@ -38,6 +46,8 @@ func TestEC2LabRefusesWhatTheScriptCannotTake(t *testing.T) {
 		"a quote in the domain":    func(e *EC2Lab) { e.Domain = "ad'.example.com" },
 		"a long NetBIOS name":      func(e *EC2Lab) { e.NetBIOS = "ABCDEFGHIJKLMNOP" },
 		"no port":                  func(e *EC2Lab) { e.LocalPort = 0 },
+		"a quote in ldaps_name":    func(e *EC2Lab) { e.LDAPSName = "ldap.example.com'; whoami; '" },
+		"a single-label name":      func(e *EC2Lab) { e.LDAPSName = "ldap" },
 		"a brace in the name":      func(e *EC2Lab) { e.Name = "ldap-cronin-ad-x}]" },
 	} {
 		e := testEC2Lab()

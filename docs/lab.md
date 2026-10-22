@@ -296,6 +296,7 @@ instance_profile = "ldap-cronin-lab"    # a role with AmazonSSMManagedInstanceCo
 # instance_type = "t3.large"
 # windows = "2022"                      # 2016, 2019, 2022 or 2025
 # password_parameter = "/ldap-cronin/ldap-cronin-ad/admin-password"
+# ldaps_name = "ldap.test.example.com"  # one more DNS name of its LDAPS certificate (the DC's and the domain's are in it)
 ```
 
 ```sh

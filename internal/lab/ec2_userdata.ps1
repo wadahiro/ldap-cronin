@@ -13,6 +13,7 @@ $NetBIOS = '{{.NetBIOS}}'
 $Parameter = '{{.PasswordParameter}}'
 $Region = '{{.Region}}'
 $Marker = '{{.MarkerAttribute}}'
+$ExtraName = '{{.LDAPSName}}'   # one more DNS name of the LDAPS certificate (empty: none)
 $Dir = 'C:\ldap-cronin'
 New-Item -ItemType Directory -Force -Path $Dir | Out-Null
 if (Test-Path "$Dir\ready") { exit 0 }
@@ -38,8 +39,10 @@ try {
     $serverAuth = '1.3.6.1.5.5.7.3.1'
     $cert = Get-ChildItem Cert:\LocalMachine\My | Where-Object { $_.EnhancedKeyUsageList.ObjectId -contains $serverAuth } | Select-Object -First 1
     if (-not $cert) {
-        Write-Output "LDAPS certificate for $fqdn"
-        $cert = New-SelfSignedCertificate -DnsName $fqdn, $Domain -CertStoreLocation Cert:\LocalMachine\My `
+        Write-Output "LDAPS certificate for $fqdn $ExtraName"
+        $names = @($fqdn, $Domain)
+        if ($ExtraName) { $names += $ExtraName }
+        $cert = New-SelfSignedCertificate -DnsName $names -CertStoreLocation Cert:\LocalMachine\My `
             -KeyUsage DigitalSignature, KeyEncipherment -TextExtension "2.5.29.37={text}$serverAuth" -NotAfter (Get-Date).AddYears(5)
     }
     # The DC serves LDAPS with a certificate it trusts itself: a self-signed one goes to its trusted roots too, or

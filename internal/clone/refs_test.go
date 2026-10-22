@@ -99,11 +99,16 @@ func TestBackLinkAttributeIsRejected(t *testing.T) {
 	}
 }
 
-func TestDNBinaryAttributeIsRejected(t *testing.T) {
+// A DN-Binary attribute is a reference (dn.SplitRef): it can be named, and, holding DNs, not masked.
+func TestDNBinaryAttributeIsAReference(t *testing.T) {
+	if _, err := Run(context.Background(), withSchema(seedSource()), fakedir.New(domain),
+		optionsWith(t, profile.Override{Extra: []string{"msExchFoo"}}), Options{}, &bytes.Buffer{}); err != nil {
+		t.Fatalf("named: %v", err)
+	}
 	_, err := Run(context.Background(), withSchema(seedSource()), fakedir.New(domain),
-		optionsWith(t, profile.Override{Extra: []string{"msExchFoo"}}), Options{}, &bytes.Buffer{})
-	if err == nil || !strings.Contains(err.Error(), "DN-Binary") {
-		t.Fatalf("got %v", err)
+		optionsWith(t, profile.Override{Extra: []string{"msExchFoo"}}, "msExchFoo"), Options{}, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "cannot be masked") {
+		t.Fatalf("masked: %v", err)
 	}
 }
 

@@ -205,9 +205,14 @@ func (adSchema) Discover(ctx context.Context, src directory.Directory) (Schema, 
 				return nil
 			}
 			key := strings.ToLower(name)
-			// A DN-Binary or DN-String value is a reference too: its DN is what clone creates and diff compares,
-			// the binary or string part around it is written as it is (dn.SplitRef).
-			s.Refs[key] = RefInfo{Single: strings.EqualFold(first(e.Values("isSingleValued")), "TRUE")}
+			switch first(e.Values("attributeSyntax")) {
+			case syntaxDN, syntaxDNBinary, syntaxDNString:
+				// A DN-Binary or DN-String value is a reference too: its DN is what clone creates and diff
+				// compares, the binary or string part around it is written as it is (dn.SplitRef).
+				s.Refs[key] = RefInfo{Single: strings.EqualFold(first(e.Values("isSingleValued")), "TRUE")}
+			default:
+				return nil // the filter asked for these syntaxes only; a server that ignores it adds nothing
+			}
 			// The server computes a back link (memberOf, directReports, ...) and it cannot be written.
 			if id, err := strconv.Atoi(first(e.Values("linkID"))); err == nil {
 				byLink[id] = name

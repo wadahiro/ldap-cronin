@@ -190,7 +190,7 @@ func (s *Session) EC2Lab(ctx context.Context) (lab.EC2Lab, error) {
 	e := lab.EC2Lab{
 		Name: name, Domain: settings.Domain, NetBIOS: netbios,
 		Region: lt.Region, Subnet: lt.Subnet, InstanceType: lt.InstanceType, Windows: lt.Windows, InstanceProfile: lt.InstanceProfile,
-		PasswordParameter: lt.PasswordParameter, LocalPort: port.LDAPSPort,
+		PasswordParameter: lt.PasswordParameter, LocalPort: port.LDAPSPort, LDAPSName: lt.LDAPSName,
 	}
 	if e.PasswordParameter == "" {
 		e.PasswordParameter = "/ldap-cronin/" + name + "/admin-password"

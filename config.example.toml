@@ -24,7 +24,8 @@ insecure_skip_verify = true
 # fast_password = true         # with native: the fixed password's NT hash written directly, ~3x faster, no Kerberos AES keys
 # platform = "ec2"             # a Windows Server domain controller on Amazon EC2 instead (in progress: lab up --config
 #                              # --dry-run shows the plan only; docs/lab.md). It needs region, subnet, instance_profile;
-#                              # instance_type = "t3.large", windows = "2022" (2016, 2019, 2025) and password_parameter optional
+#                              # instance_type = "t3.large", windows = "2022" (2016, 2019, 2025) and password_parameter optional;
+#                              # ldaps_name = "ldap.test.example.com" adds a DNS name to its LDAPS certificate
 
 [scope]                              # what clone copies and diff compares
 # profile = "auto"                   # auto (default: asks the source), ad (Active Directory, Samba AD) or ldap (OpenLDAP, 389-ds, ...)
