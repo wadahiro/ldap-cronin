@@ -164,7 +164,7 @@ func TestEC2FunctionalLevelsAndRecycleBin(t *testing.T) {
 	e.ForestLevel, e.DomainLevel, e.RecycleBin = 6, 7, true
 	ud, err = e.UserData(testPassword)
 	for _, want := range []string{"$ForestMode = 'Win2012R2'", "$DomainMode = 'WinThreshold'", "$RecycleBin = 'yes'", "Install-ADDSForest @forest",
-		"Enable-ADOptionalFeature -Credential $cred -Identity $feature -Scope ForestOrConfigurationSet"} {
+		"Enable-ADOptionalFeature -Credential $cred -Server $fqdn -Identity 'Recycle Bin Feature' -Scope ForestOrConfigurationSet"} {
 		if err != nil || !strings.Contains(ud, want) {
 			t.Errorf("lacks %q (%v)", want, err)
 		}

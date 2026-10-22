@@ -79,7 +79,16 @@ try {
         $feature = Get-ADOptionalFeature -Credential $cred -Filter "name -eq 'Recycle Bin Feature'"
         if (-not $feature.EnabledScopes) {
             Write-Output 'AD Recycle Bin'
-            Enable-ADOptionalFeature -Credential $cred -Identity $feature -Scope ForestOrConfigurationSet -Target $Domain -Confirm:$false
+            # Run as SYSTEM with the Administrator's credential, without -Server the cmdlet failed ("The operation
+            # failed because of a bad parameter") where the Administrator's own session took it: it names the DC,
+            # and is tried again a few times, as the DC may still settle after NTDS restarted.
+            for ($i = 0; ; $i++) {
+                try {
+                    Enable-ADOptionalFeature -Credential $cred -Server $fqdn -Identity 'Recycle Bin Feature' -Scope ForestOrConfigurationSet `
+                        -Target $Domain -Confirm:$false -WarningAction SilentlyContinue
+                    break
+                } catch { if ($i -ge 5) { throw }; Start-Sleep -Seconds 30 }
+            }
         }
     }
     Write-Output 'password policy for the fixed password of the cloned users'
