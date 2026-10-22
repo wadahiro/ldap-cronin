@@ -207,6 +207,34 @@ func PlanSchema(src, dst *Schema) *SchemaPlan {
 		hasAttr[name] = true
 	}
 
+	// A back link (odd linkID) names its forward link (linkID - 1), which must be in the schema first: Windows
+	// refuses it before (53, data 8482; measured on Windows Server 2019 with Exchange's assocRemoteDXA, whose
+	// forward link comes later in name order). Samba takes any order. So the forward links and the other attributes
+	// go first, then a refresh, then the back links.
+	links := map[int]bool{}
+	for _, t := range dst.Attributes {
+		if id, err := strconv.Atoi(t.value("linkID")); err == nil {
+			links[id] = true
+		}
+	}
+	for _, a := range newAttrs {
+		if id, err := strconv.Atoi(a.value("linkID")); err == nil {
+			links[id] = true
+		}
+	}
+	var forward, back []*SchemaElement
+	for _, a := range newAttrs {
+		id, err := strconv.Atoi(a.value("linkID"))
+		switch {
+		case err != nil || id%2 == 0:
+			forward = append(forward, a)
+		case !links[id-1]:
+			p.leave(strings.ToLower(a.Name), "attribute %s: a back link (linkID %d) whose forward link (%d) neither schema has", a.Name, id, id-1)
+			delete(hasAttr, strings.ToLower(a.Name))
+		default:
+			back = append(back, a)
+		}
+	}
 	// The new classes, until no class depends on one left out.
 	candidates := map[string]*SchemaElement{}
 	for name, c := range src.Classes {
@@ -243,12 +271,14 @@ func PlanSchema(src, dst *Schema) *SchemaPlan {
 		}
 	}
 
-	for _, a := range newAttrs {
-		p.NewAttributes = append(p.NewAttributes, a.Name)
-		p.Changes = append(p.Changes, SchemaChange{DN: p.dnOf(a), Add: p.definition(a, "attributeSchema", attributeFields)})
-	}
-	if len(newAttrs) > 0 {
-		p.Changes = append(p.Changes, SchemaChange{Refresh: true})
+	for _, step := range [][]*SchemaElement{forward, back} {
+		for _, a := range step {
+			p.NewAttributes = append(p.NewAttributes, a.Name)
+			p.Changes = append(p.Changes, SchemaChange{DN: p.dnOf(a), Add: p.definition(a, "attributeSchema", attributeFields)})
+		}
+		if len(step) > 0 {
+			p.Changes = append(p.Changes, SchemaChange{Refresh: true})
+		}
 	}
 
 	// A new class is added once the class it derives from is there; its auxiliary classes and superiors that are

@@ -232,3 +232,35 @@ func TestWritableAttributesOfAClass(t *testing.T) {
 		t.Fatal("a class the schema lacks")
 	}
 }
+
+// A back link is added after its forward link, whatever their names (Windows refuses it before: Exchange's
+// assocRemoteDXA, linkID 123, sorts before its forward link); one whose forward link neither schema has is left out.
+func TestThePlanAddsBackLinksAfterTheirForwardLinks(t *testing.T) {
+	src, dst := schemaDir(srcSchemaNC), schemaDir(dstSchemaNC)
+	dn := map[string][]string{"attributeSyntax": {"2.5.5.1"}, "oMSyntax": {"127"}, "isSingleValued": {"FALSE"}}
+	with := func(link string) map[string][]string {
+		m := map[string][]string{"linkID": {link}}
+		for k, v := range dn {
+			m[k] = v
+		}
+		return m
+	}
+	attr(src, srcSchemaNC, "aBackLink", "1.3.6.1.4.1.99999.20.1", with("123"))
+	attr(src, srcSchemaNC, "zForwardLink", "1.3.6.1.4.1.99999.20.2", with("122"))
+	attr(src, srcSchemaNC, "orphanBackLink", "1.3.6.1.4.1.99999.20.3", with("125"))
+	p := readBoth(t, src, dst)
+	var order []string
+	for _, c := range p.Changes {
+		if c.Refresh {
+			order = append(order, "refresh")
+		} else if c.Add != nil {
+			order = append(order, c.Add["lDAPDisplayName"][0])
+		}
+	}
+	if got := strings.Join(order, ","); got != "zForwardLink,refresh,aBackLink,refresh" {
+		t.Fatalf("order: %s", got)
+	}
+	if !strings.Contains(strings.Join(p.Skipped, "\n"), "orphanBackLink: a back link (linkID 125)") {
+		t.Fatalf("left out: %v", p.Skipped)
+	}
+}
