@@ -156,6 +156,9 @@ var AD = Profile{
 		}
 		return first(root.Values("configurationNamingContext")), nil
 	},
+	// The dump reads each entry's security descriptor by name (owner, group and DACL, through the SD flags control),
+	// for a native import that gives the lab the source's ACLs.
+	Operational:  []string{"nTSecurityDescriptor"},
 	Account:      adAccount{},
 	PrimaryGroup: adPrimaryGroup{},
 	Native:       adNative{},

@@ -101,7 +101,18 @@ func TestNativeImportKeepsObjectGUIDAndObjectSid(t *testing.T) {
 	setScript += "from samba.ndr import ndr_pack\nfrom samba.dcerpc import security\n" +
 		"for name in ('sIDHistory', 'mS-DS-CreatorSID'):\n" +
 		"    m[name] = ldb.MessageElement([ndr_pack(security.dom_sid('S-1-5-21-1111111111-2222222222-3333333333-1234'))], ldb.FLAG_MOD_REPLACE, name)\n" +
-		"db.modify(m)\n"
+		"db.modify(m)\n" +
+		// ACEs of its own, on the user and on the domain root (a delegation every OU inherits), which the lab has
+		// not: only the copy of the ACLs, the root's among them, makes the descriptors equal.
+		"from samba.ndr import ndr_unpack\n" +
+		"for dn, sddl in (('" + withServerAttrs + base + "', 'D:(A;CI;RP;;;AU)(D;;WP;;;WD)'), ('" + base + "', 'D:(A;CI;LCRP;;;S-1-5-32-548)')):\n" +
+		"    r = db.search(dn, scope=ldb.SCOPE_BASE, attrs=['nTSecurityDescriptor'], controls=['sd_flags:1:7'])\n" +
+		"    sd = ndr_unpack(security.descriptor, r[0]['nTSecurityDescriptor'][0])\n" +
+		"    for ace in security.descriptor.from_sddl(sddl, security.dom_sid('S-1-5-21-0-0-0')).dacl.aces:\n" +
+		"        sd.dacl_add(ace)\n" +
+		"    m = ldb.Message(ldb.Dn(db, dn))\n" +
+		"    m['nTSecurityDescriptor'] = ldb.MessageElement([ndr_pack(sd)], ldb.FLAG_MOD_REPLACE, 'nTSecurityDescriptor')\n" +
+		"    db.modify(m, controls=['sd_flags:1:7'])\n"
 	if out, err := exec.Command("docker", "exec", srcLab.Prefix+"-ad-src", "python3", "-c", setScript).CombinedOutput(); err != nil {
 		t.Fatalf("setting the server attributes on the source: %v\n%s", err, out)
 	}
@@ -177,7 +188,9 @@ func TestNativeImportKeepsObjectGUIDAndObjectSid(t *testing.T) {
 	defer dst.Close()
 
 	// objectGUID, objectSid and what the server keeps match for all objects ([target.lab] server_attributes defaults to "source").
-	names := []string{"objectGUID", "objectSid", "whenCreated", "lastLogonTimestamp", "lastLogon", "logonCount", "lockoutTime", "badPwdCount", "sIDHistory", "mS-DS-CreatorSID"}
+	// nTSecurityDescriptor too, byte for byte ([target.lab] acl defaults to "source"): the domain root's is the
+	// source's as well, so the inherited ACEs are.
+	names := []string{"objectGUID", "objectSid", "whenCreated", "lastLogonTimestamp", "lastLogon", "logonCount", "lockoutTime", "badPwdCount", "sIDHistory", "mS-DS-CreatorSID", "nTSecurityDescriptor"}
 	checked := 0
 	err = src.Walk(context.Background(), cloneBase, "(|(objectClass=user)(objectClass=group)(objectClass=organizationalUnit))", names, func(e directory.Entry) error {
 		got, err := dst.Get(context.Background(), e.DN, names)

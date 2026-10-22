@@ -24,14 +24,18 @@ func (r *runner) readGroups(ctx context.Context, dst directory.Directory) error 
 	return err
 }
 
-// withPrimary adds the primary group attribute to names for an account kind, so it is read on both sides and
-// compared as the group it names.
+// withPrimary adds to names what is compared beyond the allow list: the primary group attribute for an account kind
+// (compared as the group it names), and the security descriptor when the clone gave the source's (compared as its
+// explicit part, aclTexts).
 func (r *runner) withPrimary(k *plan.Kind, names []string) []string {
-	pg := r.job.Profile.PrimaryGroup
-	if pg == nil || k == nil || !k.Account {
-		return names
+	out := names
+	if pg := r.job.Profile.PrimaryGroup; pg != nil && k != nil && k.Account {
+		out = append(append([]string(nil), out...), pg.Attr())
 	}
-	return append(append([]string(nil), names...), pg.Attr())
+	if r.job.ACL && k != nil {
+		out = append(append([]string(nil), out...), sdAttr)
+	}
+	return out
 }
 
 // primaryDNs replaces the RID of the primary group on each side with the DN of the group it names there: a group

@@ -38,6 +38,9 @@ type NativeOptions struct {
 	// times and count, the lockout state, sIDHistory, mS-DS-CreatorSID; profile.ServerAttributes), set right after
 	// its add as the system: an add takes its own, and over LDAP only the system may change them.
 	ServerAttributes bool
+	// ACL gives the lab's objects the source's owner, group and DACL (written by the caller after the import,
+	// through Replace; the helper replaces those three parts only).
+	ACL bool
 }
 
 // NativeInfo is the information about the lab's Samba and domain reported by the helper.

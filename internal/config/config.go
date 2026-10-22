@@ -66,6 +66,10 @@ type Lab struct {
 	// server keeps (whenCreated, lastLogonTimestamp, lastLogon, logonCount, lockoutTime, badPwdCount, sIDHistory,
 	// mS-DS-CreatorSID); "lab" leaves the lab's own.
 	ServerAttributes string `toml:"server_attributes"`
+	// ACL (native only): "source" (the default) gives the lab's objects the source's owner, group and DACL, and the
+	// domain root and the containers above base_dn theirs, so the inherited ACEs are the source's too; "lab" leaves
+	// the lab's own.
+	ACL string `toml:"acl"`
 
 	// platform = "ec2": where and how the instance runs. The aws command's own configuration (credentials, profile)
 	// applies; Region overrides its region.
@@ -340,6 +344,14 @@ func (c *Config) validate() error {
 		default:
 			return fmt.Errorf("[target.lab] server_attributes must be %q or %q, got %q", ServerAttributesSource, ServerAttributesLab, l.ServerAttributes)
 		}
+		switch l.ACL {
+		case "", ServerAttributesSource, ServerAttributesLab:
+		default:
+			return fmt.Errorf("[target.lab] acl must be %q or %q, got %q", ServerAttributesSource, ServerAttributesLab, l.ACL)
+		}
+		if l.ACL != "" && !l.Native {
+			return errors.New("[target.lab] acl is for native = true (copying ACLs over LDAP is not there yet)")
+		}
 		if l.ServerAttributes != "" && !l.Native {
 			return errors.New("[target.lab] server_attributes is for native = true: over LDAP only the server sets them")
 		}
@@ -558,7 +570,8 @@ func (c *Config) JobFor(p profile.Profile) (plan.Job, error) {
 	}
 	job := plan.Job{Profile: p, RootDN: c.Scope.RootDN, BaseDN: c.Scope.BaseDN, Masker: mask.New(c.Mask.Value, c.Mask.Attributes),
 		References: c.Scope.References, ConfigurationRefs: c.Scope.ConfigurationRefs,
-		OutsideGroups: c.Scope.OutsideGroups, BuiltinGroups: c.Scope.BuiltinGroups}
+		OutsideGroups: c.Scope.OutsideGroups, BuiltinGroups: c.Scope.BuiltinGroups,
+		ACL: c.Target.Lab != nil && c.Target.Lab.Native && c.Target.Lab.ACL != ServerAttributesLab}
 	for _, spec := range p.Kinds { // the profile's order, whatever order the config lists them in
 		if !contains(c.objects(p), spec.Name) {
 			continue

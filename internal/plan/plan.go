@@ -41,6 +41,9 @@ type Job struct {
 	// OutsideGroupsSkip. BuiltinGroups says it for a built-in group (Domain Admins): BuiltinGroupsAdd (the default,
 	// also for "") or BuiltinGroupsSkip.
 	OutsideGroups, BuiltinGroups string
+	// ACL is set when the clone gives the target the source's ACLs (a native import, [target.lab] acl): diff then
+	// compares each object's owner, group, protected flag and explicit ACEs (ad.ExplicitSD).
+	ACL bool
 	// AllWritable is set when the allow lists are every attribute a client can write on the class of each kind
 	// ([attributes] mode = "all"), so the summaries count them instead of naming hundreds.
 	AllWritable bool

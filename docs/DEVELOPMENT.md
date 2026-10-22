@@ -180,7 +180,8 @@ Limits:
 - Source password hashes are not readable over LDAP (`unicodePwd` is not returned). Copying them requires joining the target as a DC of the source's domain and replicating (`samba-tool domain join`, DRS), which adds a DC to the production AD and replicates the whole domain.
 - Matching `objectSid` also requires the same domain SID (`samba-tool domain provision --domain-sid=... --domain-guid=...`).
 - It depends on Samba's internal replication path, is not a supported use, and may break across versions.
-- Not verified: ACLs (`nTSecurityDescriptor`), large numbers of objects, other Samba versions.
+- ACLs (`nTSecurityDescriptor`): a modify as the system with `sd_flags:1:7` keeps the owner, the group and the explicit ACEs as written, and Samba computes the inherited ones from the parents; with the domain root's written too, the descriptors equal the source's byte for byte (4.19.5, from a Samba source). Windows does the same over LDAP (Windows Server 2019: explicit ACEs kept, inherited ones from the target's parents).
+- Not verified: large numbers of objects, other Samba versions.
 
 If it works, `diff` can match by GUID without a marker, and applications keyed on `objectGUID` / `objectSid` (for example an IdM whose AD connector identifies objects by `objectGUID`) see matching identifiers against the lab.
 
@@ -215,7 +216,7 @@ Decisions:
 - **`fast_password` shares one NT hash, not the Kerberos keys.** `setpassword` takes about 11ms a user, nearly all of it the hashes derived from the password; the functional level does not change it, and a transaction around many users does not either (the lab does not fsync). The NT hash is unsalted, so the hash the first user got is the hash of every user with that password, and `DSDB_CONTROL_BYPASS_PASSWORD_HASH_OID` makes the password module store a given `unicodePwd` as it is, deriving nothing, in about 1ms (the helper sets `pwdLastSet` to now, as `setpassword` does). The Kerberos keys are salted with the account name and cannot be shared, so those users have none: Kerberos falls back to RC4 (the NT hash), which an AES-only setting refuses. Hence a setting, never the default. It is one of dsdb's internal controls, passed by the helper that opens `sam.ldb`; it was not tried over LDAP, so it is `native = true` only.
 - **The helper is not killed on Ctrl-C.** Killing it could interrupt a write to `sam.ldb`; the import checks the context between requests instead, and `Close` ends the helper by closing its standard input and resumes the lab.
 
-Measured on Samba 4.19.5. Not verified: large numbers of objects, ACLs (`nTSecurityDescriptor`), other Samba versions.
+Measured on Samba 4.19.5 (ACLs included, see above). Not verified: large numbers of objects, other Samba versions.
 
 ## Server profiles (AD and generic LDAP)
 

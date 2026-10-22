@@ -147,7 +147,7 @@ func (c *Client) Walk(ctx context.Context, base, filter string, attrs []string, 
 	defer c.release(conn)
 	paging := ldap.NewControlPaging(pageSize)
 	req := ldap.NewSearchRequest(base, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 0, 0, false,
-		filter, rangedRequestFor(c.ranged, attrs, c.rangeSize), []ldap.Control{paging})
+		filter, rangedRequestFor(c.ranged, attrs, c.rangeSize), append([]ldap.Control{paging}, readControls(attrs)...))
 	for {
 		// Checked per page: moving to SearchAsync for finer cancellation would mean rewriting the paging and range loop for no visible gain.
 		if err := ctx.Err(); err != nil {
@@ -178,13 +178,28 @@ func (c *Client) Walk(ctx context.Context, base, filter string, attrs []string, 
 	}
 }
 
+// sdFlagsOwnerGroupDACL asks AD for the owner, the group and the DACL of nTSecurityDescriptor: without the control it
+// returns the SACL too, which needs a privilege a reading account may lack, and the SACL is not what the clone copies.
+const sdFlagsOwnerGroupDACL = 0x1 | 0x2 | 0x4
+
+// readControls are the controls a search for attrs needs: the SD flags when nTSecurityDescriptor is asked for (not
+// critical, so a server without it answers as it would).
+func readControls(attrs []string) []ldap.Control {
+	for _, a := range attrs {
+		if strings.EqualFold(a, "nTSecurityDescriptor") {
+			return []ldap.Control{&ldap.ControlMicrosoftSDFlags{ControlValue: sdFlagsOwnerGroupDACL}}
+		}
+	}
+	return nil
+}
+
 func (c *Client) Get(ctx context.Context, dn string, attrs []string) (*directory.Entry, error) {
 	conn, err := c.acquire(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer c.release(conn)
-	req := ldap.NewSearchRequest(dn, ldap.ScopeBaseObject, ldap.NeverDerefAliases, 1, 0, false, "(objectClass=*)", rangedRequestFor(c.ranged, attrs, c.rangeSize), nil)
+	req := ldap.NewSearchRequest(dn, ldap.ScopeBaseObject, ldap.NeverDerefAliases, 1, 0, false, "(objectClass=*)", rangedRequestFor(c.ranged, attrs, c.rangeSize), readControls(attrs))
 	res, err := conn.Search(req)
 	if err != nil {
 		if ldap.IsErrorWithCode(err, ldap.LDAPResultNoSuchObject) {

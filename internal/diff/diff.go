@@ -117,6 +117,9 @@ func Run(ctx context.Context, src, dst directory.Directory, job plan.Job, o Opti
 	if pg := job.Profile.PrimaryGroup; pg != nil {
 		read.Extra = []string{pg.Attr()}
 	}
+	if job.ACL {
+		read.Extra = append(read.Extra, sdAttr)
+	}
 	p, err := plan.Build(ctx, src, job, read)
 	if err != nil {
 		return r.sum, err

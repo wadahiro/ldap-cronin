@@ -205,6 +205,7 @@ image = "ldap-cronin/samba-ad:local"     # what lab up --config creates it from 
 # native = true                          # see the next section
 # fast_password = true
 # server_attributes = "lab"              # native: the lab's own whenCreated, logons and lockout instead of the source's
+# acl = "lab"                            # native: the lab's own ACLs instead of the source's
 ```
 
 ```sh
@@ -271,6 +272,7 @@ ldap-cronin diff -config config.toml      # matches objects by objectGUID direct
 - **This is not a supported way of using Samba.** It uses Samba internals (the replication path, with system privileges and the `provision` and `relax` controls). It depends on the Samba version, and only **4.19.5** has been verified.
   At the start of each run it tries the same operation (and rolls it back) and fails immediately if it does not work. On another version it warns and continues, provided this self-check passes.
 - **Password hashes are not copied** (they cannot be read over LDAP). User passwords are the fixed password, as in a normal `clone` (with `fast_password`, without Kerberos AES keys).
+- **The ACLs are the source's** (`[target.lab] acl = "lab"` leaves the lab's own): each object's owner, group and DACL (`nTSecurityDescriptor`, read with the SD flags control, so no SACL), and those of the domain root and the containers above `base_dn`. Samba keeps what is written and computes the inherited ACEs from each object's parents, so with the parents above the source's too, the descriptors are the source's byte for byte (measured on 4.19.5, from a Samba source). `diff` then compares each object's owner, group, protected flag and explicit ACEs (not their order), and names the ACEs that differ. A dump carries the descriptors (taken before, it has none: the lab keeps its own, with a warning). The objects outside `base_dn` a reference or a membership brought keep the lab's. Over LDAP (a Windows target) ACLs are not copied yet.
 - **What the server keeps is the source's too** (`[target.lab] server_attributes = "lab"` leaves the lab's own): `whenCreated`, `lastLogonTimestamp`, `lastLogon`, `logonCount`, `lockoutTime`, `badPwdCount`, `sIDHistory` and `mS-DS-CreatorSID`. An add takes the time of the add as `whenCreated` whatever it is given, and the others are the server's, which over LDAP only the system may write (Windows refuses them all), so the helper sets them right after the add, as the system. The self-check at the start tries it. `diff` does not compare them (over LDAP they are the target's). Not settable: `whenChanged` (every change gives it the time again), `pwdLastSet` (0 or -1 only; a must-change user is reproduced), `uSNCreated` and `uSNChanged` (each DC's counters). `lastLogon` and `logonCount` are those of the DC the dump was taken from, as they are not replicated.
 - **RIDs can collide.** If the RID of a source user is the same as that of one of the lab's standard objects (RID 1000, 1101, 1102), importing that object fails with an error that names the colliding object
   (it is never skipped silently). For a source built on Samba the configuration is the same, so collisions normally do not occur.

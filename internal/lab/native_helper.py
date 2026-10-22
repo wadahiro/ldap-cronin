@@ -224,8 +224,13 @@ def op_replace(req):
         if len(text) < 2 or text[0] != '"' or text[-1] != '"':
             return fail(19, "unicodePwd is not wrapped in quotes")
         set_password(req["dn"], text[1:-1])
+    sd = attrs.pop("nTSecurityDescriptor", None)
     if attrs:
         db.modify(message(req["dn"], attrs, ldb.FLAG_MOD_REPLACE))
+    if sd:
+        # The owner, the group and the DACL only, as the source was read (its SACL is not read): Samba keeps them,
+        # and computes the inherited ACEs from the object's parents, as it does when a parent's descriptor changes.
+        db.modify(message(req["dn"], {"nTSecurityDescriptor": sd}, ldb.FLAG_MOD_REPLACE), controls=["sd_flags:1:7"])
     return ok()
 
 

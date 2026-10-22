@@ -8,6 +8,7 @@ import (
 
 	"github.com/wadahiro/ldap-cronin/internal/clone"
 	"github.com/wadahiro/ldap-cronin/internal/config"
+	"github.com/wadahiro/ldap-cronin/internal/directory"
 	"github.com/wadahiro/ldap-cronin/internal/dn"
 	"github.com/wadahiro/ldap-cronin/internal/lab"
 	"github.com/wadahiro/ldap-cronin/internal/plan"
@@ -90,6 +91,11 @@ func (s *Session) Native(ctx context.Context, l *lab.Lab, opts lab.NativeOptions
 	if err != nil {
 		return report, err
 	}
+	if opts.ACL {
+		if err := s.nativeACLs(ctx, n, src.Root, out); err != nil {
+			return report, err
+		}
+	}
 	res, err := n.Finish(ctx)
 	if err != nil {
 		return report, fmt.Errorf("post-import cleanup (RID update, dbcheck) failed: %w", err)
@@ -115,4 +121,62 @@ func checkSameDomain(info lab.NativeInfo, src profile.Domain) error {
 		return fmt.Errorf("the lab's domain differs from the source's (%s). Create a lab with the same domain as the source by running lab reset, then lab up --config <config file>", strings.Join(diffs, ", "))
 	}
 	return nil
+}
+
+// sdAttr is the attribute of an object's security descriptor.
+const sdAttr = "nTSecurityDescriptor"
+
+// nativeACLs gives the lab's objects the source's owner, group and DACL ([target.lab] acl): the domain root and the
+// containers above base_dn first, then every object of the lab under base_dn. Samba keeps what is written and
+// computes the inherited ACEs from each object's parents, so once the parents above are the source's too, the
+// descriptors are the source's byte for byte (measured on 4.19.5). The objects outside base_dn a reference or a
+// membership brought (referenced objects, groups holding entries) keep the lab's.
+func (s *Session) nativeACLs(ctx context.Context, n directory.Directory, root string, out io.Writer) error {
+	written, above := 0, 0
+	write := func(e directory.Entry) error {
+		values := e.Values(sdAttr)
+		if len(values) == 0 {
+			return nil
+		}
+		cur, err := n.Get(ctx, e.DN, []string{"objectClass"})
+		if err != nil || cur == nil {
+			return err // not cloned (of no kind): nothing to give
+		}
+		if err := n.Replace(ctx, e.DN, map[string][]string{sdAttr: values}); err != nil {
+			return fmt.Errorf("%s: the source's %s: %w", e.DN, sdAttr, err)
+		}
+		written++
+		return nil
+	}
+	parents := append([]string{root}, reverseDNs(dn.Ancestors(s.Job.BaseDN, root))...)
+	for _, d := range parents {
+		e, err := s.Src.Get(ctx, d, []string{sdAttr})
+		if err != nil {
+			return err
+		}
+		if e != nil {
+			before := written
+			if err := write(*e); err != nil {
+				return err
+			}
+			above += written - before
+		}
+	}
+	if err := s.Src.Walk(ctx, s.Job.BaseDN, "(objectClass=*)", []string{sdAttr}, write); err != nil {
+		return err
+	}
+	if written == 0 {
+		fmt.Fprintf(s.Warn, "warning: the source gave no %s (a dump taken before ACLs were carried, or an account that may not read them): the lab keeps its own ACLs\n", sdAttr)
+		return nil
+	}
+	fmt.Fprintf(out, "native: ACLs: the source's owner, group and DACL on %d objects (%d of them above base_dn)\n", written, above)
+	return nil
+}
+
+func reverseDNs(in []string) []string {
+	out := make([]string, len(in))
+	for i, v := range in {
+		out[len(in)-1-i] = v
+	}
+	return out
 }
