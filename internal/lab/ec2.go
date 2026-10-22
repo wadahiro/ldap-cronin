@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"text/template"
@@ -51,6 +52,9 @@ type EC2Lab struct {
 	// SecurityGroups are attached to the instance; none leaves the VPC's default group. Systems Manager needs no
 	// inbound rule: the instance's agent reaches out.
 	SecurityGroups []string
+	// Tags are put on the instance and its volume besides the lab's own (Name, ldap-cronin.lab, ldap-cronin.realm),
+	// for an account whose policy requires some; Name may be given, the lab's two not.
+	Tags map[string]string
 
 	instance string // the instance, once known (WithInstance)
 }
@@ -130,6 +134,16 @@ func (e EC2Lab) Check() error {
 			return fmt.Errorf("security_groups: %q is not a security group id (sg-0123456789abcdef0)", g)
 		}
 	}
+	for k, v := range e.Tags {
+		switch {
+		case k == "" || len(k) > 128 || len(v) > 256:
+			return fmt.Errorf("tags: %q = %q: a key of 1 to 128 characters, a value of at most 256", k, v)
+		case strings.HasPrefix(strings.ToLower(k), "aws:"):
+			return fmt.Errorf("tags: %q: the aws: prefix is AWS's own", k)
+		case k == labTag || k == realmTag:
+			return fmt.Errorf("tags: %q is the lab's own (lab reset finds its instances by it)", k)
+		}
+	}
 	if e.DiskSize != 0 && (e.DiskSize < minDiskSize || e.DiskSize > 16384) {
 		return fmt.Errorf("disk_size %d: from %d GiB (the Windows Server image's) to 16384", e.DiskSize, minDiskSize)
 	}
@@ -202,8 +216,42 @@ func CheckPassword(password string) error {
 }
 
 // tags are those of every resource the lab makes: lab down and reset act on what carries them, never on anything else.
-func (e EC2Lab) tags() string {
-	return fmt.Sprintf("{Key=Name,Value=%s},{Key=ldap-cronin.lab,Value=%s},{Key=ldap-cronin.realm,Value=%s}", e.Name, e.Name, e.Domain)
+// The lab's own tags: lab reset and the instance's lookup go by labTag.
+const (
+	labTag   = "ldap-cronin.lab"
+	realmTag = "ldap-cronin.realm"
+)
+
+// ec2Tag is a tag as the EC2 API takes it in JSON.
+type ec2Tag struct {
+	Key   string `json:"Key"`
+	Value string `json:"Value"`
+}
+
+// tagSpecifications are the tags of the instance and its volume, as JSON: what a user tag holds (commas, brackets,
+// quotes) needs no quoting there, as it would in the aws command's shorthand. The lab's Name gives way to tags'.
+func (e EC2Lab) tagSpecifications() string {
+	name := e.Name
+	if n, ok := e.Tags["Name"]; ok {
+		name = n
+	}
+	tags := []ec2Tag{{"Name", name}, {labTag, e.Name}, {realmTag, e.Domain}}
+	keys := make([]string, 0, len(e.Tags))
+	for k := range e.Tags {
+		if k != "Name" {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		tags = append(tags, ec2Tag{k, e.Tags[k]})
+	}
+	type spec struct {
+		ResourceType string   `json:"ResourceType"`
+		Tags         []ec2Tag `json:"Tags"`
+	}
+	b, _ := json.Marshal([]spec{{"instance", tags}, {"volume", tags}})
+	return string(b)
 }
 
 // UpCommands are the aws commands lab up --config runs to make the lab, in order, as lab up --dry-run shows them:
@@ -253,7 +301,7 @@ func (e EC2Lab) awsArgs(args ...string) []string {
 }
 
 func (e EC2Lab) findArgs() []string {
-	return e.awsArgs("ec2", "describe-instances", "--filters", "Name=tag:ldap-cronin.lab,Values="+e.Name,
+	return e.awsArgs("ec2", "describe-instances", "--filters", "Name=tag:"+labTag+",Values="+e.Name,
 		"Name=instance-state-name,Values=pending,running,stopping,stopped",
 		"--query", "Reservations[].Instances[].[InstanceId,State.Name]", "--output", "text")
 }
@@ -269,7 +317,7 @@ func (e EC2Lab) runArgs(ami, userData string) []string {
 	args := []string{"ec2", "run-instances", "--image-id", ami, "--instance-type", e.instanceType(), "--subnet-id", e.Subnet,
 		"--iam-instance-profile", "Name=" + e.InstanceProfile, "--metadata-options", "HttpTokens=required",
 		"--user-data", "file://" + userData,
-		"--tag-specifications", "ResourceType=instance,Tags=[" + e.tags() + "]", "ResourceType=volume,Tags=[" + e.tags() + "]"}
+		"--tag-specifications", e.tagSpecifications()}
 	if len(e.SecurityGroups) > 0 {
 		args = append(append(args, "--security-group-ids"), e.SecurityGroups...)
 	}

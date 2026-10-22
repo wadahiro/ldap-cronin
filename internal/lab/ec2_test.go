@@ -81,6 +81,9 @@ func TestEC2LabRefusesWhatTheScriptCannotTake(t *testing.T) {
 		"a brace in the name":       func(e *EC2Lab) { e.Name = "ldap-cronin-ad-x}]" },
 		"a disk below the image's":  func(e *EC2Lab) { e.DiskSize = 20 },
 		"a security group's name":   func(e *EC2Lab) { e.SecurityGroups = []string{"default"} },
+		"the lab's tag in tags":     func(e *EC2Lab) { e.Tags = map[string]string{"ldap-cronin.lab": "other"} },
+		"an aws: tag":               func(e *EC2Lab) { e.Tags = map[string]string{"aws:cloudformation:stack-name": "x"} },
+		"an empty tag key":          func(e *EC2Lab) { e.Tags = map[string]string{"": "x"} },
 	} {
 		e := testEC2Lab()
 		change(&e)
@@ -104,7 +107,8 @@ func TestEC2UpCommands(t *testing.T) {
 		"'Name=tag:ldap-cronin.lab,Values=ldap-cronin-ad' 'Name=instance-state-name,Values=pending,running,stopping,stopped'",
 		"--name /aws/service/ami-windows-latest/Windows_Server-2022-English-Full-Base",
 		"--instance-type t3.large", "--subnet-id subnet-0123", "--iam-instance-profile 'Name=ldap-cronin-lab'",
-		"'HttpTokens=required'", "Key=ldap-cronin.lab,Value=ldap-cronin-ad", "Key=ldap-cronin.realm,Value=ad.example.com",
+		"'HttpTokens=required'", `{"ResourceType":"instance","Tags":[{"Key":"Name","Value":"ldap-cronin-ad"},{"Key":"ldap-cronin.lab","Value":"ldap-cronin-ad"},{"Key":"ldap-cronin.realm","Value":"ad.example.com"}]}`,
+		`{"ResourceType":"volume","Tags":[{"Key":"Name","Value":"ldap-cronin-ad"},`,
 		"AWS-RunPowerShellScript", "get-command-invocation", "AWS-StartPortForwardingSession", "'portNumber=636,localPortNumber=12636'",
 	} {
 		if !strings.Contains(text, want) {
@@ -158,5 +162,21 @@ func TestEC2FunctionalLevelsAndRecycleBin(t *testing.T) {
 	e.Windows, e.ForestLevel, e.DomainLevel = "2025", 10, 10
 	if ud, err := e.UserData(testPassword); err != nil || !strings.Contains(ud, "$ForestMode = 'Win2025'") {
 		t.Errorf("a 2025 forest on 2025: %v", err)
+	}
+}
+
+// tags go on the instance and its volume after the lab's own, by key, as JSON so that what a value holds needs no
+// quoting; a Name among them is the instance's name, the lab's tag unchanged.
+func TestEC2TagsAreTheAccountsToo(t *testing.T) {
+	e := testEC2Lab()
+	e.Tags = map[string]string{"Owner": "wadahiro", "CostCenter": "lab, test [1]", "Name": "my-ad"}
+	run := strings.Join(e.runArgs("ami-1", "/tmp/ud"), " ")
+	want := `[{"Key":"Name","Value":"my-ad"},{"Key":"ldap-cronin.lab","Value":"ldap-cronin-ad"},{"Key":"ldap-cronin.realm","Value":"ad.example.com"},` +
+		`{"Key":"CostCenter","Value":"lab, test [1]"},{"Key":"Owner","Value":"wadahiro"}]`
+	if strings.Count(run, want) != 2 || !strings.Contains(run, `"ResourceType":"volume"`) {
+		t.Errorf("the tags: %s", run)
+	}
+	if _, err := e.UserData(testPassword); err != nil {
+		t.Error(err)
 	}
 }

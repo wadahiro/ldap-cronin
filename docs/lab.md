@@ -302,6 +302,8 @@ instance_profile = "ldap-cronin-lab"    # a role with AmazonSSMManagedInstanceCo
 # disk_size = 50                         # the root volume in GiB, gp3 (default: the image's, 30)
 # security_groups = ["sg-0123456789abcdef0"]   # attached to the instance (default: the VPC's default group);
 #                                        # Systems Manager needs no inbound rule
+# tags = { Owner = "me", CostCenter = "1234" }   # put on the instance and its volume too, as many as needed
+#                                        # (an account's policy may require some); Name renames the instance
 # ldaps_name = "ldap.test.example.com"  # one more DNS name of its LDAPS certificate (the DC's and the domain's are in it)
 # ldap_port = 13389                      # the local port LDAP (389) is forwarded to too, for clients without LDAPS
 # ldap_unsigned = true                   # a simple bind on 389 without signing taken (2025 refuses it by default)
@@ -321,7 +323,7 @@ ldap-cronin lab reset --config config.toml -y     # terminates the lab's instanc
 
 - **lab up** finds the lab's instance by its tag (`ldap-cronin.lab`, terminated ones left out): a running one is
   used, a stopped one started, two are refused. Else it takes the latest image of `windows`, launches the
-  instance (IMDSv2, the lab's tags on it and its volume) with the user data that makes it the domain controller,
+  instance (IMDSv2, the lab's tags and [target.lab] tags on it and its volume) with the user data that makes it the domain controller,
   and asks it through Systems Manager every 30 seconds until its user data says READY, showing the last line of its
   `C:\ldap-cronin\setup.log` meanwhile (45 minutes at most). It ends with the tunnel commands; the tunnels are
   yours to run, as long as the lab is used.
