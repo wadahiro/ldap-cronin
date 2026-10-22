@@ -222,6 +222,9 @@ func runClone(ctx context.Context, args []string, out io.Writer) error {
 	askBeforeWriting(s, *yes)
 	s.WithPassword = *withPassword
 	lt := s.Cfg.Target.Lab
+	if lt.OnEC2() {
+		lt = nil // a Windows Server reached through its tunnel at [target] url: written as any server is
+	}
 	if *dryRun && s.Cfg.NativeLab() != nil {
 		return errors.New("[target.lab] native = true writes the lab's database directly, which produces no LDIF: a dry-run is for a clone over LDAP")
 	}
@@ -260,7 +263,7 @@ func runClone(ctx context.Context, args []string, out io.Writer) error {
 // labOf is the lab [target.lab] names, with the lab commands' defaults (its state in the current directory).
 func labOf(lt *config.Lab, out, errW io.Writer) (*lab.Lab, error) {
 	if lt.OnEC2() {
-		return nil, errors.New("[target.lab] platform = \"ec2\": clone and check do not handle an EC2 lab yet (lab up --config <file> --dry-run shows how it will be made; check -no-target reads the source alone)")
+		return nil, errors.New("[target.lab] platform = \"ec2\": the lab is a Windows Server reached through its tunnel at [target] url, not a docker lab")
 	}
 	c := labCommon{stateDir: ".", prefix: lt.Prefix, instance: lt.Instance}
 	if c.prefix == "" {
@@ -403,7 +406,7 @@ func runCheck(ctx context.Context, args []string, out io.Writer) (int, error) {
 	defer display.Stop()
 	s.Progress, s.Warn = bar, display.Writer(s.Warn)
 	opts := app.CheckOptions{NoTarget: *noTarget, Attrs: *attrs, Config: *cfgPath}
-	if lt := s.Cfg.Target.Lab; lt != nil && !(*noTarget && lt.OnEC2()) {
+	if lt := s.Cfg.Target.Lab; lt != nil && !lt.OnEC2() { // an EC2 lab is read as any server is, through its tunnel
 		if opts.Lab, err = labOf(lt, io.Discard, display.Writer(os.Stderr)); err != nil {
 			return 0, err
 		}

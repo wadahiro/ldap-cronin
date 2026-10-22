@@ -5,37 +5,34 @@ import (
 	"testing"
 )
 
+const testPassword = "Lab-Adm1n-Passw0rd!"
+
 func testEC2Lab() EC2Lab {
 	return EC2Lab{Name: "ldap-cronin-ad", Domain: "ad.example.com", NetBIOS: "AD", Region: "ap-northeast-1",
-		Subnet: "subnet-0123", InstanceProfile: "ldap-cronin-lab", PasswordParameter: "/ldap-cronin/ldap-cronin-ad/admin-password",
-		LocalPort: 12636, MarkerAttribute: "adminDisplayName"}
+		Subnet: "subnet-0123", InstanceProfile: "ldap-cronin-lab", LocalPort: 12636, MarkerAttribute: "adminDisplayName"}
 }
 
-// The user data makes the source's domain and reads the password from the parameter: it never holds the password.
-func TestEC2UserDataMakesTheSourcesDomainAndReadsThePasswordFromTheParameter(t *testing.T) {
-	ud, err := testEC2Lab().UserData()
+// The user data makes the source's domain with the password given, a quote of it doubled for PowerShell.
+func TestEC2UserDataMakesTheSourcesDomain(t *testing.T) {
+	ud, err := testEC2Lab().UserData("It's-a-Passw0rd")
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{"<powershell>", "</powershell>\n<persist>true</persist>", "$Domain = 'ad.example.com'", "$NetBIOS = 'AD'",
-		"$Parameter = '/ldap-cronin/ldap-cronin-ad/admin-password'", "$Region = 'ap-northeast-1'", "$Marker = 'adminDisplayName'",
-		"Get-SSMParameter -Name $Parameter -WithDecryption $true", "Install-ADDSForest", `C:\ldap-cronin\ready`} {
+		"$Password = 'It''s-a-Passw0rd'", "$Marker = 'adminDisplayName'", "Install-ADDSForest", `C:\ldap-cronin\ready`} {
 		if !strings.Contains(ud, want) {
 			t.Errorf("the user data lacks %q", want)
 		}
 	}
-	if strings.Contains(ud, "{{") {
-		t.Errorf("a field is left unfilled:\n%s", ud)
+	if strings.Contains(ud, "{{") || strings.Contains(ud, "Get-SSMParameter") {
+		t.Errorf("a field is left unfilled, or the parameter is read:\n%s", ud)
 	}
-	if !strings.Contains(ud, "$PlainLDAP = ''") {
-		t.Error("without ldap_port the signing requirement is Windows' own")
-	}
-	if !strings.Contains(ud, "$ExtraName = ''") {
-		t.Error("without ldaps_name the certificate has no other name")
+	if !strings.Contains(ud, "$PlainLDAP = ''") || !strings.Contains(ud, "$ExtraName = ''") {
+		t.Error("without ldap_port and ldaps_name, Windows' own")
 	}
 	e := testEC2Lab()
 	e.LDAPPort = 13389
-	if ud, err := e.UserData(); err != nil || !strings.Contains(ud, "$PlainLDAP = 'yes'") || !strings.Contains(ud, "LDAPServerIntegrity -Value 1") {
+	if ud, err := e.UserData(testPassword); err != nil || !strings.Contains(ud, "$PlainLDAP = 'yes'") || !strings.Contains(ud, "LDAPServerIntegrity -Value 1") {
 		t.Errorf("ldap_port: %v", err)
 	}
 	if last := e.UpCommands()[len(e.UpCommands())-1].Shell(); !strings.Contains(last, "'portNumber=389,localPortNumber=13389'") {
@@ -43,15 +40,28 @@ func TestEC2UserDataMakesTheSourcesDomainAndReadsThePasswordFromTheParameter(t *
 	}
 	e.LDAPPort = 0
 	e.LDAPSName = "ldap.test.example.com"
-	if ud, err := e.UserData(); err != nil || !strings.Contains(ud, "$ExtraName = 'ldap.test.example.com'") {
+	if ud, err := e.UserData(testPassword); err != nil || !strings.Contains(ud, "$ExtraName = 'ldap.test.example.com'") {
 		t.Errorf("ldaps_name: %v", err)
+	}
+	if _, err := testEC2Lab().UserData("two\nlines-Passw0rd"); err == nil {
+		t.Error("a line break in the password")
+	}
+}
+
+// The password must pass Windows' complexity rule before anything is made: the Administrator gets it before the
+// domain exists.
+func TestCheckPasswordIsWindowsComplexityRule(t *testing.T) {
+	for pw, ok := range map[string]bool{testPassword: true, "Abcdefg1": true, "abcdefg1!": true, "short1A": false, "alllowercase": false,
+		"ALLUPPER123": false, "ALLUPPER123!": true, "Administrator1!": false, "": false} {
+		if err := CheckPassword(pw); (err == nil) != ok {
+			t.Errorf("%q: %v", pw, err)
+		}
 	}
 }
 
 // What would leave the script's quotes, or a domain Windows cannot create, is refused before anything is made.
 func TestEC2LabRefusesWhatTheScriptCannotTake(t *testing.T) {
 	for name, change := range map[string]func(*EC2Lab){
-		"a quote in the parameter":  func(e *EC2Lab) { e.PasswordParameter = "/x'; Remove-Item C:\\ -Recurse; '" },
 		"a dollar in the region":    func(e *EC2Lab) { e.Region = "$(whoami)" },
 		"a single-label domain":     func(e *EC2Lab) { e.Domain = "corp" },
 		"a quote in the domain":     func(e *EC2Lab) { e.Domain = "ad'.example.com" },
@@ -68,43 +78,38 @@ func TestEC2LabRefusesWhatTheScriptCannotTake(t *testing.T) {
 	} {
 		e := testEC2Lab()
 		change(&e)
-		if _, err := e.UserData(); err == nil {
+		if _, err := e.UserData(testPassword); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
 	}
 }
 
-// The password goes to the parameter on standard input, never as an argument; the instance gets IMDSv2, the lab's
-// tags, the latest image of its Windows Server; LDAPS comes to the port of [target] url.
+// The commands shown: the lab's instance found by its tag (terminated ones left out), the latest image of its
+// Windows Server, the instance with IMDSv2 and the lab's tags, the readiness polled, LDAPS to the port of
+// [target] url. No password in any of them.
 func TestEC2UpCommands(t *testing.T) {
 	e := testEC2Lab()
-	cmds := e.UpCommands()
 	var all []string
-	for _, c := range cmds {
+	for _, c := range e.UpCommands() {
 		all = append(all, c.Shell())
 	}
 	text := strings.Join(all, "\n")
-	put := cmds[1]
-	if put.Args[0] != "ssm" || put.Args[1] != "put-parameter" || !strings.Contains(put.Shell(), "--cli-input-json file:///dev/stdin") ||
-		!strings.Contains(put.Stdin, `"SecureString"`) || !strings.Contains(put.Stdin, "<the target password>") {
-		t.Errorf("the password parameter: %s / %s", put.Shell(), put.Stdin)
-	}
 	for _, want := range []string{
+		"'Name=tag:ldap-cronin.lab,Values=ldap-cronin-ad' 'Name=instance-state-name,Values=pending,running,stopping,stopped'",
 		"--name /aws/service/ami-windows-latest/Windows_Server-2022-English-Full-Base",
 		"--instance-type t3.large", "--subnet-id subnet-0123", "--iam-instance-profile 'Name=ldap-cronin-lab'",
 		"'HttpTokens=required'", "Key=ldap-cronin.lab,Value=ldap-cronin-ad", "Key=ldap-cronin.realm,Value=ad.example.com",
-		"aws ssm delete-parameter --region ap-northeast-1 --name /ldap-cronin/ldap-cronin-ad/admin-password",
-		"AWS-StartPortForwardingSession", "'portNumber=636,localPortNumber=12636'",
+		"AWS-RunPowerShellScript", "get-command-invocation", "AWS-StartPortForwardingSession", "'portNumber=636,localPortNumber=12636'",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("the commands lack %q:\n%s", want, text)
 		}
 	}
-	if cmds[0].Args[1] != "get-parameter" || cmds[2].Args[1] != "run-instances" {
-		t.Errorf("the password must be written after the image is found, just before the instance: %s, %s", cmds[0].Shell(), cmds[2].Shell())
+	if strings.Contains(text, "put-parameter") || strings.Contains(text, testPassword) {
+		t.Errorf("no parameter, no password:\n%s", text)
 	}
 	e.Windows, e.InstanceType = "2025", "m5.xlarge"
-	if text := e.UpCommands()[0].Shell() + e.UpCommands()[2].Shell(); !strings.Contains(text, "Windows_Server-2025-") || !strings.Contains(text, "m5.xlarge") {
+	if text := e.UpCommands()[1].Shell() + e.UpCommands()[2].Shell(); !strings.Contains(text, "Windows_Server-2025-") || !strings.Contains(text, "m5.xlarge") {
 		t.Errorf("windows and instance_type: %s", text)
 	}
 }
@@ -121,12 +126,12 @@ func TestAWSCommandShellQuotes(t *testing.T) {
 // Windows' defaults.
 func TestEC2FunctionalLevelsAndRecycleBin(t *testing.T) {
 	e := testEC2Lab()
-	ud, err := e.UserData()
+	ud, err := e.UserData(testPassword)
 	if err != nil || !strings.Contains(ud, "$ForestMode = ''") || !strings.Contains(ud, "$RecycleBin = ''") {
 		t.Fatalf("defaults: %v", err)
 	}
 	e.ForestLevel, e.DomainLevel, e.RecycleBin = 6, 7, true
-	ud, err = e.UserData()
+	ud, err = e.UserData(testPassword)
 	for _, want := range []string{"$ForestMode = 'Win2012R2'", "$DomainMode = 'WinThreshold'", "$RecycleBin = 'yes'", "Install-ADDSForest @forest",
 		"Enable-ADOptionalFeature -Credential $cred -Identity $feature -Scope ForestOrConfigurationSet"} {
 		if err != nil || !strings.Contains(ud, want) {
@@ -134,7 +139,7 @@ func TestEC2FunctionalLevelsAndRecycleBin(t *testing.T) {
 		}
 	}
 	e.Windows, e.ForestLevel, e.DomainLevel = "2025", 10, 10
-	if ud, err := e.UserData(); err != nil || !strings.Contains(ud, "$ForestMode = 'Win2025'") {
+	if ud, err := e.UserData(testPassword); err != nil || !strings.Contains(ud, "$ForestMode = 'Win2025'") {
 		t.Errorf("a 2025 forest on 2025: %v", err)
 	}
 }

@@ -278,17 +278,18 @@ ldap-cronin diff -config config.toml      # matches objects by objectGUID direct
   (it is never skipped silently). For a source built on Samba the configuration is the same, so collisions normally do not occur.
 - The import runs in a helper container (Python from the lab image) with the volumes mounted, so **the lab image must have Python and Samba** (the offline package's image does).
 
-## A Windows Server lab on Amazon EC2 (`[target.lab] platform = "ec2"`, in progress)
+## A Windows Server lab on Amazon EC2 (`[target.lab] platform = "ec2"`)
 
-**Not usable yet, and not tested on AWS.** For tests that need a real Windows Server domain controller rather than
-Samba, `lab up --config` will make one on EC2: a new forest with the source's domain name and NetBIOS name, LDAPS
-forwarded through Systems Manager to the port of `[target] url`, its Administrator password the target password.
-Today only the plan exists: `--dry-run` prints the instance's user data and the `aws` commands `lab up` will run, and
-calls nothing.
+For tests that need a real Windows Server domain controller rather than Samba, `lab up --config` makes one on EC2
+through the `aws` command: a new forest with the source's domain name, NetBIOS name and functional levels, its
+Administrator password the target password, LDAPS reached through Systems Manager at the port of `[target] url`.
+`check`, `clone` and `diff` then read and write it as any server, through that tunnel. Verified by hand on Windows
+Server 2019 (the user data pasted into the console, see [design/ec2-lab.md](design/ec2-lab.md)); `lab up` itself is
+new and not yet run on AWS.
 
 ```toml
 [target]
-url = "ldaps://localhost:12636"         # where the port forwarding listens
+url = "ldaps://localhost:12636"         # where the tunnel listens
 bind_dn = "CN=Administrator,CN=Users,DC=ad,DC=example,DC=com"
 insecure_skip_verify = true             # the domain controller's certificate is self-signed
 [target.lab]
@@ -298,20 +299,35 @@ subnet = "subnet-0123456789abcdef0"     # its instances must reach Systems Manag
 instance_profile = "ldap-cronin-lab"    # a role with AmazonSSMManagedInstanceCore
 # instance_type = "t3.large"
 # windows = "2022"                      # 2016, 2019, 2022 or 2025
-# password_parameter = "/ldap-cronin/ldap-cronin-ad/admin-password"
 # ldaps_name = "ldap.test.example.com"  # one more DNS name of its LDAPS certificate (the DC's and the domain's are in it)
 # ldap_port = 13389                      # LDAP (389) forwarded there too, for clients that do not use LDAPS
 # recycle_bin = true                     # the AD Recycle Bin enabled (forest level 2008 R2 or higher)
 ```
 
 ```sh
-ldap-cronin lab up --config config.toml --dry-run
+export LDAP_CRONIN_TARGET_PASSWORD='...'          # the Administrator's: Windows' complexity rule applies
+ldap-cronin lab up --config config.toml --dry-run # the user data (no password in it) and the aws commands, nothing run
+ldap-cronin lab up --config config.toml           # about 15 minutes; it ends with the tunnel commands
+aws ssm start-session --target i-... --document-name AWS-StartPortForwardingSession \
+  --parameters 'portNumber=636,localPortNumber=12636'   # in a terminal of its own, as lab up printed it
+ldap-cronin check -config config.toml
+ldap-cronin clone -config config.toml
+ldap-cronin lab reset --config config.toml -y     # terminates the lab's instance
 ```
 
-- The password is never in the user data nor in an argument: `lab up` will put it into a SecureString parameter on
-  standard input, the instance reads it, and `lab up` deletes it once the domain is ready.
-- The target password must pass Windows' complexity rule (at least 8 characters, three of upper case, lower case,
-  digits and symbols): it becomes the Administrator's before the domain exists.
+- **lab up** finds the lab's instance by its tag (`ldap-cronin.lab`, terminated ones left out): a running one is
+  used, a stopped one started, two are refused. Else it takes the latest image of `windows`, launches the
+  instance (IMDSv2, the lab's tags on it and its volume) with the user data that makes it the domain controller,
+  and asks it through Systems Manager every 30 seconds until its user data says READY, showing the last line of its
+  `C:\ldap-cronin\setup.log` meanwhile (45 minutes at most). It ends with the tunnel commands; the tunnels are
+  yours to run, as long as the lab is used.
+- **The password is in the user data**, written there by the user's choice, for a lab to test with: it is never an
+  argument (the user data goes to `aws` in a file only its owner reads, removed right after) nor in a log or the
+  dry-run (which shows `<the target password>`), but the instance's user data keeps it, which its metadata and
+  `ec2:DescribeInstanceAttribute` read. It must pass Windows' complexity rule (at least 8 characters, three of
+  upper case, lower case, digits and symbols): it becomes the Administrator's before the domain exists, so lab up
+  refuses another before AWS is asked anything.
+- **lab reset --config** terminates the instances of the lab's tag, after naming them (`-y` skips the question).
 - LDAP (389) as well, for a client that does not use LDAPS: `ldap_port` forwards it to that local port. Windows
   Server 2019 takes a simple bind there without signing by default, and StartTLS (measured); the user data sets
   `LDAPServerIntegrity` to 1 (signing not required) for 2025, which requires it for a new forest (unverified).
@@ -320,9 +336,9 @@ ldap-cronin lab up --config config.toml --dry-run
   Server of today cannot make (below 2008) or that needs a newer one (2025's, on `windows = "2022"`) is refused
   before anything is made; a dump taken before the levels were carried leaves the highest the instance makes.
 - `recycle_bin = true` enables the AD Recycle Bin once the domain is up (it cannot be turned off again).
-- `native` and `image` are refused (Windows lets no one choose a domain SID or an objectGUID). `check` and `clone`
-  refuse an EC2 lab for now (`check -no-target` reads the source alone).
-- What it needs and what is still unverified: [design/ec2-lab.md](design/ec2-lab.md).
+- `native` and `image` are refused (Windows lets no one choose a domain SID or an objectGUID); there are no
+  snapshots of an EC2 lab.
+- What it needs (IAM) and what is still unverified: [design/ec2-lab.md](design/ec2-lab.md).
 
 ## Using the offline package
 

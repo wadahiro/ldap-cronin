@@ -57,19 +57,18 @@ func TestMergeLikeLetsExplicitFlagsWin(t *testing.T) {
 	}
 }
 
-// lab up --dry-run of an EC2 lab shows the user data and each aws command with why, and what goes on standard
-// input described, never given.
+// lab up --dry-run of an EC2 lab shows the user data and each aws command with why: the password in the user data
+// is a placeholder, never the target password.
 func TestWriteEC2PlanShowsTheUserDataAndTheCommands(t *testing.T) {
 	e := lab.EC2Lab{Name: "ldap-cronin-ad", Domain: "ad.example.com", NetBIOS: "AD", Region: "ap-northeast-1", Subnet: "subnet-0123",
-		InstanceProfile: "p", PasswordParameter: "/ldap-cronin/ldap-cronin-ad/admin-password", LocalPort: 12636}
+		InstanceProfile: "p", LocalPort: 12636}
 	var out bytes.Buffer
 	if err := writeEC2Plan(&out, e); err != nil {
 		t.Fatal(err)
 	}
 	text := out.String()
 	for _, want := range []string{"dry run: nothing is done on AWS", "==> The user data of the instance\n<powershell>", "</powershell>\n<persist>true</persist>\n",
-		"\n# 2. the Administrator password", "\naws ssm put-parameter --region ap-northeast-1 --cli-input-json file:///dev/stdin\n",
-		"#    standard input: {\"Name\": \"/ldap-cronin/ldap-cronin-ad/admin-password\", \"Type\": \"SecureString\"",
+		"$Password = '<the target password>'", "\n# 1. the lab's instance, if there is one",
 		"\n# 7. LDAPS of the instance at localhost:12636"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("the plan lacks %q:\n%s", want, text)
@@ -77,9 +76,9 @@ func TestWriteEC2PlanShowsTheUserDataAndTheCommands(t *testing.T) {
 	}
 }
 
-// clone and check do not take an EC2 lab yet.
+// An EC2 lab is no docker lab: clone and check write and read it as any server, through its tunnel.
 func TestLabOfRefusesAnEC2Lab(t *testing.T) {
-	if _, err := labOf(&config.Lab{Platform: config.PlatformEC2}, io.Discard, io.Discard); err == nil || !strings.Contains(err.Error(), "--dry-run") {
+	if _, err := labOf(&config.Lab{Platform: config.PlatformEC2}, io.Discard, io.Discard); err == nil || !strings.Contains(err.Error(), "tunnel") {
 		t.Fatalf("%v", err)
 	}
 }

@@ -24,7 +24,7 @@ func TestEC2LabIsLikeTheSource(t *testing.T) {
 		t.Fatal(err)
 	}
 	if e.Name != "ldap-cronin-ad-dev2" || e.Domain != "ad.example.com" || e.NetBIOS != "AD" || e.LocalPort != 636 || e.MarkerAttribute != "adminDisplayName" ||
-		e.PasswordParameter != "/ldap-cronin/ldap-cronin-ad-dev2/admin-password" || e.Subnet != "subnet-0123" {
+		e.Subnet != "subnet-0123" {
 		t.Fatalf("%+v", e)
 	}
 	for _, asked := range w.asked {

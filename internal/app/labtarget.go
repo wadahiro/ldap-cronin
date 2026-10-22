@@ -191,7 +191,7 @@ func (s *Session) EC2Lab(ctx context.Context) (lab.EC2Lab, error) {
 	e := lab.EC2Lab{
 		Name: name, Domain: settings.Domain, NetBIOS: netbios,
 		Region: lt.Region, Subnet: lt.Subnet, InstanceType: lt.InstanceType, Windows: lt.Windows, InstanceProfile: lt.InstanceProfile,
-		PasswordParameter: lt.PasswordParameter, LocalPort: port.LDAPSPort, LDAPSName: lt.LDAPSName, LDAPPort: lt.LDAPPort, RecycleBin: lt.RecycleBin,
+		LocalPort: port.LDAPSPort, LDAPSName: lt.LDAPSName, LDAPPort: lt.LDAPPort, RecycleBin: lt.RecycleBin,
 	}
 	// The forest is made with the source's functional levels, which its root DSE says (a dump taken before they were
 	// carried does not: the highest the instance's Windows Server makes is taken then).
@@ -200,9 +200,6 @@ func (s *Session) EC2Lab(ctx context.Context) (lab.EC2Lab, error) {
 	} else if root != nil {
 		e.ForestLevel, _ = strconv.Atoi(strings.TrimSpace(firstValue(root.Values("forestFunctionality"))))
 		e.DomainLevel, _ = strconv.Atoi(strings.TrimSpace(firstValue(root.Values("domainFunctionality"))))
-	}
-	if e.PasswordParameter == "" {
-		e.PasswordParameter = "/ldap-cronin/" + name + "/admin-password"
 	}
 	if mode, attr, err := s.Cfg.MappingFor(s.Job.Profile); err != nil {
 		return lab.EC2Lab{}, err
@@ -217,4 +214,29 @@ func firstValue(v []string) string {
 		return ""
 	}
 	return v[0]
+}
+
+// EC2Up makes the EC2 lab [target.lab] describes (lab up --config): the instance of its tag is used, or started, or
+// made with the user data that makes it the domain controller, the target password its Administrator's; then it
+// waits for the domain controller. It returns the lab with its instance, for the tunnels.
+func (s *Session) EC2Up(ctx context.Context, r lab.EC2Run) (lab.EC2Lab, error) {
+	e, err := s.EC2Lab(ctx)
+	if err != nil {
+		return e, err
+	}
+	password, err := s.secrets.TargetBind()
+	if err != nil {
+		return e, err
+	}
+	id, err := e.Up(ctx, r, password)
+	return e.WithInstance(id), err
+}
+
+// EC2Reset terminates the instances of the EC2 lab [target.lab] describes (lab reset --config), after confirm.
+func (s *Session) EC2Reset(ctx context.Context, r lab.EC2Run, confirm func(string) bool) error {
+	e, err := s.EC2Lab(ctx)
+	if err != nil {
+		return err
+	}
+	return e.Reset(ctx, r, confirm)
 }

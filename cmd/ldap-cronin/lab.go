@@ -62,8 +62,9 @@ Flags (up):
                             source's schema extensions; for a generic server an OpenLDAP lab with the source's naming context.
                             Its ports are those of [target] url, its administrator password the target password. A stopped
                             lab is started; run again, it adds what the source's schema has gained. Then check and clone.
-                            With [target.lab] platform = "ec2", a Windows Server domain controller on Amazon EC2 (in progress)
-  --dry-run                 With --config of an EC2 lab: print the instance's user data and the aws commands, run nothing
+                            With [target.lab] platform = "ec2", a Windows Server domain controller on Amazon EC2 (the aws command)
+  --dry-run                 With --config of an EC2 lab: print the instance's user data (the password left out) and
+                            the aws commands, run nothing. Without it, lab up runs them and prints the tunnel commands
   --domain-sid <sid>        Create the domain with this SID (S-1-5-21-a-b-c)
   --domain-guid <guid>      Create the domain with this GUID
   --with-sample-source      Also start a disposable clone source loaded with sample data, for checking that things work
@@ -74,6 +75,7 @@ Flags (up):
   --skip-verify             Skip verifying SHA256SUMS
 
 Flags (reset):
+  --config <file>           An EC2 lab ([target.lab] platform = "ec2"): terminate its instances, by their tag
   -y, --yes                 Do not ask for confirmation
   --snapshots               Also delete snapshots
 
@@ -160,6 +162,7 @@ func runLab(ctx context.Context, args []string, out, errW io.Writer) error {
 		fs.BoolVar(&up.SkipVerify, "skip-verify", false, "")
 		fs.BoolVar(&dryRun, "dry-run", false, "")
 	case "reset":
+		fs.StringVar(&cfgPath, "config", "", "")
 		fs.BoolVar(&reset.Yes, "y", false, "")
 		fs.BoolVar(&reset.Yes, "yes", false, "")
 		fs.BoolVar(&reset.Snapshots, "snapshots", false, "")
@@ -197,6 +200,9 @@ func runLab(ctx context.Context, args []string, out, errW io.Writer) error {
 	}
 	if dryRun {
 		return errors.New("--dry-run is for lab up --config of an EC2 lab ([target.lab] platform = \"ec2\")")
+	}
+	if sub == "reset" && cfgPath != "" {
+		return labResetFromConfig(ctx, cfgPath, reset, out)
 	}
 	l, err := newLab(c, out, errW)
 	if err != nil {
@@ -315,10 +321,19 @@ func labUpFromConfig(ctx context.Context, fs *flag.FlagSet, c labCommon, cfgPath
 		if err != nil {
 			return err
 		}
-		if !dryRun {
-			return fmt.Errorf("lab up of an EC2 lab is not there yet: lab up --config %s --dry-run shows the user data and the aws commands it will run", cfgPath)
+		if dryRun {
+			return writeEC2Plan(out, e)
 		}
-		return writeEC2Plan(out, e)
+		e, err = s.EC2Up(ctx, lab.EC2Run{AWS: lab.ExecAWS{}, Log: out, Sleep: time.Sleep})
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "\nThe lab %s (%s) is the domain controller of %s. Reach it from this machine, each in a terminal of its own:\n", e.Name, e.Instance(), e.Domain)
+		for _, t := range e.TunnelCommands() {
+			fmt.Fprintf(out, "  %s\n    # %s\n", t.Shell(), t.Why)
+		}
+		fmt.Fprintf(out, "Next: ldap-cronin check -config %s, then ldap-cronin clone -config %s. Remove it: ldap-cronin lab reset --config %s\n", cfgPath, cfgPath, cfgPath)
+		return nil
 	}
 	if dryRun {
 		return errors.New("--dry-run is for an EC2 lab ([target.lab] platform = \"ec2\"): a docker lab is made on this machine, nothing to show first")
@@ -334,10 +349,28 @@ func labUpFromConfig(ctx context.Context, fs *flag.FlagSet, c labCommon, cfgPath
 	return nil
 }
 
+// labResetFromConfig is lab reset --config of an EC2 lab: its instances, by its tag, are terminated after a
+// confirmation (-y skips it). A docker lab is reset as before, by --prefix and --instance.
+func labResetFromConfig(ctx context.Context, cfgPath string, reset lab.ResetOptions, out io.Writer) error {
+	s, err := openSession(ctx, cfgPath)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	if !s.Cfg.Target.Lab.OnEC2() {
+		return errors.New("lab reset --config is for an EC2 lab ([target.lab] platform = \"ec2\"); a docker lab is reset with lab reset (--prefix, --instance)")
+	}
+	ask := confirm
+	if reset.Yes {
+		ask = nil
+	}
+	return s.EC2Reset(ctx, lab.EC2Run{AWS: lab.ExecAWS{}, Log: out}, ask)
+}
+
 // writeEC2Plan is lab up --dry-run of an EC2 lab: what it will do on AWS, done there by no one. The password is
 // never in it: the user data reads it from the parameter, which the first command writes from standard input.
 func writeEC2Plan(out io.Writer, e lab.EC2Lab) error {
-	userData, err := e.UserData()
+	userData, err := e.UserData(lab.PasswordPlaceholder)
 	if err != nil {
 		return err
 	}

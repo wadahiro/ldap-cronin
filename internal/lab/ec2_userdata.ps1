@@ -1,17 +1,17 @@
 <powershell>
 # ldap-cronin lab on EC2: makes this Windows Server the only domain controller of a new forest like the source of
 # the configuration, for tests. It runs at every boot (persist) and stops at once when it has finished:
-#   1. first boot: the local Administrator gets the password of the Systems Manager parameter, AD DS is installed
+#   1. first boot: the local Administrator gets the password below, AD DS is installed
 #      and the forest created; the server restarts;
 #   2. next boot, as the domain's Administrator: a self-signed LDAPS certificate (the Samba lab's is self-signed
 #      too), a password policy that takes the fixed password of the cloned users, an index on the marker attribute;
 #      then C:\ldap-cronin\ready, which lab up --config waits for.
-# The password is never in this script: it is read from the parameter, which lab up deletes once the lab is ready.
+# The password is written below, for a lab to test with (the user's choice): it stays in the instance's user data,
+# which its metadata and ec2:DescribeInstanceAttribute read. The transcript (setup.log) never holds it.
 $ErrorActionPreference = 'Stop'
 $Domain = '{{.Domain}}'
 $NetBIOS = '{{.NetBIOS}}'
-$Parameter = '{{.PasswordParameter}}'
-$Region = '{{.Region}}'
+$Password = '{{.Password}}'
 $Marker = '{{.MarkerAttribute}}'
 $ExtraName = '{{.LDAPSName}}'   # one more DNS name of the LDAPS certificate (empty: none)
 $PlainLDAP = '{{if .LDAPPort}}yes{{end}}'   # clients bind over LDAP (389) without signing too (empty: as Windows has it)
@@ -23,8 +23,7 @@ New-Item -ItemType Directory -Force -Path $Dir | Out-Null
 if (Test-Path "$Dir\ready") { exit 0 }
 Start-Transcript -Append -Path "$Dir\setup.log"
 try {
-    $password = (Get-SSMParameter -Name $Parameter -WithDecryption $true -Region $Region).Value
-    $secure = ConvertTo-SecureString $password -AsPlainText -Force
+    $secure = ConvertTo-SecureString $Password -AsPlainText -Force
     if ((Get-CimInstance Win32_ComputerSystem).DomainRole -lt 4) {
         Write-Output "creating the forest $Domain ($NetBIOS)"
         Set-LocalUser -Name Administrator -Password $secure

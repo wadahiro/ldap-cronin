@@ -78,9 +78,6 @@ type Lab struct {
 	InstanceType    string `toml:"instance_type"`    // default t3.large
 	Windows         string `toml:"windows"`          // Windows Server 2016, 2019, 2022 (default) or 2025
 	InstanceProfile string `toml:"instance_profile"` // with AmazonSSMManagedInstanceCore
-	// PasswordParameter is the Systems Manager parameter (SecureString) the target password goes through to the
-	// instance, which makes it its Administrator's: never in the user data. Default /ldap-cronin/<lab>/admin-password.
-	PasswordParameter string `toml:"password_parameter"`
 	// LDAPSName is one more DNS name of the lab's LDAPS certificate (its DC's and its domain's are always there).
 	LDAPSName string `toml:"ldaps_name"`
 	// LDAPPort (EC2) forwards the instance's LDAP (389) to this local port too, and has the instance take a simple
@@ -321,7 +318,7 @@ func (c *Config) validate() error {
 	}
 	if l := c.Target.Lab; l != nil {
 		ec2 := map[string]string{"region": l.Region, "subnet": l.Subnet, "instance_type": l.InstanceType, "windows": l.Windows,
-			"instance_profile": l.InstanceProfile, "password_parameter": l.PasswordParameter, "ldaps_name": l.LDAPSName}
+			"instance_profile": l.InstanceProfile, "ldaps_name": l.LDAPSName}
 		switch l.Platform {
 		case "", PlatformDocker:
 			for key, v := range ec2 {
