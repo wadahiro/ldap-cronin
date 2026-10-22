@@ -316,7 +316,7 @@ instance_profile = "ldap-cronin-lab"    # a role with AmazonSSMManagedInstanceCo
 ```sh
 export LDAP_CRONIN_TARGET_PASSWORD='...'          # the Administrator's: Windows' complexity rule applies
 ldap-cronin lab up --config config.toml --dry-run # the user data (no password in it) and the aws commands, nothing run
-ldap-cronin lab up --config config.toml           # about 15 minutes; it ends with the tunnel commands
+ldap-cronin lab up --config config.toml           # about 20 minutes; it ends with the tunnel commands
 aws ssm start-session --target i-... --document-name AWS-StartPortForwardingSession \
   --parameters 'portNumber=636,localPortNumber=12636'   # in a terminal of its own, as lab up printed it
 ldap-cronin check -config config.toml

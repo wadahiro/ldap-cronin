@@ -3,9 +3,11 @@
 # the configuration, for tests. It runs at every boot (persist) and stops at once when it has finished:
 #   1. first boot: the local Administrator gets the password below, AD DS is installed
 #      and the forest created; the server restarts;
-#   2. next boot, as the domain's Administrator: a self-signed LDAPS certificate (the Samba lab's is self-signed
-#      too), a password policy that takes the fixed password of the cloned users, an index on the marker attribute;
-#      then C:\ldap-cronin\ready, which lab up --config waits for.
+#   2. next boot: a self-signed LDAPS certificate (the Samba lab's is self-signed too), trusted by the server
+#      itself; the server restarts for NTDS to take it;
+#   3. next boot, as the domain's Administrator: the Recycle Bin when asked, a password policy that takes the
+#      fixed password of the cloned users, an index on the marker attribute; then C:\ldap-cronin\ready, which
+#      lab up --config waits for.
 # The password is written below, for a lab to test with (the user's choice): it stays in the instance's user data,
 # which its metadata and ec2:DescribeInstanceAttribute read. The transcript (setup.log) never holds it.
 $ErrorActionPreference = 'Stop'
@@ -63,8 +65,11 @@ try {
         Write-Output "trusting the LDAPS certificate ($($cert.Thumbprint))"
         $root = New-Object System.Security.Cryptography.X509Certificates.X509Store('Root', 'LocalMachine')
         $root.Open('ReadWrite'); $root.Add($cert); $root.Close()
-        Restart-Service NTDS -Force
-        Wait-AD
+        # NTDS takes the certificate when it starts. It is not restarted alone: after that, every AD cmdlet of this
+        # process failed ("The operation failed because of a bad parameter") while a new session took them. The
+        # computer restarts instead, and this script goes on at the next boot, the certificate already trusted.
+        Restart-Computer -Force
+        exit 0
     }
     if ($PlainLDAP) {
         # Signing not required (1), so a simple bind on 389 is taken, as Windows Server 2019 and 2022 do by default

@@ -117,7 +117,7 @@ func (e EC2Lab) Up(ctx context.Context, r EC2Run, password string) (string, erro
 		if id, err = e.run(ctx, r, ami, userData); err != nil {
 			return "", err
 		}
-		fmt.Fprintf(r.Log, "==> Instance %s: it makes itself the domain controller of %s (about 15 minutes, a restart included)\n", id, e.Domain)
+		fmt.Fprintf(r.Log, "==> Instance %s: it makes itself the domain controller of %s (about 20 minutes, two restarts included)\n", id, e.Domain)
 	}
 	if _, err := r.AWS.Run(ctx, e.awsArgs("ec2", "wait", "instance-running", "--instance-ids", id)...); err != nil {
 		return id, err

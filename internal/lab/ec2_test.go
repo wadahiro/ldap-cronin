@@ -24,8 +24,8 @@ func TestEC2UserDataMakesTheSourcesDomain(t *testing.T) {
 			t.Errorf("the user data lacks %q", want)
 		}
 	}
-	if !strings.Contains(ud, "Restart-Service NTDS -Force\n        Wait-AD") {
-		t.Error("after NTDS restarts, Active Directory's Web Services are waited for: the Recycle Bin and the policy ask them")
+	if strings.Contains(ud, "Restart-Service NTDS") || strings.Count(ud, "Restart-Computer -Force") != 2 {
+		t.Error("the certificate is taken by a restart of the computer, not of NTDS, after which this process' AD cmdlets fail")
 	}
 	if strings.Contains(ud, "{{") || strings.Contains(ud, "Get-SSMParameter") {
 		t.Errorf("a field is left unfilled, or the parameter is read:\n%s", ud)

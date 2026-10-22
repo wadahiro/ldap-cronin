@@ -265,7 +265,7 @@ func (e EC2Lab) UpCommands() []AWSCommand {
 		{Args: e.findArgs(), Why: "the lab's instance, if there is one (by its tag): a running one is used, a stopped one started"},
 		{Args: e.amiArgs(), Why: "the latest Windows Server " + e.windows() + " image"},
 		{Args: e.runArgs("<ami>", "<the user data above, in a file only its owner reads, removed right after>"),
-			Why: "the instance; its user data makes it the domain controller of " + e.Domain + " (about 15 minutes)"},
+			Why: "the instance; its user data makes it the domain controller of " + e.Domain + " (about 20 minutes)"},
 		{Args: e.awsArgs("ec2", "wait", "instance-running", "--instance-ids", "<instance>"), Why: "until it runs"},
 		{Args: e.pollArgs("<instance>"), Why: "every 30 seconds until it says READY (the last line of its setup.log shown meanwhile)"},
 		{Args: e.invocationArgs("<command>", "<instance>"), Why: "the answer of the command above"},
