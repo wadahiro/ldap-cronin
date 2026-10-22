@@ -14,6 +14,7 @@ $Parameter = '{{.PasswordParameter}}'
 $Region = '{{.Region}}'
 $Marker = '{{.MarkerAttribute}}'
 $ExtraName = '{{.LDAPSName}}'   # one more DNS name of the LDAPS certificate (empty: none)
+$PlainLDAP = '{{if .LDAPPort}}yes{{end}}'   # clients bind over LDAP (389) without signing too (empty: as Windows has it)
 $Dir = 'C:\ldap-cronin'
 New-Item -ItemType Directory -Force -Path $Dir | Out-Null
 if (Test-Path "$Dir\ready") { exit 0 }
@@ -53,6 +54,15 @@ try {
         $root.Open('ReadWrite'); $root.Add($cert); $root.Close()
         Restart-Service NTDS -Force
         Start-Sleep -Seconds 20
+    }
+    if ($PlainLDAP) {
+        # Signing not required (1), so a simple bind on 389 is taken, as Windows Server 2019 and 2022 do by default
+        # (measured on 2019); 2025 requires signing for a new forest.
+        $ntds = 'HKLM:\SYSTEM\CurrentControlSet\Services\NTDS\Parameters'
+        if ((Get-ItemProperty -Path $ntds -Name LDAPServerIntegrity -ErrorAction SilentlyContinue).LDAPServerIntegrity -ne 1) {
+            Write-Output 'LDAP without signing on 389'
+            Set-ItemProperty -Path $ntds -Name LDAPServerIntegrity -Value 1 -Type DWord
+        }
     }
     Write-Output 'password policy for the fixed password of the cloned users'
     Set-ADDefaultDomainPasswordPolicy -Identity $Domain -Credential $cred -ComplexityEnabled $false -MinPasswordLength 1 `

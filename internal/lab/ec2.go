@@ -35,6 +35,9 @@ type EC2Lab struct {
 	// LDAPSName, when set, is one more DNS name of the LDAPS certificate, besides the DC's and the domain's: the
 	// name a client verifying the certificate connects by.
 	LDAPSName string
+	// LDAPPort, when set, is where LDAP (389) of the instance is forwarded too, for clients that do not use LDAPS;
+	// the instance then takes a simple bind there without signing.
+	LDAPPort int
 }
 
 // AWSCommand is one aws command lab up runs; Stdin, when set, says what it is given on standard input (never shown).
@@ -77,6 +80,9 @@ func (e EC2Lab) Check() error {
 	}
 	if e.LocalPort <= 0 {
 		return fmt.Errorf("[target] url needs a port for the EC2 lab's port forwarding")
+	}
+	if e.LDAPPort < 0 || e.LDAPPort > 65535 || e.LDAPPort != 0 && e.LDAPPort == e.LocalPort {
+		return fmt.Errorf("ldap_port %d: a local port other than that of [target] url (%d)", e.LDAPPort, e.LocalPort)
 	}
 	return nil
 }
@@ -121,7 +127,7 @@ func (e EC2Lab) tags() string {
 // what an earlier command returned.
 func (e EC2Lab) UpCommands() []AWSCommand {
 	region := []string{"--region", e.Region}
-	return []AWSCommand{
+	cmds := []AWSCommand{
 		{Args: append([]string{"ssm", "get-parameter"}, append(region, "--name", e.AMIParameter(), "--query", "Parameter.Value", "--output", "text")...),
 			Why: "the latest Windows Server " + e.windows() + " image"},
 		{Args: append([]string{"ssm", "put-parameter"}, append(region, "--cli-input-json", "file:///dev/stdin")...),
@@ -146,6 +152,13 @@ func (e EC2Lab) UpCommands() []AWSCommand {
 			"--parameters", "portNumber=636,localPortNumber="+strconv.Itoa(e.LocalPort))...),
 			Why: "LDAPS of the instance at localhost:" + strconv.Itoa(e.LocalPort) + " ([target] url), while lab up runs (session-manager-plugin)"},
 	}
+	if e.LDAPPort > 0 {
+		cmds = append(cmds, AWSCommand{Args: append([]string{"ssm", "start-session"}, append(region, "--target", "<instance>",
+			"--document-name", "AWS-StartPortForwardingSession",
+			"--parameters", "portNumber=389,localPortNumber="+strconv.Itoa(e.LDAPPort))...),
+			Why: "LDAP of the instance at localhost:" + strconv.Itoa(e.LDAPPort) + " ([target.lab] ldap_port), for clients that do not use LDAPS"})
+	}
+	return cmds
 }
 
 // Shell writes a command as one could type it.

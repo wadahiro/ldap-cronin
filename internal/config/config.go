@@ -83,6 +83,9 @@ type Lab struct {
 	PasswordParameter string `toml:"password_parameter"`
 	// LDAPSName is one more DNS name of the lab's LDAPS certificate (its DC's and its domain's are always there).
 	LDAPSName string `toml:"ldaps_name"`
+	// LDAPPort (EC2) forwards the instance's LDAP (389) to this local port too, and has the instance take a simple
+	// bind there without signing: for clients that do not use LDAPS (clone itself does).
+	LDAPPort int `toml:"ldap_port"`
 }
 
 // Platforms of [target.lab].
@@ -323,6 +326,9 @@ func (c *Config) validate() error {
 				if v != "" {
 					return fmt.Errorf("[target.lab] %s is for platform = %q", key, PlatformEC2)
 				}
+			}
+			if l.LDAPPort != 0 {
+				return fmt.Errorf("[target.lab] ldap_port is for platform = %q (a docker lab publishes LDAP on its own port)", PlatformEC2)
 			}
 		case PlatformEC2:
 			if l.Native {

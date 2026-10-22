@@ -300,6 +300,7 @@ instance_profile = "ldap-cronin-lab"    # a role with AmazonSSMManagedInstanceCo
 # windows = "2022"                      # 2016, 2019, 2022 or 2025
 # password_parameter = "/ldap-cronin/ldap-cronin-ad/admin-password"
 # ldaps_name = "ldap.test.example.com"  # one more DNS name of its LDAPS certificate (the DC's and the domain's are in it)
+# ldap_port = 13389                      # LDAP (389) forwarded there too, for clients that do not use LDAPS
 ```
 
 ```sh
@@ -310,6 +311,9 @@ ldap-cronin lab up --config config.toml --dry-run
   standard input, the instance reads it, and `lab up` deletes it once the domain is ready.
 - The target password must pass Windows' complexity rule (at least 8 characters, three of upper case, lower case,
   digits and symbols): it becomes the Administrator's before the domain exists.
+- LDAP (389) as well, for a client that does not use LDAPS: `ldap_port` forwards it to that local port. Windows
+  Server 2019 takes a simple bind there without signing by default, and StartTLS (measured); the user data sets
+  `LDAPServerIntegrity` to 1 (signing not required) for 2025, which requires it for a new forest (unverified).
 - `native` and `image` are refused (Windows lets no one choose a domain SID or an objectGUID). `check` and `clone`
   refuse an EC2 lab for now (`check -no-target` reads the source alone).
 - What it needs and what is still unverified: [design/ec2-lab.md](design/ec2-lab.md).

@@ -81,6 +81,7 @@ func TestParseRejectsInvalid(t *testing.T) {
 		"EC2 without a subnet": strings.Replace(valid, "[scope]", "[target.lab]\nplatform = \"ec2\"\nregion = \"r\"\ninstance_profile = \"p\"\n[scope]", 1),
 		"EC2 native":           strings.Replace(valid, "[scope]", "[target.lab]\n"+ec2Lab+"native = true\n[scope]", 1),
 		"EC2 with an image":    strings.Replace(valid, "[scope]", "[target.lab]\n"+ec2Lab+"image = \"x\"\n[scope]", 1),
+		"ldap_port on docker":  strings.Replace(valid, "[scope]", "[target.lab]\nldap_port = 13389\n[scope]", 1),
 		"EC2 unknown windows":  strings.Replace(valid, "[scope]", "[target.lab]\n"+ec2Lab+"windows = \"2012\"\n[scope]", 1),
 		"configuration_refs without references = clone": strings.Replace(valid, "[scope]",
 			"[scope]\nreferences = \"existing\"\nconfiguration_refs = \"clone\"", 1),

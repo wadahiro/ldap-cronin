@@ -27,10 +27,21 @@ func TestEC2UserDataMakesTheSourcesDomainAndReadsThePasswordFromTheParameter(t *
 	if strings.Contains(ud, "{{") {
 		t.Errorf("a field is left unfilled:\n%s", ud)
 	}
+	if !strings.Contains(ud, "$PlainLDAP = ''") {
+		t.Error("without ldap_port the signing requirement is Windows' own")
+	}
 	if !strings.Contains(ud, "$ExtraName = ''") {
 		t.Error("without ldaps_name the certificate has no other name")
 	}
 	e := testEC2Lab()
+	e.LDAPPort = 13389
+	if ud, err := e.UserData(); err != nil || !strings.Contains(ud, "$PlainLDAP = 'yes'") || !strings.Contains(ud, "LDAPServerIntegrity -Value 1") {
+		t.Errorf("ldap_port: %v", err)
+	}
+	if last := e.UpCommands()[len(e.UpCommands())-1].Shell(); !strings.Contains(last, "'portNumber=389,localPortNumber=13389'") {
+		t.Errorf("ldap_port forwarding: %s", last)
+	}
+	e.LDAPPort = 0
 	e.LDAPSName = "ldap.test.example.com"
 	if ud, err := e.UserData(); err != nil || !strings.Contains(ud, "$ExtraName = 'ldap.test.example.com'") {
 		t.Errorf("ldaps_name: %v", err)
@@ -48,6 +59,7 @@ func TestEC2LabRefusesWhatTheScriptCannotTake(t *testing.T) {
 		"no port":                  func(e *EC2Lab) { e.LocalPort = 0 },
 		"a quote in ldaps_name":    func(e *EC2Lab) { e.LDAPSName = "ldap.example.com'; whoami; '" },
 		"a single-label name":      func(e *EC2Lab) { e.LDAPSName = "ldap" },
+		"ldap_port the LDAPS one":  func(e *EC2Lab) { e.LDAPPort = e.LocalPort },
 		"a brace in the name":      func(e *EC2Lab) { e.Name = "ldap-cronin-ad-x}]" },
 	} {
 		e := testEC2Lab()
