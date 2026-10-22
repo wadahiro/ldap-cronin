@@ -1,0 +1,172 @@
+package plan
+
+import (
+	"context"
+	"sort"
+	"strings"
+
+	"github.com/wadahiro/ldap-cronin/internal/directory"
+	"github.com/wadahiro/ldap-cronin/internal/dn"
+	"github.com/wadahiro/ldap-cronin/internal/profile"
+)
+
+// A holder is an entry outside the scope that holds entries of it in a forward link: a group of another OU, or a
+// built-in group (Domain Admins), whose member names a user of the scope. The membership is the group's value, so
+// walking the scope never meets it; the entries' back links (memberOf) name the holders. clone gives a holder the
+// values that name entries of the scope, and nothing else of its own; diff compares those values.
+type Holder struct {
+	DN string
+	// Attrs are the forward links that hold entries of the scope (member, ...), those the group kind's allow list
+	// names.
+	Attrs []string
+	// Kind is the holder's kind, a group: clone creates it as a referenced entry is, without its own references,
+	// unless Builtin or Existing.
+	Kind *Kind
+	// Builtin is a built-in group: never created, the target's own (of the same domain) is given the values.
+	Builtin bool
+	// Existing is given the values only if the target holds it ([scope] outside_groups = "existing").
+	Existing bool
+	// Why, when set, is why the holder is not given its values (one of the Why reasons, or WhyHolder...).
+	Why string
+}
+
+// Reasons a holder is not given its values.
+const (
+	WhyHolderSkipped   = "is a group outside the scope ([scope] outside_groups = \"skip\")"
+	WhyBuiltinSkipped  = "is a built-in group ([scope] builtin_groups = \"skip\")"
+	WhyHolderNotAGroup = "is not a group: only groups are given the entries of the scope they hold"
+	WhyHolderConfig    = "is in the configuration partition"
+	WhyHolderOtherNC   = "is in another naming context (another domain of the forest)"
+	WhyHolderMissing   = "is missing on the source (a dump taken before groups outside its base DN were carried: dump again)"
+)
+
+// HolderLinks are the back links whose values name holders (memberOf), with the forward link of each, for those
+// forward links the group kind's allow list names; empty when the schema pairs none or groups are not cloned.
+func (p *Plan) HolderLinks() map[string]string {
+	group, ok := p.job.Kind(profile.KindGroup)
+	if !ok {
+		return nil
+	}
+	allowed := profile.Set(group.Attrs)
+	out := map[string]string{}
+	for back, forward := range p.holds {
+		if allowed[strings.ToLower(forward)] && p.IsRef(forward) {
+			out[back] = forward
+		}
+	}
+	return out
+}
+
+// Holders finds the holders of the scope's entries, sorted by DN, and decides what is done with each. It walks the
+// entries of every kind that have a back link value, reading only those.
+func (p *Plan) Holders(ctx context.Context) ([]Holder, error) {
+	links := p.HolderLinks()
+	if len(links) == 0 {
+		return nil, nil
+	}
+	backs := make([]string, 0, len(links))
+	for b := range links {
+		backs = append(backs, b)
+	}
+	sort.Strings(backs)
+	found := map[string]*Holder{} // normalized DN
+	for i := range p.job.Kinds {
+		k := &p.job.Kinds[i]
+		err := p.src.Walk(ctx, p.job.BaseDN, refsFilter(k, backs), backs, func(e directory.Entry) error {
+			for _, b := range backs {
+				for _, v := range e.Values(b) {
+					d := dn.RefDN(v)
+					if p.Scope.Has(d) {
+						continue // a value of the scope: written with the entry that holds it
+					}
+					key := dn.Normalize(d)
+					h := found[key]
+					if h == nil {
+						h = &Holder{DN: d}
+						found[key] = h
+					}
+					if !containsFold(h.Attrs, links[b]) {
+						h.Attrs = append(h.Attrs, links[b])
+					}
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+	out := make([]Holder, 0, len(found))
+	for _, h := range found {
+		if err := p.classifyHolder(ctx, h); err != nil {
+			return nil, err
+		}
+		sort.Strings(h.Attrs)
+		out = append(out, *h)
+	}
+	sort.Slice(out, func(i, j int) bool { return dn.Normalize(out[i].DN) < dn.Normalize(out[j].DN) })
+	return out, nil
+}
+
+func (p *Plan) classifyHolder(ctx context.Context, h *Holder) error {
+	group, _ := p.job.Kind(profile.KindGroup)
+	if p.InConfiguration(h.DN) {
+		h.Why = WhyHolderConfig
+		return nil
+	}
+	if !dn.IsDescendant(h.DN, p.Root) {
+		h.Why = WhyHolderOtherNC
+		return nil
+	}
+	prof := p.job.Profile
+	attrs := []string{"objectClass"}
+	if prof.SystemAttr != "" {
+		attrs = append(attrs, prof.SystemAttr)
+	}
+	e, err := p.src.Get(ctx, h.DN, attrs)
+	if err != nil {
+		return err
+	}
+	if e == nil {
+		h.Why = WhyHolderMissing
+		return nil
+	}
+	classes := e.Values("objectClass")
+	if group.Is != nil && !group.Is(classes) {
+		h.Why = WhyHolderNotAGroup
+		return nil
+	}
+	h.Kind = group
+	if prof.SystemAttr != "" && strings.EqualFold(first(e.Values(prof.SystemAttr)), "TRUE") {
+		h.Builtin = true
+		if p.job.BuiltinGroups == BuiltinGroupsSkip {
+			h.Why = WhyBuiltinSkipped
+		}
+		return nil
+	}
+	switch p.job.OutsideGroups {
+	case OutsideGroupsSkip:
+		h.Why = WhyHolderSkipped
+	case OutsideGroupsExisting:
+		h.Existing = true
+	}
+	return nil
+}
+
+// HolderValues reads the values of h's forward link name on the source and keeps those naming entries of the scope.
+func (p *Plan) HolderValues(ctx context.Context, h Holder, name string) ([]string, error) {
+	e, err := p.src.Get(ctx, h.DN, []string{name})
+	if err != nil || e == nil {
+		return nil, err
+	}
+	return p.InScope(e.Values(name)), nil
+}
+
+func containsFold(list []string, s string) bool {
+	for _, x := range list {
+		if strings.EqualFold(x, s) {
+			return true
+		}
+	}
+	return false
+}

@@ -35,6 +35,9 @@ type Meta struct {
 	// Operational are the attributes the dump read by name, which "*" does not return (entryUUID, ...).
 	Operational []string
 	Entries     int
+	// Holders is whether the dump carries the groups outside its base DN that hold its entries (a dump taken
+	// before they were carried does not).
+	Holders bool
 }
 
 // Dir is a dump opened for reading. It is safe for concurrent use: reads of single entries go through ReadAt.
@@ -249,6 +252,8 @@ func (d *Dir) header(l string, end *int) *[]string {
 		d.meta.BaseDN = value
 	case key == "root-dn":
 		d.meta.RootDN = value
+	case key == "holders":
+		d.meta.Holders = true
 	case strings.HasPrefix(key, "excluded"):
 		return &d.meta.Excluded
 	case strings.HasPrefix(key, "operational"):

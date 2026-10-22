@@ -147,6 +147,9 @@ func openSource(ctx context.Context, cfg *config.Config, secrets Secrets, dial D
 	if len(m.Masked) > 0 {
 		fmt.Fprintf(warn, "  masked in the dump: %s\n", strings.Join(m.Masked, ", "))
 	}
+	if !m.Holders {
+		fmt.Fprintln(warn, "  the dump was taken before groups outside its base DN were carried: memberships in them are left out; dump again")
+	}
 	return d, nil
 }
 

@@ -192,7 +192,8 @@ func (adSchema) Discover(ctx context.Context, src directory.Directory) (Schema, 
 	if root == nil || first(root.Values("schemaNamingContext")) == "" {
 		return Schema{}, false, nil
 	}
-	s := Schema{Refs: map[string]RefInfo{}, BackLinks: map[string]bool{}}
+	s := Schema{Refs: map[string]RefInfo{}, BackLinks: map[string]bool{}, Holds: map[string]string{}}
+	byLink := map[int]string{} // linkID -> lDAPDisplayName
 	filter := "(&(objectClass=attributeSchema)(|(attributeSyntax=" + syntaxDN + ")(attributeSyntax=" + syntaxDNBinary + ")(attributeSyntax=" + syntaxDNString + ")))"
 	err = src.Walk(ctx, first(root.Values("schemaNamingContext")), filter,
 		[]string{"lDAPDisplayName", "attributeSyntax", "linkID", "isSingleValued"}, func(e directory.Entry) error {
@@ -205,14 +206,23 @@ func (adSchema) Discover(ctx context.Context, src directory.Directory) (Schema, 
 			// the binary or string part around it is written as it is (dn.SplitRef).
 			s.Refs[key] = RefInfo{Single: strings.EqualFold(first(e.Values("isSingleValued")), "TRUE")}
 			// The server computes a back link (memberOf, directReports, ...) and it cannot be written.
-			if id, err := strconv.Atoi(first(e.Values("linkID"))); err == nil && id%2 == 1 {
-				s.BackLinks[key] = true
-				delete(s.Refs, key)
+			if id, err := strconv.Atoi(first(e.Values("linkID"))); err == nil {
+				byLink[id] = name
+				if id%2 == 1 {
+					s.BackLinks[key] = true
+					delete(s.Refs, key)
+				}
 			}
 			return nil
 		})
 	if err != nil {
 		return Schema{}, false, fmt.Errorf("read schema: %w", err)
+	}
+	// A back link's linkID is its forward link's plus one.
+	for id, name := range byLink {
+		if forward, ok := byLink[id-1]; ok && id%2 == 1 {
+			s.Holds[name] = forward
+		}
 	}
 	return s, true, nil
 }

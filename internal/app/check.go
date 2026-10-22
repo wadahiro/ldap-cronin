@@ -227,6 +227,9 @@ func (s *Session) Check(ctx context.Context, o CheckOptions, out io.Writer) (int
 			fmt.Fprintf(out, "  (and %d more only the server writes; -attrs lists every attribute)\n", managed)
 		}
 	}
+	if err := s.writeHolders(ctx, out); err != nil {
+		return 0, err
+	}
 	fmt.Fprintln(out)
 
 	if len(blocking) > 0 {
@@ -332,4 +335,39 @@ func (s *Session) sameDomain(ctx context.Context, dst directory.Directory) (stri
 		return err.Error(), nil
 	}
 	return "", nil
+}
+
+// writeHolders says which groups outside base_dn hold entries of it (their memberOf), and what clone does with
+// each: the memberships are the groups' values, which the entries alone do not carry.
+func (s *Session) writeHolders(ctx context.Context, out io.Writer) error {
+	p, err := plan.Build(ctx, s.Src, s.Job, plan.Read{})
+	if err != nil {
+		return err
+	}
+	hs, err := p.Holders(ctx)
+	if err != nil || len(hs) == 0 {
+		return err
+	}
+	given := map[string]int{}
+	left := map[string]int{}
+	for _, h := range hs {
+		switch {
+		case h.Why != "":
+			left[h.Why]++
+		case h.Builtin:
+			given["built-in (the target's own get the members)"]++
+		case h.Existing:
+			given["outside base_dn, if the target holds them ([scope] outside_groups = \"existing\")"]++
+		default:
+			given["outside base_dn (clone creates them)"]++
+		}
+	}
+	fmt.Fprintln(out)
+	if len(given) > 0 {
+		plan.WriteCounts(out, "groups holding entries of base_dn that clone gives those members", given)
+	}
+	if len(left) > 0 {
+		plan.WriteCounts(out, "groups holding entries of base_dn that clone leaves as they are", left)
+	}
+	return nil
 }

@@ -58,9 +58,13 @@ type Report struct {
 	// NotCloned counts the entries under base_dn of no enabled kind, per structural object class (plan.Unselected).
 	NotCloned map[string]int
 	// Unwritten counts the reference values clone could not write, per "attribute: why" (plan.Classifier.Why).
-	Unwritten    map[string]int
-	WarningCount int
-	Warnings     []string // first maxWarnings only
+	Unwritten map[string]int
+	// OutsideGroups and BuiltinGroups count the groups outside the scope given the entries of it they hold
+	// (plan.Holder); Unheld counts those left as they are, per why.
+	OutsideGroups, BuiltinGroups int
+	Unheld                       map[string]int
+	WarningCount                 int
+	Warnings                     []string // first maxWarnings only
 }
 
 // WriteSummary prints the counts of a run: what was written, and what was cloned from outside the scope or not
@@ -69,6 +73,12 @@ func (rep *Report) WriteSummary(w io.Writer) {
 	fmt.Fprintf(w, "\nadded=%d updated=%d unchanged=%d warnings=%d\n", rep.Added, rep.Updated, rep.Unchanged, rep.WarningCount)
 	if rep.Referenced > 0 {
 		plan.WriteCounts(w, "referenced objects outside the scope cloned", rep.ReferencedKinds)
+	}
+	if rep.OutsideGroups > 0 || rep.BuiltinGroups > 0 {
+		fmt.Fprintf(w, "groups outside the scope given its entries they hold: %d (built-in: %d)\n", rep.OutsideGroups+rep.BuiltinGroups, rep.BuiltinGroups)
+	}
+	if len(rep.Unheld) > 0 {
+		plan.WriteCounts(w, "groups outside the scope holding its entries, left as they are", rep.Unheld)
 	}
 	if len(rep.NotCloned) > 0 {
 		plan.WriteCounts(w, "not cloned (matches no kind)", rep.NotCloned)
@@ -122,7 +132,7 @@ func Run(ctx context.Context, src, dst directory.Directory, job plan.Job, opt Op
 		return nil, err
 	}
 	r := &runner{dst: dst, opt: opt, out: out, prof: job.Profile, skipped: map[string]bool{}, done: map[string]*onceErr{},
-		unwrote: map[string]bool{}, report: Report{ReferencedKinds: map[string]int{}, Unwritten: map[string]int{}}}
+		unwrote: map[string]bool{}, report: Report{ReferencedKinds: map[string]int{}, Unwritten: map[string]int{}, Unheld: map[string]int{}}}
 	opt.Progress.Stats(func() string {
 		r.mu.Lock()
 		defer r.mu.Unlock()
@@ -139,7 +149,15 @@ func Run(ctx context.Context, src, dst directory.Directory, job plan.Job, opt Op
 func (r *runner) run(ctx context.Context, p *plan.Plan) error {
 	r.plan, r.refs = p, p.Classifier(r.dst)
 	bar := r.opt.Progress
-	bar.Phases(len(p.Leaves()) + 2) // the parents, each leaf kind, the references
+	hs, err := p.Holders(ctx)
+	if err != nil {
+		return err
+	}
+	phases := len(p.Leaves()) + 2 // the parents, each leaf kind, the references
+	if len(hs) > 0 {
+		phases++ // the groups outside the scope holding its entries
+	}
+	bar.Phases(phases)
 	bar.Phase("OUs and parents", len(p.Containers))
 	if err := p.EachLevel(ctx, r.opt.Workers, func(ctx context.Context, n plan.Node) error {
 		defer bar.Add(1)
@@ -156,7 +174,84 @@ func (r *runner) run(ctx context.Context, p *plan.Plan) error {
 			return err
 		}
 	}
-	return r.references(ctx, p)
+	if err := r.references(ctx, p); err != nil {
+		return err
+	}
+	return r.holders(ctx, p, hs)
+}
+
+// holders gives the groups outside the scope that hold entries of it (a group of another OU, Domain Admins) the
+// values naming those entries: a group of a kind is created first, as a referenced entry is; a built-in group is the
+// target's own. Values are only added, and nothing else of the group is written.
+func (r *runner) holders(ctx context.Context, p *plan.Plan, hs []plan.Holder) error {
+	if len(hs) == 0 {
+		return nil
+	}
+	r.opt.Progress.Phase("groups outside the scope holding its entries", len(hs))
+	return workpool.Each(ctx, r.opt.Workers, hs, func(ctx context.Context, h plan.Holder) error {
+		defer r.opt.Progress.Add(1)
+		if h.Why != "" {
+			return r.unheld(h, h.Why)
+		}
+		switch {
+		case h.Builtin || h.Existing:
+			cur, err := r.dst.Get(ctx, h.DN, []string{"objectClass"})
+			if err != nil {
+				return err
+			}
+			if cur == nil {
+				why := "is a group outside the scope the target lacks ([scope] outside_groups = \"existing\")"
+				if h.Builtin {
+					why = "is a built-in group the target lacks"
+				}
+				return r.unheld(h, why)
+			}
+		default:
+			if err := r.outside(ctx, h.DN, func() (*plan.Kind, error) { return h.Kind, nil }); err != nil {
+				return err
+			}
+		}
+		for _, name := range h.Attrs {
+			values, err := p.HolderValues(ctx, h, name)
+			if err != nil {
+				return err
+			}
+			values = r.created(values)
+			if err := r.applyReference(ctx, h.DN, name, values); err != nil {
+				return fmt.Errorf("%s: add %s values: %w", h.DN, name, err)
+			}
+		}
+		r.count(func(rep *Report) {
+			if h.Builtin {
+				rep.BuiltinGroups++
+			} else {
+				rep.OutsideGroups++
+			}
+		})
+		return nil
+	})
+}
+
+// created keeps the values naming an entry clone did not skip.
+func (r *runner) created(values []string) []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []string
+	for _, v := range values {
+		if !r.skipped[dn.Normalize(dn.RefDN(v))] {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// unheld counts a holder clone does not give its values, and warns about it.
+func (r *runner) unheld(h plan.Holder, why string) error {
+	r.mu.Lock()
+	r.report.Unheld[why]++
+	r.mu.Unlock()
+	r.warn("%s holds entries of the scope (%s) and is left as it is: it %s", h.DN, strings.Join(h.Attrs, ", "), why)
+	return nil
 }
 
 func (r *runner) leaf(ctx context.Context, k *plan.Kind, e directory.Entry) error {
@@ -597,8 +692,14 @@ func (r *runner) writeForm(ctx context.Context, values []string) ([]string, erro
 // ancestors (see plan.Plan.Ancestor), then the entry as its kind, without its own references (depth one: following them
 // would pull the directory in through company-wide groups).
 func (r *runner) referenced(ctx context.Context, v string) error {
+	return r.outside(ctx, v, func() (*plan.Kind, error) { return r.refs.Referenced(ctx, v) })
+}
+
+// outside creates, once, the entry v outside the scope as the kind kind returns (nil: nothing to create), with its
+// missing ancestors: a referenced entry, or a group holding entries of the scope.
+func (r *runner) outside(ctx context.Context, v string, kind func() (*plan.Kind, error)) error {
 	return r.once(ctx, "ref:"+dn.Normalize(v), func() error {
-		k, err := r.refs.Referenced(ctx, v)
+		k, err := kind()
 		if err != nil || k == nil {
 			return err
 		}

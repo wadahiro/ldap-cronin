@@ -36,6 +36,11 @@ type Job struct {
 	// ConfigurationRefs says what is done with a reference naming the configuration partition (AD):
 	// ConfigurationRefsSkip or ConfigurationRefsClone.
 	ConfigurationRefs string
+	// OutsideGroups says what is done with a group outside the scope that holds entries of it (in member, found
+	// through their memberOf): OutsideGroupsClone (the default, also for ""), OutsideGroupsExisting or
+	// OutsideGroupsSkip. BuiltinGroups says it for a built-in group (Domain Admins): BuiltinGroupsAdd (the default,
+	// also for "") or BuiltinGroupsSkip.
+	OutsideGroups, BuiltinGroups string
 	// AllWritable is set when the allow lists are every attribute a client can write on the class of each kind
 	// ([attributes] mode = "all"), so the summaries count them instead of naming hundreds.
 	AllWritable bool
@@ -56,6 +61,19 @@ const (
 	// ConfigurationRefsClone creates the entries of the configuration partition such values name, and their parents,
 	// on the target, so the values can be written: for a lab, which has none of production's Exchange objects.
 	ConfigurationRefsClone = "clone"
+
+	// OutsideGroupsClone creates a group outside the scope that holds entries of it, as a referenced entry is, and
+	// gives it those entries.
+	OutsideGroupsClone = "clone"
+	// OutsideGroupsExisting gives them to such a group only if the target holds it.
+	OutsideGroupsExisting = "existing"
+	// OutsideGroupsSkip leaves such groups out.
+	OutsideGroupsSkip = "skip"
+	// BuiltinGroupsAdd adds the entries of the scope to the built-in groups that hold them (the target's own, of the
+	// same domain), and touches nothing else of those groups.
+	BuiltinGroupsAdd = "add"
+	// BuiltinGroupsSkip leaves the built-in groups as they are.
+	BuiltinGroupsSkip = "skip"
 )
 
 // Kind is a kind of the profile as configured for this job.
@@ -140,6 +158,8 @@ type Plan struct {
 	job  Job
 	read Read
 	refs map[string]profile.RefInfo // lowercase attribute name
+	// holds pairs each back link with its forward link (profile.Schema.Holds).
+	holds map[string]string
 	// parentLeaves are the normalized DNs of the leaves of the scope that are also ancestors, handled in
 	// Containers instead of by EachLeaf.
 	parentLeaves map[string]bool
@@ -444,6 +464,7 @@ func (p *Plan) discoverRefs(ctx context.Context) error {
 	for k := range schema.BackLinks {
 		delete(p.refs, k)
 	}
+	p.holds = schema.Holds
 	for _, k := range p.job.Kinds {
 		for _, name := range k.Attrs {
 			key := strings.ToLower(name)

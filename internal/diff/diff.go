@@ -80,6 +80,10 @@ type Summary struct {
 	NotComparedWhy map[string]int
 	// Referenced is the number of entries outside the scope compared because a reference names them.
 	Referenced int
+	// Holders is the number of groups outside the scope whose values naming entries of it were compared
+	// (plan.Holder); Unheld counts those clone leaves as they are, per why.
+	Holders int
+	Unheld  map[string]int
 	// NotCloned counts the entries under base_dn of no enabled kind, per structural object class: clone does not
 	// copy them, so diff does not compare them either (plan.Unselected).
 	NotCloned map[string]int
@@ -102,7 +106,7 @@ type Options struct {
 // With a Lookup, objects whose source DN is missing on the target are looked up by identifier, and reported as
 // RENAMED if found at a different DN. This verifies changes made by another program that renamed or moved objects on the target.
 func Run(ctx context.Context, src, dst directory.Directory, job plan.Job, o Options, emit func(Difference)) (Summary, error) {
-	r := &runner{job: job, emit: emit, outside: map[string]string{}, sum: Summary{Compared: map[string]int{}, Differences: map[Kind]int{}, NotCompared: map[string]int{}, NotComparedWhy: map[string]int{}}}
+	r := &runner{job: job, emit: emit, outside: map[string]string{}, sum: Summary{Compared: map[string]int{}, Differences: map[Kind]int{}, NotCompared: map[string]int{}, NotComparedWhy: map[string]int{}, Unheld: map[string]int{}}}
 	if o.Resolver != nil {
 		r.sum.Matching = o.Resolver.Describe()
 	}
@@ -168,6 +172,9 @@ func Run(ctx context.Context, src, dst directory.Directory, job plan.Job, o Opti
 		return r.sum, err
 	}
 	if err := r.resolveRefs(ctx, refs); err != nil {
+		return r.sum, err
+	}
+	if err := r.checkHolders(ctx, dst, o.Workers); err != nil {
 		return r.sum, err
 	}
 	r.sum.Duplicates = r.loc.duplicates

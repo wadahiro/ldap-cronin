@@ -102,6 +102,10 @@ type jsonSummary struct {
 	Implied     int    `json:"implied"`
 	Duplicates  int    `json:"duplicates"`
 	Referenced  int    `json:"referenced"`
+	// Holders is the number of groups outside the scope whose values naming it were compared; Unheld counts, per
+	// why, those clone leaves as they are.
+	Holders int            `json:"holders"`
+	Unheld  map[string]int `json:"holders_not_compared"`
 	// NotCloned counts the entries of no kind under base_dn, per structural object class.
 	NotCloned map[string]int `json:"not_cloned"`
 	// ReferencesNotCompared counts, per attribute, the source values clone cannot write.
@@ -120,7 +124,7 @@ func (j *JSON) Summary(job plan.Job, sum Summary, excluded []string) error {
 	out := jsonSummary{
 		Kind: "SUMMARY", Version: JSONVersion, Compared: map[string]int{}, Differences: map[string]int{},
 		CaseOnly: sum.CaseOnly, RenameCheck: sum.Matching, Implied: sum.Implied, Duplicates: sum.Duplicates,
-		Referenced: sum.Referenced, NotCloned: orEmpty(sum.NotCloned), ReferencesNotCompared: orEmpty(sum.NotCompared),
+		Referenced: sum.Referenced, Holders: sum.Holders, Unheld: orEmpty(sum.Unheld), NotCloned: orEmpty(sum.NotCloned), ReferencesNotCompared: orEmpty(sum.NotCompared),
 		ReferencesNotComparedWhy: orEmpty(sum.NotComparedWhy),
 		ComparedAttributes:       compared, Masked: nonNil(masked), Excluded: nonNil(excluded), Credentials: nonNil(job.Profile.PasswordAttrs),
 	}

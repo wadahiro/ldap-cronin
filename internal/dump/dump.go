@@ -71,6 +71,7 @@ func Write(ctx context.Context, src directory.Directory, prof profile.Profile, o
 		rootEntry = &directory.Entry{Attrs: map[string][]string{}}
 	}
 	refs := map[string]bool{}
+	var backs []string // back links (memberOf): their values outside the base are the groups holding its entries
 	for k := range prof.BuiltinRefs {
 		refs[k] = true
 	}
@@ -82,6 +83,9 @@ func Write(ctx context.Context, src directory.Directory, prof profile.Profile, o
 		}
 		for k := range s.BackLinks {
 			delete(refs, k)
+		}
+		for back := range s.Holds {
+			backs = append(backs, back)
 		}
 	}
 	for _, a := range o.Masked {
@@ -96,7 +100,8 @@ func Write(ctx context.Context, src directory.Directory, prof profile.Profile, o
 	}
 	wr := &writer{w: ldif.Writer{W: w}, excluded: profile.Set(prof.PasswordAttrs), written: map[string]bool{}}
 	masker := mask.New(o.MaskValue, o.Masked)
-	read := append([]string{directory.AllAttrs}, prof.Operational...)
+	read := append(append([]string{directory.AllAttrs}, prof.Operational...), backs...)
+	holds := profile.Set(backs)
 	now := time.Now
 	if o.Now != nil {
 		now = o.Now
@@ -162,7 +167,7 @@ func Write(ctx context.Context, src directory.Directory, prof profile.Profile, o
 	if err := src.Walk(ctx, o.BaseDN, "(objectClass=*)", read, func(e directory.Entry) error {
 		for name, values := range e.Attrs {
 			base, _, _ := strings.Cut(name, ";")
-			if !refs[strings.ToLower(base)] {
+			if !refs[strings.ToLower(base)] && !holds[strings.ToLower(base)] {
 				continue
 			}
 			for _, v := range values {
@@ -243,6 +248,7 @@ func (wr *writer) header(o Options, prof profile.Profile, root string, operation
 		list(w, operational)
 	}
 	fmt.Fprintln(w, "# referenced: the entries outside base-dn a reference names, and their parents, without what they name")
+	fmt.Fprintln(w, "# holders: the groups outside base-dn holding its entries (their memberOf), with every member")
 	fmt.Fprintln(w, "#")
 }
 

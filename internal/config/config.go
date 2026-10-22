@@ -111,6 +111,11 @@ type Scope struct {
 	// ConfigurationRefs is what is done with a reference naming the configuration partition of AD (an Exchange
 	// address list in showInAddressBook): skip (default) or clone (see plan.ConfigurationRefsClone).
 	ConfigurationRefs string `toml:"configuration_refs"`
+	// OutsideGroups is what is done with a group outside the scope that holds entries of it (a member): clone
+	// (default), existing or skip (see plan.OutsideGroupsClone). BuiltinGroups is it for a built-in group (Domain
+	// Admins): add (default) or skip.
+	OutsideGroups string `toml:"outside_groups"`
+	BuiltinGroups string `toml:"builtin_groups"`
 }
 
 // Run holds the run-time settings shared by clone and diff.
@@ -268,6 +273,16 @@ func (c *Config) validate() error {
 		}
 	default:
 		return fmt.Errorf("[scope] configuration_refs must be %q or %q, got %q", plan.ConfigurationRefsSkip, plan.ConfigurationRefsClone, c.Scope.ConfigurationRefs)
+	}
+	switch c.Scope.OutsideGroups {
+	case "", plan.OutsideGroupsClone, plan.OutsideGroupsExisting, plan.OutsideGroupsSkip:
+	default:
+		return fmt.Errorf("[scope] outside_groups must be %q, %q or %q, got %q", plan.OutsideGroupsClone, plan.OutsideGroupsExisting, plan.OutsideGroupsSkip, c.Scope.OutsideGroups)
+	}
+	switch c.Scope.BuiltinGroups {
+	case "", plan.BuiltinGroupsAdd, plan.BuiltinGroupsSkip:
+	default:
+		return fmt.Errorf("[scope] builtin_groups must be %q or %q, got %q", plan.BuiltinGroupsAdd, plan.BuiltinGroupsSkip, c.Scope.BuiltinGroups)
 	}
 	if c.Target.LDIF != "" {
 		return errors.New("[target] ldif: a dump can only be a source")
@@ -522,7 +537,8 @@ func (c *Config) JobFor(p profile.Profile) (plan.Job, error) {
 		return plan.Job{}, err
 	}
 	job := plan.Job{Profile: p, RootDN: c.Scope.RootDN, BaseDN: c.Scope.BaseDN, Masker: mask.New(c.Mask.Value, c.Mask.Attributes),
-		References: c.Scope.References, ConfigurationRefs: c.Scope.ConfigurationRefs}
+		References: c.Scope.References, ConfigurationRefs: c.Scope.ConfigurationRefs,
+		OutsideGroups: c.Scope.OutsideGroups, BuiltinGroups: c.Scope.BuiltinGroups}
 	for _, spec := range p.Kinds { // the profile's order, whatever order the config lists them in
 		if !contains(c.objects(p), spec.Name) {
 			continue

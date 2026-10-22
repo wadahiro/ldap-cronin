@@ -41,6 +41,12 @@ func WriteSummary(w io.Writer, job plan.Job, sum Summary, excluded []string) {
 	if sum.Referenced > 0 {
 		fmt.Fprintf(w, "referenced objects outside the scope compared: %d (without their own references)\n", sum.Referenced)
 	}
+	if sum.Holders > 0 {
+		fmt.Fprintf(w, "groups outside the scope holding its entries compared: %d (their values naming the scope)\n", sum.Holders)
+	}
+	if len(sum.Unheld) > 0 {
+		plan.WriteCounts(w, "groups outside the scope holding its entries, not compared (clone leaves them as they are)", sum.Unheld)
+	}
 	if len(sum.NotCloned) > 0 {
 		plan.WriteCounts(w, "not compared (matches no kind, so clone does not copy it)", sum.NotCloned)
 	}

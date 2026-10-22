@@ -138,9 +138,15 @@ func (subschema) Discover(ctx context.Context, src directory.Directory) (Schema,
 	if err != nil || !ok {
 		return Schema{}, ok, err
 	}
-	s := Schema{Refs: map[string]RefInfo{}, BackLinks: map[string]bool{}}
+	s := Schema{Refs: map[string]RefInfo{}, BackLinks: map[string]bool{}, Holds: map[string]string{}}
 	for name, single := range dnRefsFromSchema(defs) {
 		s.Refs[name] = RefInfo{Single: single}
+	}
+	// The memberof overlay of OpenLDAP (and 389-ds' plugin) keeps memberOf, operational, from member.
+	if _, ok := s.Refs["memberof"]; ok {
+		if _, ok := s.Refs["member"]; ok {
+			s.Holds["memberOf"] = "member"
+		}
 	}
 	return s, true, nil
 }

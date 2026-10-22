@@ -40,6 +40,11 @@ base_dn = "OU=IDM,DC=ad,DC=example,DC=com"
 #                                    # Exchange address list): skip (default) leaves the value out, counted with why;
 #                                    # clone creates what it names and the parents it lacks from the source, for a
 #                                    # lab (run ldap-cronin schema first: the lab has none of Exchange's classes)
+# outside_groups = "clone"           # a group outside base_dn holding entries of it (a user's group of another OU,
+#                                    # found through memberOf): clone (default) creates it and gives it those members;
+#                                    # existing gives them only to a group the target holds; skip
+# builtin_groups = "add"             # a built-in group holding them (Domain Admins): add (default) gives the target's own
+#                                    # those members, nothing else; skip
 
 # [scope.filters]                    # override the search filter per object type
 # user = "(&(objectCategory=person)(objectClass=user)(department=IT))"

@@ -112,6 +112,10 @@ type Schema struct {
 	Refs map[string]RefInfo // lowercase name
 	// BackLinks are computed by the server (memberOf, directReports, ...) and cannot be written.
 	BackLinks map[string]bool
+	// Holds pairs a back link with the forward link it reflects, by name as the schema writes them: memberOf with
+	// member, authOrigBL with authOrig. An entry's back link values name the entries that hold it in their forward
+	// link: the groups it is a member of, wherever they are.
+	Holds map[string]string
 }
 
 // RefDiscoverer finds the DN-valued attributes in the source schema. A fixed list would break attributes added
