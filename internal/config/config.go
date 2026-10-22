@@ -388,13 +388,9 @@ func (c *Config) validate() error {
 		return err
 	}
 	// Where the naming context starts is the profile's business and may need the server, so only reject what is
-	// certainly wrong here: a base_dn that is the root it was given, or not below it.
-	root := c.Scope.RootDN
-	if root == "" {
-		root = dn.DomainRoot(c.Scope.BaseDN)
-	}
-	if root != "" && (dn.Equal(c.Scope.BaseDN, root) || !dn.IsDescendant(c.Scope.BaseDN, root)) {
-		return fmt.Errorf("[scope] base_dn must be an OU/container below the domain root (root_dn): %q", c.Scope.BaseDN)
+	// certainly wrong here: a base_dn outside the root it was given. The root itself is the whole naming context.
+	if root := c.Scope.RootDN; root != "" && !dn.Equal(c.Scope.BaseDN, root) && !dn.IsDescendant(c.Scope.BaseDN, root) {
+		return fmt.Errorf("[scope] base_dn must be the root (root_dn) or below it: %q", c.Scope.BaseDN)
 	}
 	if c.Run.Workers < 1 {
 		return fmt.Errorf("[run] workers must be >= 1")

@@ -18,6 +18,7 @@ import (
 	"hash/maphash"
 	"io"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -48,7 +49,10 @@ type Dir struct {
 	seed        maphash.Seed
 	index       map[uint64][]int64 // hash of the normalized DN -> where its entries start (a collision lists both)
 	operational map[string]bool
-	match       *matcher
+	// contexts are the normalized naming contexts of the root DSE, longest first: a search does not leave the one
+	// its base is in, as a server's does not (a whole domain's search never returns the configuration partition).
+	contexts []string
+	match    *matcher
 }
 
 // Open reads the dump at path, gzip-compressed when it ends in .gz, and indexes it.
@@ -129,6 +133,11 @@ func (d *Dir) scan() error {
 		}
 		d.index[h] = append(d.index[h], at)
 		n++
+		if e.DN == "" {
+			for _, nc := range e.Values("namingContexts") {
+				d.contexts = append(d.contexts, dn.Normalize(nc))
+			}
+		}
 		if hasClass(e, "classSchema") && len(e.Values("defaultObjectCategory")) > 0 {
 			categories[strings.ToLower(first(e.Values("lDAPDisplayName")))] = dn.Normalize(first(e.Values("defaultObjectCategory")))
 		}
@@ -159,6 +168,7 @@ func (d *Dir) scan() error {
 		d.operational[strings.ToLower(a)] = true
 	}
 	d.match = &matcher{categories: categories}
+	sort.Slice(d.contexts, func(i, j int) bool { return len(d.contexts[i]) > len(d.contexts[j]) })
 	return nil
 }
 
@@ -329,6 +339,7 @@ func (d *Dir) Walk(ctx context.Context, base, filter string, attrs []string, fn 
 		return err
 	}
 	baseKey := dn.Normalize(base)
+	baseNC := d.contextOf(baseKey)
 	return d.records(0, func(_ int64, lines []string) (bool, error) {
 		if err := ctx.Err(); err != nil {
 			return false, err
@@ -341,11 +352,24 @@ func (d *Dir) Walk(ctx context.Context, base, filter string, attrs []string, fn 
 		if (key == "" && baseKey != "") || (key != baseKey && baseKey != "" && !strings.HasSuffix(key, ","+baseKey)) {
 			return true, nil
 		}
+		if baseNC != "" && d.contextOf(key) != baseNC {
+			return true, nil // in another naming context below the base (CN=Configuration under the domain)
+		}
 		if !d.match.match(f, e) {
 			return true, nil
 		}
 		return true, fn(d.project(e, attrs))
 	}, nil)
+}
+
+// contextOf is the naming context key (normalized) is in, "" for none the dump knows.
+func (d *Dir) contextOf(key string) string {
+	for _, nc := range d.contexts {
+		if key == nc || strings.HasSuffix(key, ","+nc) {
+			return nc
+		}
+	}
+	return ""
 }
 
 // project returns the attributes asked for as a server does: "*" every one but the operational ones the dump read

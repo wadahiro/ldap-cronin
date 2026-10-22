@@ -26,7 +26,7 @@ It is read-only.
   `objectClass` (case), `userAccountControl` (excluding server-managed bits) and `accountExpires` (`0` and `9223372036854775807` both mean "never expires" and are treated as equal).
   Multi-valued attributes are compared ignoring order.
 - DN reference attributes (`member`, `manager` and so on) are **compared in full**, so a program under test that removes or adds a member shows, whatever the member is (an object of the scope, a built-in group, an object outside `base_dn`). Objects outside the scope that the references name are cloned and compared too, as their kind and without their own references (`referenced objects outside the scope compared: N`). The only values left out are the source's values `clone` cannot write: on AD, a reference to an object the target does not hold and clone cannot create (a built-in the target lacks, a principal of a trusted domain). The summary counts them per attribute (under `references not compared ...`).
-- Entries under `base_dn` of no kind (BitLocker recovery information, a service connection point, a kind left out of `[scope] objects`) are not cloned, so they are not compared either; the summary counts them per object class, one per line (under `not compared (matches no kind, ...)`). `clone` prints the same counts (`not cloned (matches no kind)`), and the objects it cloned from outside the scope per kind (`referenced objects outside the scope cloned`).
+- Entries under `base_dn` of no kind (BitLocker recovery information, a service connection point, a kind left out of `[scope] objects`) are not cloned, so they are not compared either; the summary counts them per object class, one per line (under `not compared (of no kind, or built-in: ...)`; a built-in entry, `isCriticalSystemObject`, is marked `(built-in: the target's own)`). `clone` prints the same counts (`not cloned (of no kind, or built-in)`), and the objects it cloned from outside the scope per kind (`referenced objects outside the scope cloned`).
 - The objects compared are those that match `[scope] objects` and `[scope.filters]`.
 - Use the same configuration file for clone and diff; different settings change the result (an `exclude` added only for diff hides that attribute).
 
@@ -249,7 +249,7 @@ differences:
   UNMARKED    : 1   (same DN, no marker: recreated, or added to the source after the clone)
                     not listed: 12 entries moved along with a renamed/moved parent OU
 rename/move check: on (markers in adminDisplayName)
-not compared (matches no kind, so clone does not copy it): 123
+not compared (of no kind, or built-in: clone does not copy it): 123
   msFVE-RecoveryInformation  120
   serviceConnectionPoint       3
 compared attributes:

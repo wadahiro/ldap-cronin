@@ -90,10 +90,11 @@ func DomainRoot(dn string) string {
 	return strings.Join(rdns[i:], ",")
 }
 
-// Ancestors returns the DNs from the parent of dn down to just below domain, nearest first (domain itself is excluded).
+// Ancestors returns the DNs from the parent of dn down to just below domain, nearest first (domain itself is
+// excluded); none when dn is domain itself or outside it.
 func Ancestors(dn, domain string) []string {
 	var out []string
-	for p := Parent(dn); p != "" && !Equal(p, domain); p = Parent(p) {
+	for p := Parent(dn); p != "" && IsDescendant(p, domain); p = Parent(p) {
 		out = append(out, p)
 	}
 	return out

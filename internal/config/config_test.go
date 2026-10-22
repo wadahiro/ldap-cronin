@@ -55,7 +55,7 @@ func TestParseReadsTimeouts(t *testing.T) {
 
 func TestParseRejectsInvalid(t *testing.T) {
 	cases := map[string]string{
-		"domain root base":           strings.Replace(valid, "OU=IDM,DC=ad", "DC=ad", 1),
+		"base outside root_dn":       strings.Replace(valid, "[scope]", "[scope]\nroot_dn = \"DC=other,DC=example,DC=com\"", 1),
 		"unmaskable attribute":       strings.Replace(withProfile("ad"), `["mail"]`, `["sAMAccountName"]`, 1),
 		"unknown field":              valid + "\n[bogus]\nx = 1\n",
 		"same server":                strings.Replace(valid, "ldap://dst:389", "ldaps://src:636", 1),

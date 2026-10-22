@@ -60,8 +60,8 @@ func Write(ctx context.Context, src directory.Directory, prof profile.Profile, o
 	if err != nil {
 		return Counts{}, err
 	}
-	if dn.Equal(o.BaseDN, root) || !dn.IsDescendant(o.BaseDN, root) {
-		return Counts{}, fmt.Errorf("base DN %q must be below the root of its naming context %q", o.BaseDN, root)
+	if !dn.Equal(o.BaseDN, root) && !dn.IsDescendant(o.BaseDN, root) {
+		return Counts{}, fmt.Errorf("base DN %q must be the root of its naming context %q or below it", o.BaseDN, root)
 	}
 	rootEntry, err := src.Get(ctx, "", rootDSE)
 	if err != nil {

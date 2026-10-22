@@ -28,8 +28,9 @@ func TestWhatCannotBeMaskedIsRefused(t *testing.T) {
 			t.Errorf("%s: %v, %d bytes written", attr, err, out.Len())
 		}
 	}
+	// The whole domain is a base DN too.
 	var out bytes.Buffer
-	if _, err := Write(context.Background(), src, profile.AD, Options{BaseDN: domain}, &out); err == nil || !strings.Contains(err.Error(), "must be below") {
-		t.Errorf("the domain root itself: %v", err)
+	if c, err := Write(context.Background(), src, profile.AD, Options{BaseDN: domain}, &out); err != nil || c.Base == 0 {
+		t.Errorf("the domain root itself: %+v %v", c, err)
 	}
 }

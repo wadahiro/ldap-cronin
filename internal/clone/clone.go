@@ -89,7 +89,7 @@ func (rep *Report) WriteSummary(w io.Writer) {
 		plan.WriteCounts(w, "groups outside the scope holding its entries, left as they are", rep.Unheld)
 	}
 	if len(rep.NotCloned) > 0 {
-		plan.WriteCounts(w, "not cloned (matches no kind)", rep.NotCloned)
+		plan.WriteCounts(w, "not cloned (of no kind, or built-in)", rep.NotCloned)
 	}
 	if len(rep.Unwritten) > 0 {
 		plan.WriteCounts(w, "reference values not written (the target lacks what they name; diff does not compare them)", rep.Unwritten)

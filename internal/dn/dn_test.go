@@ -120,3 +120,16 @@ func FuzzDNOperationsAgree(f *testing.F) {
 		}
 	})
 }
+
+// The domain itself has no ancestors below the domain, and an entry outside it none either: never DC=com.
+func TestAncestorsStopAtTheDomain(t *testing.T) {
+	if got := Ancestors("DC=ad,DC=example,DC=com", "DC=ad,DC=example,DC=com"); len(got) != 0 {
+		t.Errorf("the domain itself: %v", got)
+	}
+	if got := Ancestors("CN=a,OU=b,DC=ad,DC=example,DC=com", "DC=ad,DC=example,DC=com"); len(got) != 1 || got[0] != "OU=b,DC=ad,DC=example,DC=com" {
+		t.Errorf("an entry: %v", got)
+	}
+	if got := Ancestors("CN=a,DC=other,DC=com", "DC=ad,DC=example,DC=com"); len(got) != 0 {
+		t.Errorf("outside: %v", got)
+	}
+}

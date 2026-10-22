@@ -127,7 +127,7 @@ image = "ldap-cronin/samba-ad:local"        # what it is created from (step 1); 
 
 [scope]
 profile = "ad"                              # auto would ask the source; ad says it outright
-base_dn = "OU=IDM,DC=ad,DC=example,DC=com"  # not the domain root: that would reach the built-in accounts
+base_dn = "OU=IDM,DC=ad,DC=example,DC=com"  # or DC=ad,DC=example,DC=com for the whole domain
 # objects = ["ou", "group", "user", "computer", "contact"]   # the default: every kind
 references = "clone"                        # the default: a member outside base_dn is cloned too, so every
                                             # member is on the target and diff sees any change to it
@@ -221,7 +221,7 @@ added=1234 updated=0 unchanged=0 warnings=2
 referenced objects outside the scope cloned: 3
   user      2
   computer  1
-not cloned (matches no kind): 14
+not cloned (of no kind, or built-in): 14
   msFVE-RecoveryInformation  12
   serviceConnectionPoint      2
 ```
@@ -383,7 +383,7 @@ differences:
   RENAMED     : 0   (same object, but its DN differs on target: renamed/moved)
 rename/move check: on (markers in adminDisplayName)
 referenced objects outside the scope compared: 3 (without their own references)
-not compared (matches no kind, so clone does not copy it): 14
+not compared (of no kind, or built-in: clone does not copy it): 14
   msFVE-RecoveryInformation  12
   serviceConnectionPoint      2
 references not compared (clone cannot write them: the target lacks what they name): 2
@@ -711,7 +711,7 @@ exclude = ["homeDirectory", "homeDrive", "profilePath", "scriptPath"]   # still 
 | `... is not supported on a dump` | A filter the dump cannot evaluate (approximate, the in-chain rule, `:dn`): rewrite it with what it supports, or read production directly |
 | `aborted: nothing was written (pass -y to skip the confirmation)` | The answer to `Write to this target? [y/N]` was not `y`, or there was no terminal to ask on. Check the target it showed; in a script, pass `-y` |
 | `... Constraint Violation ... setting userParameters is not supported over LDAP` | A Samba target refusing `userParameters`. This version leaves it out by itself; with an older one, `exclude` it. Re-run `clone`: it goes on from where it stopped |
-| `base_dn ... must be below the root` | `base_dn` is the domain root, or not in the domain; clone an OU |
+| `base_dn ... must be the root ... or below it` | `base_dn` is not in the domain of `root_dn` |
 | `... already exists on the target but its ... differs` | Only with `native = true`: the lab holds another object at that DN. Use a fresh lab (`lab reset -y`, then `clone`) |
 | `the lab's domain differs from the source's ...` | `native = true` into a lab not made like the source (by `lab up --realm`, say): `lab reset -y`, then `lab up --config` makes it like the source |
 | `[target] url ... is not the lab ...` | `[target] url` and `[target.lab]` name different labs: give the lab's port in the url, or the url's lab in `[target.lab]` |

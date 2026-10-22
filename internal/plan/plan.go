@@ -192,8 +192,10 @@ func Build(ctx context.Context, src directory.Directory, job Job, read Read) (*P
 		return nil, err
 	}
 	p := &Plan{Root: root, Scope: NewScope(), src: src, job: job, read: read, leaves: map[string]int{}}
-	if dn.Equal(job.BaseDN, root) || !dn.IsDescendant(job.BaseDN, root) {
-		return nil, fmt.Errorf("base_dn %q must be below the root %q: cloning a whole naming context would overwrite built-in entries", job.BaseDN, root)
+	// The root itself is the whole naming context: the root entry is the target's own (no kind selects it), and the
+	// built-in entries are never selected (the profile's SystemFilter).
+	if !dn.Equal(job.BaseDN, root) && !dn.IsDescendant(job.BaseDN, root) {
+		return nil, fmt.Errorf("base_dn %q must be the root %q or below it", job.BaseDN, root)
 	}
 	base, err := src.Get(ctx, job.BaseDN, []string{"objectClass"})
 	if err != nil {
@@ -366,16 +368,30 @@ func MissingOnTarget(ctx context.Context, src, dst directory.Directory, job Job)
 // Unselected counts, by structural object class, the entries under base_dn that clone does not copy: those of no
 // enabled kind (BitLocker recovery information, ActiveSync devices, a kind left out of [scope] objects) and the
 // built-in ones. The parents it creates are not counted. It is one more paged search, reading only the classes.
+// BuiltinNote marks, in the counts of Unselected, the built-in entries (isCriticalSystemObject), which every domain
+// has of its own and clone never writes.
+const BuiltinNote = "(built-in: the target's own)"
+
 func (p *Plan) Unselected(ctx context.Context) (map[string]int, error) {
 	var any strings.Builder
 	for _, k := range p.job.Kinds {
 		any.WriteString(k.Filter)
 	}
 	out := map[string]int{}
-	err := p.src.Walk(ctx, p.job.BaseDN, "(!(|"+any.String()+"))", []string{"objectClass", "structuralObjectClass"}, func(e directory.Entry) error {
-		if !p.Scope.Has(e.DN) {
-			out[structural(e)]++
+	attrs := []string{"objectClass", "structuralObjectClass"}
+	sys := p.job.Profile.SystemAttr
+	if sys != "" {
+		attrs = append(attrs, sys)
+	}
+	err := p.src.Walk(ctx, p.job.BaseDN, "(!(|"+any.String()+"))", attrs, func(e directory.Entry) error {
+		if p.Scope.Has(e.DN) {
+			return nil
 		}
+		name := structural(e)
+		if sys != "" && strings.EqualFold(first(e.Values(sys)), "TRUE") {
+			name += " " + BuiltinNote // a built-in a kind would take (Domain Admins): never written
+		}
+		out[name]++
 		return nil
 	})
 	if err != nil {
@@ -387,7 +403,7 @@ func (p *Plan) Unselected(ctx context.Context) (map[string]int, error) {
 // WriteCounts prints a heading with the total, then one name per line with its count, the largest first, so a
 // long list stays readable in the summaries of clone and diff:
 //
-//	not cloned (matches no kind): 14
+//	not cloned (of no kind, or built-in): 14
 //	  msFVE-RecoveryInformation  12
 //	  serviceConnectionPoint      2
 func WriteCounts(w io.Writer, heading string, m map[string]int) {

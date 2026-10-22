@@ -32,7 +32,8 @@ insecure_skip_verify = true
 [scope]                              # what clone copies and diff compares
 # profile = "auto"                   # auto (default: asks the source), ad (Active Directory, Samba AD) or ldap (OpenLDAP, 389-ds, ...)
 # root_dn = "o=acme"                 # only for a generic server whose naming context cannot be derived from base_dn
-# Starting point in the source. The domain root (DC=...) cannot be used because it would overwrite built-in accounts.
+# Starting point in the source. The domain root (DC=...) takes the whole domain: the built-in entries
+# (isCriticalSystemObject: Administrator, Domain Admins, ...) are never written, the target has its own.
 # Parent OUs / containers above the starting point are created automatically if they do not exist on the target.
 base_dn = "OU=IDM,DC=ad,DC=example,DC=com"
 # objects = ["ou", "group", "user"] # every kind of the profile if omitted (ad: also computer and contact)
