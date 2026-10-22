@@ -95,7 +95,7 @@ type Lab struct {
 	// Tags (EC2) are put on the instance and its volume, for an account whose policy requires some.
 	Tags map[string]string `toml:"tags"`
 	// PublicIP (EC2) gives the instance a public IPv4 address, for a subnet whose instances reach Systems Manager
-	// through an internet gateway only.
+	// through an internet gateway only. Without it the instance has none, whatever the subnet assigns.
 	PublicIP bool `toml:"public_ip"`
 }
 

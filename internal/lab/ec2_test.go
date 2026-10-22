@@ -128,11 +128,11 @@ func TestEC2UpCommands(t *testing.T) {
 	if run := e.UpCommands()[2].Shell(); !strings.Contains(run, "--security-group-ids sg-02ed95a0b7fdab87c sg-0123456789abcdef0 ") {
 		t.Errorf("security_groups: %s", run)
 	}
-	if strings.Contains(text, "--associate-public-ip-address") {
-		t.Errorf("without public_ip, the subnet's own: %s", text)
+	if !strings.Contains(text, " --no-associate-public-ip-address ") {
+		t.Errorf("without public_ip, no public address, whatever the subnet assigns: %s", text)
 	}
 	e.PublicIP = true
-	if run := e.UpCommands()[2].Shell(); !strings.Contains(run, " --associate-public-ip-address ") {
+	if run := e.UpCommands()[2].Shell(); !strings.Contains(run, " --associate-public-ip-address ") || strings.Contains(run, "--no-associate") {
 		t.Errorf("public_ip: %s", run)
 	}
 	e.Windows, e.InstanceType, e.DiskSize = "2025", "m5.xlarge", 80

@@ -55,7 +55,8 @@ controller, and using the lab as a production copy.
   the first phase, and the forest is never made.
 - `subnet`: a subnet whose instances reach Systems Manager (a NAT gateway, or VPC endpoints for `ssm`,
   `ssmmessages` and `ec2messages`, or an internet gateway with `public_ip = true`: an instance without a public
-  address in a subnet that routes to an internet gateway only never registers, as a user's first lab up showed).
+  address in a subnet that routes to an internet gateway only never registers, as a user's first lab up showed; without `public_ip` the instance has no public address even where the subnet
+  assigns one: a domain controller is not put on the internet unasked).
 - `instance_profile`: a role with `AmazonSSMManagedInstanceCore`, for Systems Manager to run the readiness command
   and the tunnels.
 

@@ -304,8 +304,9 @@ instance_profile = "ldap-cronin-lab"    # a role with AmazonSSMManagedInstanceCo
 #                                        # Systems Manager needs no inbound rule
 # tags = { Owner = "me", CostCenter = "1234" }   # put on the instance and its volume too, as many as needed
 #                                        # (an account's policy may require some); Name renames the instance
-# public_ip = true                       # a public IPv4 address, for a subnet whose instances get none and reach
-#                                        # Systems Manager through an internet gateway only (no NAT, no VPC endpoints)
+# public_ip = true                       # a public IPv4 address, for a subnet that reaches Systems Manager through
+#                                        # an internet gateway only (no NAT, no VPC endpoints); without it the
+#                                        # instance has none, whatever the subnet assigns
 # ldaps_name = "ldap.test.example.com"  # one more DNS name of its LDAPS certificate (the DC's and the domain's are in it)
 # ldap_port = 13389                      # the local port LDAP (389) is forwarded to too, for clients without LDAPS
 # ldap_unsigned = true                   # a simple bind on 389 without signing taken (2025 refuses it by default)
