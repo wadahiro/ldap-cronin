@@ -204,6 +204,7 @@ image = "ldap-cronin/samba-ad:local"     # what lab up --config creates it from 
 # prefix = "ldap-cronin"
 # native = true                          # see the next section
 # fast_password = true
+# when_created = "lab"                   # native: the time of the import instead of the source's whenCreated
 ```
 
 ```sh
@@ -270,7 +271,7 @@ ldap-cronin diff -config config.toml      # matches objects by objectGUID direct
 - **This is not a supported way of using Samba.** It uses Samba internals (the replication path, with system privileges and the `provision` and `relax` controls). It depends on the Samba version, and only **4.19.5** has been verified.
   At the start of each run it tries the same operation (and rolls it back) and fails immediately if it does not work. On another version it warns and continues, provided this self-check passes.
 - **Password hashes are not copied** (they cannot be read over LDAP). User passwords are the fixed password, as in a normal `clone` (with `fast_password`, without Kerberos AES keys).
-- `whenCreated` and `uSNCreated` become the lab's local values (not the source's).
+- `whenCreated` is the source's (`[target.lab] when_created = "lab"` leaves the time of the import): an add takes the time of the add, whatever it is given, so the helper sets it right after, as the system (over LDAP only the system may). The self-check at the start tries it too. `diff` does not compare it. `whenChanged`, `uSNCreated` and `uSNChanged` are the lab's own: every change gives `whenChanged` the time again, and the USNs are each DC's counters.
 - **RIDs can collide.** If the RID of a source user is the same as that of one of the lab's standard objects (RID 1000, 1101, 1102), importing that object fails with an error that names the colliding object
   (it is never skipped silently). For a source built on Samba the configuration is the same, so collisions normally do not occur.
 - The import runs in a helper container (Python from the lab image) with the volumes mounted, so **the lab image must have Python and Samba** (the offline package's image does).

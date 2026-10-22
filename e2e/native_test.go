@@ -156,8 +156,8 @@ func TestNativeImportKeepsObjectGUIDAndObjectSid(t *testing.T) {
 	must(err)
 	defer dst.Close()
 
-	// objectGUID and objectSid match for all objects.
-	names := []string{"objectGUID", "objectSid"}
+	// objectGUID, objectSid and whenCreated match for all objects ([target.lab] when_created defaults to "source").
+	names := []string{"objectGUID", "objectSid", "whenCreated"}
 	checked := 0
 	err = src.Walk(context.Background(), cloneBase, "(|(objectClass=user)(objectClass=group)(objectClass=organizationalUnit))", names, func(e directory.Entry) error {
 		got, err := dst.Get(context.Background(), e.DN, names)

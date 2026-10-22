@@ -172,7 +172,7 @@ Tried on Samba 4.19.5 to make target objects carry the source's `objectGUID` / `
 | Direct add to `sam.ldb` with Samba's Python API (`SamDB(session_info=system_session())`), no controls, or only `provision` | Rejected |
 | Same, with **both `provision` and `relax` controls** | **Succeeded** for users and groups, with the specified `objectGUID` and `objectSid` (domain SID + RID) |
 
-Objects created this way: duplicate GUIDs / SIDs are rejected by the indexes; `objectGUID` search over LDAP, group membership and `unicodePwd` work, also after a restart; `samba-tool dbcheck --cross-ncs` reported 0 errors across 3863 objects. `whenCreated`, `uSNCreated` and `pwdLastSet` become the target's local values.
+Objects created this way: duplicate GUIDs / SIDs are rejected by the indexes; `objectGUID` search over LDAP, group membership and `unicodePwd` work, also after a restart; `samba-tool dbcheck --cross-ncs` reported 0 errors across 3863 objects. `whenCreated`, `uSNCreated` and `pwdLastSet` become the target's local values. `whenCreated` can be set afterwards by a modify as the system session (not over LDAP: "can only be modified as system"), kept across a restart, dbcheck clean (4.19.5); `whenChanged` cannot (every change gives it the time again).
 
 Limits:
 
@@ -180,7 +180,7 @@ Limits:
 - Source password hashes are not readable over LDAP (`unicodePwd` is not returned). Copying them requires joining the target as a DC of the source's domain and replicating (`samba-tool domain join`, DRS), which adds a DC to the production AD and replicates the whole domain.
 - Matching `objectSid` also requires the same domain SID (`samba-tool domain provision --domain-sid=... --domain-guid=...`).
 - It depends on Samba's internal replication path, is not a supported use, and may break across versions.
-- Not verified: `whenCreated` and the like, ACLs (`nTSecurityDescriptor`), large numbers of objects, other Samba versions.
+- Not verified: ACLs (`nTSecurityDescriptor`), large numbers of objects, other Samba versions.
 
 If it works, `diff` can match by GUID without a marker, and applications keyed on `objectGUID` / `objectSid` (for example an IdM whose AD connector identifies objects by `objectGUID`) see matching identifiers against the lab.
 

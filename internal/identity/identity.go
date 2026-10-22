@@ -81,7 +81,7 @@ func (guidScheme) Filter(k Key) string {
 
 // CarryOver includes objectSid: a native import that kept only the GUID would give every account a new SID,
 // which is what an application keyed on objectSid would notice first.
-func (guidScheme) CarryOver() []string { return []string{"objectGUID", "objectSid"} }
+func (guidScheme) CarryOver() []string { return []string{"objectGUID", "objectSid", "whenCreated"} }
 
 type uuidScheme struct{}
 

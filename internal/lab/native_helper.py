@@ -47,6 +47,18 @@ FAST = False
 nt_hashes = {}  # password -> NT hash
 fast_count = 0
 
+# whenCreated: an add sets it to the time of the add, whatever it is given, even with the provision and relax
+# controls; a modify as the system session then sets it (over LDAP only the system may). Measured on 4.19.5:
+# kept across a restart, dbcheck clean. whenChanged cannot be set that way: every change gives it the time again.
+WHEN_CREATED = False
+when_created_count = 0
+
+
+def set_when_created(dn, value):
+    m = ldb.Message(ldb.Dn(db, dn))
+    m["whenCreated"] = ldb.MessageElement([value], ldb.FLAG_MOD_REPLACE, "whenCreated")
+    db.modify(m)
+
 
 def b64d(v):
     return base64.b64decode(v)
@@ -96,8 +108,9 @@ def rid_of(sid_bytes):
 
 
 def op_hello(req):
-    global FAST
+    global FAST, WHEN_CREATED
     FAST = bool(req.get("fast_password"))
+    WHEN_CREATED = bool(req.get("when_created"))
     # Try the same operation up front so the import does not fail midway (the transaction is cancelled, so nothing remains).
     ver = getattr(samba, "version", "")  # samba.version is a string
     guid = uuid.uuid4()
@@ -118,6 +131,14 @@ def op_hello(req):
         got = str(ndr_unpack(misc.GUID, res[0]["objectGUID"][0]))
         if got != str(guid):
             return fail(1, "self-check: objectGUID did not take the specified value (%s != %s)" % (got, guid))
+        if WHEN_CREATED:
+            try:
+                set_when_created(str(msg.dn), b"20010203040506.0Z")
+            except ldb.LdbError as e:
+                return fail(e.args[0], "self-check: setting whenCreated was rejected (when_created = \"source\" is not usable with this Samba): %s" % e.args[1])
+            got = str(db.search(base=msg.dn, scope=ldb.SCOPE_BASE, attrs=["whenCreated"])[0]["whenCreated"][0])
+            if got != "20010203040506.0Z":
+                return fail(1, "self-check: whenCreated did not take the value given (%s): when_created = \"source\" is not usable with this Samba" % got)
         if FAST:
             nt_hash = bytes(range(1, 17))
             try:
@@ -155,8 +176,9 @@ def op_search(req):
 
 
 def op_add(req):
-    global max_rid
-    attrs = req["attrs"]
+    global max_rid, when_created_count
+    attrs = dict(req["attrs"])
+    created = attrs.pop("whenCreated", None)
     controls = []
     if "objectGUID" in attrs or "objectSid" in attrs:
         controls = CONTROLS
@@ -175,6 +197,9 @@ def op_add(req):
             return fail(e.args[0], "objectSid %s collided with an existing object in the lab (%s): %s" % (sid, owners or "unknown", e.args[1]))
         raise
     max_rid = max(max_rid, rid)
+    if WHEN_CREATED and created:
+        set_when_created(req["dn"], b64d(created[0]))
+        when_created_count += 1
     return ok()
 
 
@@ -236,7 +261,7 @@ def op_finish(_req):
     summary = out[-1] if out else ""
     if proc.returncode != 0 or ", 0 errors" not in summary and "(0 errors)" not in summary:
         return fail(1, "dbcheck reported an error (relax loosens the consistency checks, so this is the last line of defense): " + " / ".join(out[-5:]))
-    return ok(max_rid=max_rid, rid_next=bumped, dbcheck=summary, fast_passwords=fast_count)
+    return ok(max_rid=max_rid, rid_next=bumped, dbcheck=summary, fast_passwords=fast_count, when_created=when_created_count)
 
 
 def bump_rid(maximum):

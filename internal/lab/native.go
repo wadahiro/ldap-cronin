@@ -34,6 +34,9 @@ type NativeOptions struct {
 	// written directly: Samba then derives no other hash, the Kerberos AES keys among them, which is what takes the
 	// time of a user. Those users log on over LDAP and with Kerberos through RC4, not AES.
 	FastPassword bool
+	// WhenCreated gives each object the source's whenCreated, set right after its add (an add takes the time of the
+	// add, whatever it is given; only the system may change it afterwards). whenChanged is the lab's.
+	WhenCreated bool
 }
 
 // NativeInfo is the information about the lab's Samba and domain reported by the helper.
@@ -68,6 +71,7 @@ type wireResponse struct {
 	RIDNext       int    `json:"rid_next"`
 	DBCheck       string `json:"dbcheck"`
 	FastPasswords int    `json:"fast_passwords"`
+	WhenCreated   int    `json:"when_created"`
 }
 
 // NativeFinish is the result of the post-import cleanup (RID allocation, dbcheck).
@@ -77,6 +81,8 @@ type NativeFinish struct {
 	DBCheck string
 	// FastPasswords is the number of users given the NT hash directly (NativeOptions.FastPassword).
 	FastPasswords int
+	// WhenCreated is the number of objects given the source's whenCreated (NativeOptions.WhenCreated).
+	WhenCreated int
 }
 
 // Native is a session that creates objects directly in the lab's Samba with a specified objectGUID and objectSid.
@@ -175,7 +181,7 @@ func (l *Lab) OpenNative(ctx context.Context, opts NativeOptions) (*Native, erro
 		return nil, err
 	}
 	n.proc, n.rd = proc, bufio.NewReaderSize(proc.Stdout, 1<<20)
-	resp, err := n.call(ctx, map[string]any{"op": "hello", "fast_password": opts.FastPassword})
+	resp, err := n.call(ctx, map[string]any{"op": "hello", "fast_password": opts.FastPassword, "when_created": opts.WhenCreated})
 	if err != nil {
 		_ = n.Close(ctx)
 		return nil, fmt.Errorf("cannot start the native helper (it may not work with this Samba): %w", err)
@@ -323,7 +329,8 @@ func (n *Native) Finish(ctx context.Context) (NativeFinish, error) {
 		return NativeFinish{}, err
 	}
 	n.finished = true
-	return NativeFinish{MaxRID: resp.MaxRID, RIDNext: resp.RIDNext, DBCheck: resp.DBCheck, FastPasswords: resp.FastPasswords}, nil
+	return NativeFinish{MaxRID: resp.MaxRID, RIDNext: resp.RIDNext, DBCheck: resp.DBCheck, FastPasswords: resp.FastPasswords,
+		WhenCreated: resp.WhenCreated}, nil
 }
 
 // Close ends the helper and resumes the lab that was stopped. It runs to the end even when ctx is cancelled, since
@@ -367,6 +374,9 @@ func (f NativeFinish) Summary() string {
 	}
 	if f.FastPasswords > 0 {
 		parts = append(parts, fmt.Sprintf("fast_password: %d users got the NT hash directly (no Kerberos AES keys)", f.FastPasswords))
+	}
+	if f.WhenCreated > 0 {
+		parts = append(parts, fmt.Sprintf("whenCreated: the source's on %d objects", f.WhenCreated))
 	}
 	return strings.Join(parts, " / ")
 }
