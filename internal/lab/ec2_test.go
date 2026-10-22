@@ -24,6 +24,9 @@ func TestEC2UserDataMakesTheSourcesDomain(t *testing.T) {
 			t.Errorf("the user data lacks %q", want)
 		}
 	}
+	if !strings.Contains(ud, "$PSDefaultParameterValues['*-AD*:Server'] = $fqdn") {
+		t.Error("every AD cmdlet names the DC: with a credential and no -Server they failed")
+	}
 	if strings.Contains(ud, "Restart-Service NTDS") || strings.Count(ud, "Restart-Computer -Force") != 2 {
 		t.Error("the certificate is taken by a restart of the computer, not of NTDS, after which this process' AD cmdlets fail")
 	}
@@ -164,7 +167,7 @@ func TestEC2FunctionalLevelsAndRecycleBin(t *testing.T) {
 	e.ForestLevel, e.DomainLevel, e.RecycleBin = 6, 7, true
 	ud, err = e.UserData(testPassword)
 	for _, want := range []string{"$ForestMode = 'Win2012R2'", "$DomainMode = 'WinThreshold'", "$RecycleBin = 'yes'", "Install-ADDSForest @forest",
-		"Enable-ADOptionalFeature -Credential $cred -Server $fqdn -Identity 'Recycle Bin Feature' -Scope ForestOrConfigurationSet"} {
+		"Enable-ADOptionalFeature -Credential $cred -Identity 'Recycle Bin Feature' -Scope ForestOrConfigurationSet"} {
 		if err != nil || !strings.Contains(ud, want) {
 			t.Errorf("lacks %q (%v)", want, err)
 		}

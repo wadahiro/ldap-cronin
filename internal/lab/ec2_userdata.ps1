@@ -39,8 +39,14 @@ try {
         exit 0
     }
     $cred = New-Object System.Management.Automation.PSCredential("$NetBIOS\Administrator", $secure)
-    # Active Directory answers through its Web Services, which start minutes after the domain controller does, and
-    # again after NTDS restarts: every step that asks it waits for it first (10 minutes at most).
+    # Every AD cmdlet names this DC. With a credential and no -Server, the cmdlets find a DC of the domain by
+    # themselves, and once the forest was up that failed ("The operation failed because of a bad parameter"; "the
+    # server has rejected the client credentials" in an Administrator's session) where the same credential with
+    # -Server was taken.
+    $fqdn = [System.Net.Dns]::GetHostEntry($env:COMPUTERNAME).HostName
+    $PSDefaultParameterValues['*-AD*:Server'] = $fqdn
+    # Active Directory answers through its Web Services, which start minutes after the domain controller does: the
+    # steps that ask it wait for it first (10 minutes at most).
     function Wait-AD {
         Write-Output 'waiting for Active Directory Web Services'
         for ($i = 0; ; $i++) {
@@ -49,7 +55,6 @@ try {
         }
     }
     Wait-AD
-    $fqdn = [System.Net.Dns]::GetHostEntry($env:COMPUTERNAME).HostName
     $serverAuth = '1.3.6.1.5.5.7.3.1'
     $cert = Get-ChildItem Cert:\LocalMachine\My | Where-Object { $_.EnhancedKeyUsageList.ObjectId -contains $serverAuth } | Select-Object -First 1
     if (-not $cert) {
@@ -84,16 +89,8 @@ try {
         $feature = Get-ADOptionalFeature -Credential $cred -Filter "name -eq 'Recycle Bin Feature'"
         if (-not $feature.EnabledScopes) {
             Write-Output 'AD Recycle Bin'
-            # Run as SYSTEM with the Administrator's credential, without -Server the cmdlet failed ("The operation
-            # failed because of a bad parameter") where the Administrator's own session took it: it names the DC,
-            # and is tried again a few times, as the DC may still settle after NTDS restarted.
-            for ($i = 0; ; $i++) {
-                try {
-                    Enable-ADOptionalFeature -Credential $cred -Server $fqdn -Identity 'Recycle Bin Feature' -Scope ForestOrConfigurationSet `
-                        -Target $Domain -Confirm:$false -WarningAction SilentlyContinue
-                    break
-                } catch { if ($i -ge 5) { throw }; Start-Sleep -Seconds 30 }
-            }
+            Enable-ADOptionalFeature -Credential $cred -Identity 'Recycle Bin Feature' -Scope ForestOrConfigurationSet `
+                -Target $Domain -Confirm:$false -WarningAction SilentlyContinue
         }
     }
     Write-Output 'password policy for the fixed password of the cloned users'
