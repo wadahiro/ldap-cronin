@@ -299,6 +299,9 @@ subnet = "subnet-0123456789abcdef0"     # its instances must reach Systems Manag
 instance_profile = "ldap-cronin-lab"    # a role with AmazonSSMManagedInstanceCore
 # instance_type = "t3.large"
 # windows = "2022"                      # 2016, 2019, 2022 or 2025
+# disk_size = 50                         # the root volume in GiB, gp3 (default: the image's, 30)
+# security_groups = ["sg-0123456789abcdef0"]   # attached to the instance (default: the VPC's default group);
+#                                        # Systems Manager needs no inbound rule
 # ldaps_name = "ldap.test.example.com"  # one more DNS name of its LDAPS certificate (the DC's and the domain's are in it)
 # ldap_port = 13389                      # the local port LDAP (389) is forwarded to too, for clients without LDAPS
 # ldap_unsigned = true                   # a simple bind on 389 without signing taken (2025 refuses it by default)

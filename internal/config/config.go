@@ -88,6 +88,10 @@ type Lab struct {
 	LDAPUnsigned bool `toml:"ldap_unsigned"`
 	// RecycleBin (EC2) enables the AD Recycle Bin on the lab's forest.
 	RecycleBin bool `toml:"recycle_bin"`
+	// DiskSize (EC2) is the instance's root volume in GiB (default: the image's, 30).
+	DiskSize int `toml:"disk_size"`
+	// SecurityGroups (EC2) are attached to the instance (default: the VPC's default group).
+	SecurityGroups []string `toml:"security_groups"`
 }
 
 // Platforms of [target.lab].
@@ -337,6 +341,9 @@ func (c *Config) validate() error {
 			}
 			if l.RecycleBin {
 				return fmt.Errorf("[target.lab] recycle_bin is for platform = %q (Samba has no AD Recycle Bin)", PlatformEC2)
+			}
+			if l.DiskSize != 0 || len(l.SecurityGroups) > 0 {
+				return fmt.Errorf("[target.lab] disk_size and security_groups are for platform = %q", PlatformEC2)
 			}
 		case PlatformEC2:
 			if l.Native {

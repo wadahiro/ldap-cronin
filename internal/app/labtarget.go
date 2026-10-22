@@ -191,7 +191,7 @@ func (s *Session) EC2Lab(ctx context.Context) (lab.EC2Lab, error) {
 	e := lab.EC2Lab{
 		Name: name, Domain: settings.Domain, NetBIOS: netbios,
 		Region: lt.Region, Subnet: lt.Subnet, InstanceType: lt.InstanceType, Windows: lt.Windows, InstanceProfile: lt.InstanceProfile,
-		LocalPort: port.LDAPSPort, LDAPSName: lt.LDAPSName, LDAPPort: lt.LDAPPort, LDAPUnsigned: lt.LDAPUnsigned, RecycleBin: lt.RecycleBin,
+		LocalPort: port.LDAPSPort, LDAPSName: lt.LDAPSName, LDAPPort: lt.LDAPPort, LDAPUnsigned: lt.LDAPUnsigned, RecycleBin: lt.RecycleBin, DiskSize: lt.DiskSize, SecurityGroups: lt.SecurityGroups,
 	}
 	// The forest is made with the source's functional levels, which its root DSE says (a dump taken before they were
 	// carried does not: the highest the instance's Windows Server makes is taken then).

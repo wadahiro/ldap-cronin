@@ -46,6 +46,11 @@ type EC2Lab struct {
 	ForestLevel, DomainLevel int
 	// RecycleBin enables the AD Recycle Bin (forest level 4, 2008 R2, or higher).
 	RecycleBin bool
+	// DiskSize is the root volume's size in GiB (gp3); 0 leaves the image's (30 GiB for Windows Server).
+	DiskSize int
+	// SecurityGroups are attached to the instance; none leaves the VPC's default group. Systems Manager needs no
+	// inbound rule: the instance's agent reaches out.
+	SecurityGroups []string
 
 	instance string // the instance, once known (WithInstance)
 }
@@ -80,9 +85,10 @@ const (
 )
 
 var (
-	ec2DomainPattern  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9.-]*$`)
-	ec2NetBIOSPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,14}$`)
-	ec2NamePattern    = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
+	ec2DomainPattern     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9.-]*$`)
+	ec2NetBIOSPattern    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,14}$`)
+	securityGroupPattern = regexp.MustCompile(`^sg-[0-9a-f]{8,17}$`)
+	ec2NamePattern       = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 )
 
 // Check refuses settings the instance could not use, or that would not stay inside the PowerShell's quotes.
@@ -118,6 +124,14 @@ func (e EC2Lab) Check() error {
 	}
 	if e.ForestLevel != 0 && e.DomainLevel != 0 && e.DomainLevel < e.ForestLevel {
 		return fmt.Errorf("domain functional level %d below the forest's %d", e.DomainLevel, e.ForestLevel)
+	}
+	for _, g := range e.SecurityGroups {
+		if !securityGroupPattern.MatchString(g) {
+			return fmt.Errorf("security_groups: %q is not a security group id (sg-0123456789abcdef0)", g)
+		}
+	}
+	if e.DiskSize != 0 && (e.DiskSize < minDiskSize || e.DiskSize > 16384) {
+		return fmt.Errorf("disk_size %d: from %d GiB (the Windows Server image's) to 16384", e.DiskSize, minDiskSize)
 	}
 	if e.RecycleBin && e.ForestLevel != 0 && e.ForestLevel < 4 {
 		return fmt.Errorf("the AD Recycle Bin needs forest functional level 4 (2008 R2) or higher; the source's is %d", e.ForestLevel)
@@ -248,12 +262,22 @@ func (e EC2Lab) amiArgs() []string {
 	return e.awsArgs("ssm", "get-parameter", "--name", e.AMIParameter(), "--query", "Parameter.Value", "--output", "text")
 }
 
+// minDiskSize is the root volume of the Windows Server images (GiB): a smaller one is refused.
+const minDiskSize = 30
+
 func (e EC2Lab) runArgs(ami, userData string) []string {
-	return e.awsArgs("ec2", "run-instances", "--image-id", ami, "--instance-type", e.instanceType(), "--subnet-id", e.Subnet,
-		"--iam-instance-profile", "Name="+e.InstanceProfile, "--metadata-options", "HttpTokens=required",
-		"--user-data", "file://"+userData,
-		"--tag-specifications", "ResourceType=instance,Tags=["+e.tags()+"]", "ResourceType=volume,Tags=["+e.tags()+"]",
-		"--query", "Instances[0].InstanceId", "--output", "text")
+	args := []string{"ec2", "run-instances", "--image-id", ami, "--instance-type", e.instanceType(), "--subnet-id", e.Subnet,
+		"--iam-instance-profile", "Name=" + e.InstanceProfile, "--metadata-options", "HttpTokens=required",
+		"--user-data", "file://" + userData,
+		"--tag-specifications", "ResourceType=instance,Tags=[" + e.tags() + "]", "ResourceType=volume,Tags=[" + e.tags() + "]"}
+	if len(e.SecurityGroups) > 0 {
+		args = append(append(args, "--security-group-ids"), e.SecurityGroups...)
+	}
+	if e.DiskSize > 0 { // the root device of the Windows Server images
+		args = append(args, "--block-device-mappings",
+			fmt.Sprintf("DeviceName=/dev/sda1,Ebs={VolumeSize=%d,VolumeType=gp3,DeleteOnTermination=true}", e.DiskSize))
+	}
+	return e.awsArgs(append(args, "--query", "Instances[0].InstanceId", "--output", "text")...)
 }
 
 // readyScript answers READY once the user data has finished, else the last line of its log.

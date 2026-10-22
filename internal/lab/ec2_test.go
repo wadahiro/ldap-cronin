@@ -79,6 +79,8 @@ func TestEC2LabRefusesWhatTheScriptCannotTake(t *testing.T) {
 		"a domain below the forest": func(e *EC2Lab) { e.ForestLevel, e.DomainLevel = 7, 6 },
 		"a recycle bin on 2008":     func(e *EC2Lab) { e.ForestLevel, e.DomainLevel, e.RecycleBin = 3, 3, true },
 		"a brace in the name":       func(e *EC2Lab) { e.Name = "ldap-cronin-ad-x}]" },
+		"a disk below the image's":  func(e *EC2Lab) { e.DiskSize = 20 },
+		"a security group's name":   func(e *EC2Lab) { e.SecurityGroups = []string{"default"} },
 	} {
 		e := testEC2Lab()
 		change(&e)
@@ -112,9 +114,20 @@ func TestEC2UpCommands(t *testing.T) {
 	if strings.Contains(text, "put-parameter") || strings.Contains(text, testPassword) {
 		t.Errorf("no parameter, no password:\n%s", text)
 	}
-	e.Windows, e.InstanceType = "2025", "m5.xlarge"
-	if text := e.UpCommands()[1].Shell() + e.UpCommands()[2].Shell(); !strings.Contains(text, "Windows_Server-2025-") || !strings.Contains(text, "m5.xlarge") {
-		t.Errorf("windows and instance_type: %s", text)
+	if strings.Contains(text, "--block-device-mappings") {
+		t.Errorf("without disk_size, the image's volume: %s", text)
+	}
+	if strings.Contains(text, "--security-group-ids") {
+		t.Errorf("without security_groups, the VPC's default: %s", text)
+	}
+	e.SecurityGroups = []string{"sg-02ed95a0b7fdab87c", "sg-0123456789abcdef0"}
+	if run := e.UpCommands()[2].Shell(); !strings.Contains(run, "--security-group-ids sg-02ed95a0b7fdab87c sg-0123456789abcdef0 ") {
+		t.Errorf("security_groups: %s", run)
+	}
+	e.Windows, e.InstanceType, e.DiskSize = "2025", "m5.xlarge", 80
+	if text := e.UpCommands()[1].Shell() + e.UpCommands()[2].Shell(); !strings.Contains(text, "Windows_Server-2025-") || !strings.Contains(text, "m5.xlarge") ||
+		!strings.Contains(text, "--block-device-mappings 'DeviceName=/dev/sda1,Ebs={VolumeSize=80,VolumeType=gp3,DeleteOnTermination=true}'") {
+		t.Errorf("windows, instance_type and disk_size: %s", text)
 	}
 }
 
