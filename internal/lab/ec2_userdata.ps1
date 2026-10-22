@@ -36,10 +36,18 @@ try {
     }
     $fqdn = [System.Net.Dns]::GetHostEntry($env:COMPUTERNAME).HostName
     $serverAuth = '1.3.6.1.5.5.7.3.1'
-    if (-not (Get-ChildItem Cert:\LocalMachine\My | Where-Object { $_.EnhancedKeyUsageList.ObjectId -contains $serverAuth })) {
+    $cert = Get-ChildItem Cert:\LocalMachine\My | Where-Object { $_.EnhancedKeyUsageList.ObjectId -contains $serverAuth } | Select-Object -First 1
+    if (-not $cert) {
         Write-Output "LDAPS certificate for $fqdn"
-        New-SelfSignedCertificate -DnsName $fqdn, $Domain -CertStoreLocation Cert:\LocalMachine\My `
-            -KeyUsage DigitalSignature, KeyEncipherment -TextExtension "2.5.29.37={text}$serverAuth" -NotAfter (Get-Date).AddYears(5) | Out-Null
+        $cert = New-SelfSignedCertificate -DnsName $fqdn, $Domain -CertStoreLocation Cert:\LocalMachine\My `
+            -KeyUsage DigitalSignature, KeyEncipherment -TextExtension "2.5.29.37={text}$serverAuth" -NotAfter (Get-Date).AddYears(5)
+    }
+    # The DC serves LDAPS with a certificate it trusts itself: a self-signed one goes to its trusted roots too, or
+    # every TLS handshake on 636 is closed at once.
+    if (-not (Test-Path "Cert:\LocalMachine\Root\$($cert.Thumbprint)")) {
+        Write-Output "trusting the LDAPS certificate ($($cert.Thumbprint))"
+        $root = New-Object System.Security.Cryptography.X509Certificates.X509Store('Root', 'LocalMachine')
+        $root.Open('ReadWrite'); $root.Add($cert); $root.Close()
         Restart-Service NTDS -Force
         Start-Sleep -Seconds 20
     }

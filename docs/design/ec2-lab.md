@@ -55,12 +55,19 @@ controller, and using the lab as a production copy.
 - `instance_profile`: a role with `AmazonSSMManagedInstanceCore` (which allows `ssm:GetParameter`), and
   `kms:Decrypt` on the key of the parameter when it is not the default `aws/ssm` key.
 
-## 5. Unverified
+## 5. Verified by hand (2026-10-22, Windows Server 2019, the user data pasted into the console)
+
+- The persisted user data runs again after the forest's restart (EC2Launch v2), as `AD\SYSTEM`, and the
+  `-Credential` AD cmdlets work there; the whole took about 13 minutes on t3.large, 4-5 of them waiting for AD Web
+  Services after the restart.
+- A self-signed certificate in `LocalMachine\My` alone is not enough: the DC closed every TLS handshake on 636 until
+  the certificate was also in its trusted roots (`LocalMachine\Root`). The user data does both now.
+- LDAPS through `AWS-StartPortForwardingSession` from another machine works (ldapsearch with `LDAPTLS_REQCERT=never`).
+- Not exercised: `Get-SSMParameter` (the test wrote the password into the user data instead).
+
+## 6. Unverified
 
 - That `Get-SSMParameter` (AWS Tools for PowerShell) is on every listed Windows image, and works under EC2Launch v2
   before the instance profile's credentials are available.
-- That `Restart-Computer` from persisted user data runs it again after the restart, rather than `exit 3010`.
-- That `Set-ADDefaultDomainPasswordPolicy`, `Get-ADRootDSE` and `Set-ADObject` with `-Credential` work in the second
-  phase, which runs as LocalSystem.
-- That `Restart-Service NTDS` is enough for LDAPS to use the new certificate.
-- How long it takes (an estimate: 15-20 minutes on t3.large).
+- `Set-ADObject` on the marker's `searchFlags` (the test left the marker out: `[mapping] mode = "file"`).
+- Windows Server 2016, 2022 and 2025.
