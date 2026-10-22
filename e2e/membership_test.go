@@ -19,6 +19,7 @@ import (
 	"github.com/wadahiro/ldap-cronin/internal/directory"
 	"github.com/wadahiro/ldap-cronin/internal/dn"
 	"github.com/wadahiro/ldap-cronin/internal/identity"
+	"github.com/wadahiro/ldap-cronin/internal/profile"
 )
 
 // The membership test on real Samba servers: a group whose members are a user, a computer and a contact of the
@@ -96,12 +97,23 @@ func TestEveryKindOfMemberIsClonedAndItsRemovalShows(t *testing.T) {
 		t.Logf("the principal's member value %s is on the target: clone references it by DN", principal)
 	}
 
+	// Windows takes a well-known principal only in a built-in group: on a Windows target the value is skipped with
+	// its reason, and diff counts it instead of comparing it (Samba, which made the source, takes it in any group).
+	samba, err := profile.IsSamba(ctx, dst)
+	must(err)
+	written := []string{ann, carl, pc, pcOut, contact, domainAdm, principal}
+	warnings := 0
+	if !samba {
+		written, warnings = written[:len(written)-1], 1
+		t.Log("the target is Windows: the well-known principal is skipped")
+	}
+
 	m := markerOf(t, src, dst, scope)
 	opt := planOptionsFor(t, scope)
 	rep, err := clone.Run(ctx, src, dst, opt, clone.Options{UserPassword: fixedPw, Workers: 4, Marker: &m}, &bytes.Buffer{})
 	must(err)
-	if rep.Referenced != 2 || rep.WarningCount != 0 {
-		t.Fatalf("carl and PC2 must be cloned as referenced objects and nothing skipped: %+v", rep)
+	if rep.Referenced != 2 || rep.WarningCount != warnings {
+		t.Fatalf("carl and PC2 must be cloned as referenced objects, and %d skipped: %+v", warnings, rep)
 	}
 	if fmt.Sprint(rep.ReferencedKinds) != "map[computer:1 user:1]" || fmt.Sprint(rep.NotCloned) != "map[serviceConnectionPoint:1]" {
 		t.Fatalf("the counts: referenced %v, not cloned %v", rep.ReferencedKinds, rep.NotCloned)
@@ -117,7 +129,7 @@ func TestEveryKindOfMemberIsClonedAndItsRemovalShows(t *testing.T) {
 		}
 	}
 	members := mustGet(t, dst, group, "member").Values("member")
-	for _, want := range []string{ann, carl, pc, pcOut, contact, domainAdm, principal} {
+	for _, want := range written {
 		if !slices.ContainsFunc(members, func(v string) bool { return dn.Equal(v, want) }) {
 			t.Fatalf("member %s is missing on the target: %v", want, members)
 		}
@@ -146,7 +158,7 @@ func TestEveryKindOfMemberIsClonedAndItsRemovalShows(t *testing.T) {
 		t.Fatalf("want one member difference: %+v", diffs)
 	}
 	removed := append(diffs[0].OnlySource, diffs[0].Source...)
-	gone := []string{carl, pc, pcOut, contact, domainAdm, principal}
+	gone := written[1:]
 	for _, want := range gone {
 		if !slices.ContainsFunc(removed, func(v string) bool { return dn.Equal(v, want) }) {
 			t.Errorf("the removal of %s must show: %v", want, removed)

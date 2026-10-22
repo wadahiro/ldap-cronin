@@ -53,6 +53,10 @@ type Classifier struct {
 	configNC   string // the target's configuration partition
 	configErr  error
 
+	wellKnownOnce    sync.Once
+	wellKnownRefused bool // the target refuses a well-known principal in a cloned group (profile.WellKnownRefused)
+	wellKnownErr     error
+
 	mu   sync.Mutex
 	seen map[string]*refCheck
 }
@@ -75,6 +79,7 @@ const (
 	WhySkipped       = "names an entry outside the scope ([scope] references = \"skip\")"
 	WhyNotOnTarget   = "names an entry outside the scope the target lacks ([scope] references = \"existing\")"
 	WhyFenced        = "names a schema definition or a partition of the forest, which clone never creates"
+	WhyWellKnown     = "names a well-known principal (Everyone, Authenticated Users), which Windows takes only in a built-in group"
 	WhyWrapped       = "names a well-known principal inside a DN-Binary or DN-String value, which clone does not write"
 )
 
@@ -160,6 +165,16 @@ func (c *Classifier) check(ctx context.Context, v string) (*refCheck, error) {
 func (c *Classifier) classify(ctx context.Context, v string, chk *refCheck) error {
 	job := c.p.job
 	prof := job.Profile
+	if prof.WellKnownRefused != nil && prof.IsWellKnown != nil && prof.IsWellKnown(v) {
+		c.wellKnownOnce.Do(func() { c.wellKnownRefused, c.wellKnownErr = prof.WellKnownRefused(ctx, c.dst) })
+		if c.wellKnownErr != nil {
+			return c.wellKnownErr
+		}
+		if c.wellKnownRefused {
+			chk.class, chk.why = RefUnreproducible, WhyWellKnown
+			return nil
+		}
+	}
 	mode := job.References
 	if mode == "" {
 		mode = RefsClone

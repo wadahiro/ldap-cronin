@@ -102,7 +102,24 @@ var AD = Profile{
 	SystemFilter: "(!(isCriticalSystemObject=TRUE))",
 	SystemAttr:   "isCriticalSystemObject",
 	Principal:    wellKnownPrincipal,
-	BuiltinRefs:  map[string]RefInfo{"member": {}, "manager": {Single: true}, "managedby": {Single: true}},
+	// Measured on Windows Server 2019: adding Everyone or Authenticated Users to a global group fails with 53
+	// (WILL_NOT_PERFORM), to a domain local one with 80 (0x56C, ERROR_INVALID_MEMBER), by DN or by <SID=...>.
+	WellKnownRefused: func(ctx context.Context, dst directory.Directory) (bool, error) {
+		root, err := dst.Get(ctx, "", []string{"vendorName", "defaultNamingContext"})
+		if err != nil || root == nil || len(root.Values("defaultNamingContext")) == 0 {
+			return false, err // not a server (a dry-run's LDIF): written, as before
+		}
+		samba, err := IsSamba(ctx, dst)
+		return !samba, err
+	},
+	IsWellKnown: func(v string) bool {
+		if _, ok := wellKnownPrincipal(v); ok {
+			return true
+		}
+		rdns := dn.Split(v)
+		return len(rdns) > 2 && strings.EqualFold(strings.TrimSpace(rdns[1]), "CN=WellKnown Security Principals")
+	},
+	BuiltinRefs: map[string]RefInfo{"member": {}, "manager": {Single: true}, "managedby": {Single: true}},
 	// AD splits a large member into ranges by itself, Samba does not. Always asking for ranges puts both through the
 	// same retrieval path, so the multi-fetch code runs against Samba in CI too.
 	Ranged:        []string{"member"},

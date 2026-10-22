@@ -220,6 +220,11 @@ type Profile struct {
 	// Principal returns how to write a reference to a principal every domain has (AD: a well-known foreign
 	// security principal, written as <SID=...> so the target's DC creates it). nil: none.
 	Principal func(dn string) (value string, ok bool)
+	// WellKnownRefused, when set, reports whether a target refuses a well-known principal (Everyone, Authenticated
+	// Users) in the member of a group clone writes: Windows takes one only in a built-in group, Samba in any.
+	// IsWellKnown recognizes such a value, in either server's form.
+	WellKnownRefused func(ctx context.Context, dst directory.Directory) (bool, error)
+	IsWellKnown      func(dn string) bool
 	// BuiltinRefs are DN-valued attributes known without reading the schema (lowercase name).
 	BuiltinRefs map[string]RefInfo
 	// Ranged attributes are always fetched with the AD range option (member;range=0-N).
