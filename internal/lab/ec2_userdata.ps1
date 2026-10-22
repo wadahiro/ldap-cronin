@@ -37,10 +37,16 @@ try {
         exit 0
     }
     $cred = New-Object System.Management.Automation.PSCredential("$NetBIOS\Administrator", $secure)
-    for ($i = 0; ; $i++) {
-        try { Get-ADDomain -Credential $cred | Out-Null; break }
-        catch { if ($i -ge 60) { throw }; Start-Sleep -Seconds 10 }
+    # Active Directory answers through its Web Services, which start minutes after the domain controller does, and
+    # again after NTDS restarts: every step that asks it waits for it first (10 minutes at most).
+    function Wait-AD {
+        Write-Output 'waiting for Active Directory Web Services'
+        for ($i = 0; ; $i++) {
+            try { Get-ADDomain -Credential $cred | Out-Null; return }
+            catch { if ($i -ge 60) { throw }; Start-Sleep -Seconds 10 }
+        }
     }
+    Wait-AD
     $fqdn = [System.Net.Dns]::GetHostEntry($env:COMPUTERNAME).HostName
     $serverAuth = '1.3.6.1.5.5.7.3.1'
     $cert = Get-ChildItem Cert:\LocalMachine\My | Where-Object { $_.EnhancedKeyUsageList.ObjectId -contains $serverAuth } | Select-Object -First 1
@@ -58,7 +64,7 @@ try {
         $root = New-Object System.Security.Cryptography.X509Certificates.X509Store('Root', 'LocalMachine')
         $root.Open('ReadWrite'); $root.Add($cert); $root.Close()
         Restart-Service NTDS -Force
-        Start-Sleep -Seconds 20
+        Wait-AD
     }
     if ($PlainLDAP) {
         # Signing not required (1), so a simple bind on 389 is taken, as Windows Server 2019 and 2022 do by default

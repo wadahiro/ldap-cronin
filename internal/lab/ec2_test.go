@@ -24,6 +24,9 @@ func TestEC2UserDataMakesTheSourcesDomain(t *testing.T) {
 			t.Errorf("the user data lacks %q", want)
 		}
 	}
+	if !strings.Contains(ud, "Restart-Service NTDS -Force\n        Wait-AD") {
+		t.Error("after NTDS restarts, Active Directory's Web Services are waited for: the Recycle Bin and the policy ask them")
+	}
 	if strings.Contains(ud, "{{") || strings.Contains(ud, "Get-SSMParameter") {
 		t.Errorf("a field is left unfilled, or the parameter is read:\n%s", ud)
 	}
