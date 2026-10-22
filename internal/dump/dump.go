@@ -15,6 +15,7 @@ import (
 	"github.com/wadahiro/ldap-cronin/internal/ldif"
 	"github.com/wadahiro/ldap-cronin/internal/ldifdir"
 	"github.com/wadahiro/ldap-cronin/internal/mask"
+	"github.com/wadahiro/ldap-cronin/internal/plan"
 	"github.com/wadahiro/ldap-cronin/internal/profile"
 	"github.com/wadahiro/ldap-cronin/internal/progress"
 )
@@ -25,7 +26,8 @@ var rootDSE = []string{"supportedCapabilities", "namingContexts", "defaultNaming
 
 // Options are what the dump is of.
 type Options struct {
-	BaseDN string
+	// BaseDNs are what a clone may take of the dump: one or more, none below another, in one naming context.
+	BaseDNs []string
 	// MaskValue and Masked mask attributes in the dump itself, so the file holds no value of them.
 	MaskValue string
 	Masked    []string
@@ -41,12 +43,12 @@ type Counts struct{ RootDSE, Schema, Config, Base, Referenced int }
 // Total is the number of entries.
 func (c Counts) Total() int { return c.RootDSE + c.Schema + c.Config + c.Base + c.Referenced }
 
-// Write reads from src what a clone of o.BaseDN reads, and writes it to w:
+// Write reads from src what a clone of o.BaseDNs reads, and writes it to w:
 //   - the root DSE (the server type, the naming contexts);
 //   - the schema (AD: the attributeSchema and classSchema entries; generic: the subschema entry);
 //   - on AD the crossRef entries of the configuration partition (the NetBIOS name);
-//   - the root of the naming context, every entry between it and o.BaseDN, and every entry under o.BaseDN;
-//   - the entries outside o.BaseDN that a DN-valued attribute of those names, and the entries above them, without
+//   - the root of the naming context, every entry between it and each base DN, and every entry under it;
+//   - the entries outside the base DNs that a DN-valued attribute of those names, and the entries above them, without
 //     what they name in turn, as clone creates them.
 //
 // The credentials the profile names are never written; the attributes of o.Masked are masked.
@@ -56,13 +58,19 @@ func Write(ctx context.Context, src directory.Directory, prof profile.Profile, o
 			return Counts{}, fmt.Errorf("%s cannot be masked: it names entries or identifies the object", a)
 		}
 	}
-	root, err := prof.Root.Root(ctx, src, o.BaseDN)
+	if err := plan.CheckBases(o.BaseDNs); err != nil {
+		return Counts{}, err
+	}
+	root, err := prof.Root.Root(ctx, src, o.BaseDNs[0])
 	if err != nil {
 		return Counts{}, err
 	}
-	if !dn.Equal(o.BaseDN, root) && !dn.IsDescendant(o.BaseDN, root) {
-		return Counts{}, fmt.Errorf("base DN %q must be the root of its naming context %q or below it", o.BaseDN, root)
+	for _, b := range o.BaseDNs {
+		if !dn.Equal(b, root) && !dn.IsDescendant(b, root) {
+			return Counts{}, fmt.Errorf("base DN %q must be the root of its naming context %q or below it", b, root)
+		}
 	}
+	job := plan.Job{BaseDNs: o.BaseDNs}
 	rootEntry, err := src.Get(ctx, "", rootDSE)
 	if err != nil {
 		return Counts{}, fmt.Errorf("read the root DSE: %w", err)
@@ -152,9 +160,12 @@ func Write(ctx context.Context, src directory.Directory, prof profile.Profile, o
 	}
 
 	bar.Phase("the root and the parents of the base DN", -1)
-	wr.section("base (" + o.BaseDN + ")")
-	above := append([]string{root}, reverse(dn.Ancestors(o.BaseDN, root))...)
-	for _, a := range above {
+	wr.section("base (" + strings.Join(o.BaseDNs, "; ") + ")")
+	above := []string{root}
+	for _, b := range o.BaseDNs {
+		above = append(above, reverse(dn.Ancestors(b, root))...)
+	}
+	for _, a := range above { // an entry already written (a parent two base DNs share) is written once
 		n, err := wr.read(ctx, src, a, read, masker)
 		if err != nil {
 			return c, err
@@ -165,7 +176,7 @@ func Write(ctx context.Context, src directory.Directory, prof profile.Profile, o
 	bar.Phase("under the base DN", -1)
 	outside := map[string]string{}   // normalized DN -> DN of a value naming an entry outside the base
 	primaryRIDs := map[string]bool{} // the primary groups of the accounts that are not their type's default
-	if err := src.Walk(ctx, o.BaseDN, "(objectClass=*)", read, func(e directory.Entry) error {
+	if err := plan.WalkBases(ctx, src, o.BaseDNs, "(objectClass=*)", read, func(e directory.Entry) error {
 		if pg := prof.PrimaryGroup; pg != nil {
 			if rid := strings.TrimSpace(first(e.Values(pg.Attr()))); rid != "" && rid != pg.Default(e) {
 				primaryRIDs[rid] = true
@@ -177,7 +188,7 @@ func Write(ctx context.Context, src directory.Directory, prof profile.Profile, o
 				continue
 			}
 			for _, v := range values {
-				if d := dn.RefDN(v); !dn.Equal(d, o.BaseDN) && !dn.IsDescendant(d, o.BaseDN) {
+				if d := dn.RefDN(v); !job.InBase(d) {
 					outside[dn.Normalize(d)] = d
 				}
 			}
@@ -188,7 +199,7 @@ func Write(ctx context.Context, src directory.Directory, prof profile.Profile, o
 		bar.Add(1)
 		return nil
 	}); err != nil {
-		return c, fmt.Errorf("read %s: %w", o.BaseDN, err)
+		return c, fmt.Errorf("read %s: %w", strings.Join(o.BaseDNs, "; "), err)
 	}
 
 	if pg := prof.PrimaryGroup; pg != nil && len(primaryRIDs) > 0 {
@@ -197,7 +208,7 @@ func Write(ctx context.Context, src directory.Directory, prof profile.Profile, o
 			return c, fmt.Errorf("read the groups: %w", err)
 		}
 		for rid := range primaryRIDs {
-			if d := groups[rid]; d != "" && !dn.IsDescendant(d, o.BaseDN) {
+			if d := groups[rid]; d != "" && !job.InBase(d) {
 				outside[dn.Normalize(d)] = d
 			}
 		}
@@ -252,7 +263,9 @@ func (wr *writer) header(o Options, prof profile.Profile, root string, operation
 	fmt.Fprintf(w, "# dumped-at: %s\n", at.UTC().Format(time.RFC3339))
 	fmt.Fprintf(w, "# server: %s\n", o.Server)
 	fmt.Fprintf(w, "# profile: %s\n", prof.Name)
-	fmt.Fprintf(w, "# base-dn: %s\n", o.BaseDN)
+	for _, b := range o.BaseDNs {
+		fmt.Fprintf(w, "# base-dn: %s\n", b)
+	}
 	fmt.Fprintf(w, "# root-dn: %s\n", root)
 	if len(o.Masked) > 0 {
 		fmt.Fprintf(w, "# masked (value: %s):\n", o.MaskValue)

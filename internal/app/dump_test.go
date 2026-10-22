@@ -57,7 +57,7 @@ func TestACloneFromADumpIsTheCloneFromTheSource(t *testing.T) {
 	src := newWorld()
 	seed(src)
 	var out bytes.Buffer
-	counts, err := dump.Write(context.Background(), src.src, profile.AD, dump.Options{BaseDN: base, MaskValue: "********",
+	counts, err := dump.Write(context.Background(), src.src, profile.AD, dump.Options{BaseDNs: []string{base}, MaskValue: "********",
 		Masked: []string{"mail"}, Server: "ldaps://src:636", Version: "test"}, &out)
 	if err != nil {
 		t.Fatal(err)
@@ -200,7 +200,7 @@ func TestConfigurationRefsFromADump(t *testing.T) {
 	src := newWorld()
 	seed(src)
 	var out bytes.Buffer
-	if _, err := dump.Write(context.Background(), src.src, profile.AD, dump.Options{BaseDN: base, Server: "ldaps://src:636"}, &out); err != nil {
+	if _, err := dump.Write(context.Background(), src.src, profile.AD, dump.Options{BaseDNs: []string{base}, Server: "ldaps://src:636"}, &out); err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(t.TempDir(), "prod.ldif")

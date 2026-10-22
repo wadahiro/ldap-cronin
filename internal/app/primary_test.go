@@ -64,7 +64,7 @@ func TestThePrimaryGroupIsTheSourcesByItsDN(t *testing.T) {
 	}
 
 	var dumped bytes.Buffer
-	if _, err := dump.Write(ctx, w.src, profile.AD, dump.Options{BaseDN: base, Server: "ldaps://src:636", Version: "test"}, &dumped); err != nil {
+	if _, err := dump.Write(ctx, w.src, profile.AD, dump.Options{BaseDNs: []string{base}, Server: "ldaps://src:636", Version: "test"}, &dumped); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(dumped.String(), "dn: "+contractors+"\n") {

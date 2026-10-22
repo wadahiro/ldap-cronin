@@ -13,7 +13,6 @@ import (
 
 	"github.com/wadahiro/ldap-cronin/internal/config"
 	"github.com/wadahiro/ldap-cronin/internal/directory"
-	"github.com/wadahiro/ldap-cronin/internal/dn"
 	"github.com/wadahiro/ldap-cronin/internal/ldapdir"
 	"github.com/wadahiro/ldap-cronin/internal/ldifdir"
 	"github.com/wadahiro/ldap-cronin/internal/plan"
@@ -140,8 +139,13 @@ func openSource(ctx context.Context, cfg *config.Config, secrets Secrets, dial D
 		return nil, err
 	}
 	m := d.Meta()
-	if m.BaseDN != "" && !dn.Equal(cfg.Scope.BaseDN, m.BaseDN) && !dn.IsDescendant(cfg.Scope.BaseDN, m.BaseDN) {
-		return nil, fmt.Errorf("[scope] base_dn %s is not in the dump, which holds %s", cfg.Scope.BaseDN, m.BaseDN)
+	if len(m.BaseDNs) > 0 {
+		dumped := plan.Job{BaseDNs: m.BaseDNs}
+		for _, b := range cfg.Scope.BaseDNs {
+			if !dumped.InBase(b) {
+				return nil, fmt.Errorf("[scope] base_dn %s is not in the dump, which holds %s", b, strings.Join(m.BaseDNs, "; "))
+			}
+		}
 	}
 	fmt.Fprintf(warn, "source: the dump %s of %s, taken %s (%d entries)\n", cfg.Source.LDIF, m.Server, m.DumpedAt, m.Entries)
 	if len(m.Masked) > 0 {
@@ -315,7 +319,7 @@ func (s *Session) ask(ctx context.Context, what, target string, details ...strin
 	for _, d := range details {
 		fmt.Fprintf(s.Warn, "    %s\n", d)
 	}
-	fmt.Fprintf(s.Warn, "    base_dn: %s\n", s.Job.BaseDN)
+	fmt.Fprintf(s.Warn, "    base_dn: %s\n", strings.Join(s.Job.BaseDNs, "; "))
 	source := s.Cfg.Source.URL
 	if s.Cfg.Source.LDIF != "" {
 		source = "the dump " + s.Cfg.Source.LDIF

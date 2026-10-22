@@ -50,7 +50,7 @@ func seedSource() *fakedir.Dir {
 // jobFor builds a job the way config does: kinds in the profile's order, resolved allow lists.
 func jobFor(t *testing.T, p profile.Profile, baseDN string, kinds []string, o profile.Override, maskAttrs ...string) plan.Job {
 	t.Helper()
-	job := plan.Job{Profile: p, BaseDN: baseDN, Masker: mask.New("***", maskAttrs)}
+	job := plan.Job{Profile: p, BaseDNs: []string{baseDN}, Masker: mask.New("***", maskAttrs)}
 	for _, spec := range p.Kinds {
 		enabled := false
 		for _, k := range kinds {
@@ -197,11 +197,41 @@ func TestCloneUpdatesChangedAttributeOnly(t *testing.T) {
 	}
 }
 
-func TestCloneRefusesDomainRootAsBase(t *testing.T) {
+// Base DNs one of which is below another would clone their entries twice: refused before anything is written.
+func TestCloneRefusesOverlappingBases(t *testing.T) {
 	o := options(t, allKinds()...)
-	o.BaseDN = domain
-	if _, err := Run(context.Background(), seedSource(), fakedir.New(domain), o, Options{}, &bytes.Buffer{}); err == nil {
-		t.Fatal("expected error")
+	o.BaseDNs = []string{base, "OU=Users," + base}
+	dst := fakedir.New(domain)
+	if _, err := Run(context.Background(), seedSource(), dst, o, Options{}, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "below") {
+		t.Fatalf("overlapping bases: %v", err)
+	}
+	if len(dst.Ops) != 0 {
+		t.Fatalf("written: %v", dst.Ops)
+	}
+}
+
+// Several base DNs are one scope: a reference from one to another is a reference of the scope, written in full;
+// what neither holds is a referenced object, as with one base DN. diff then finds nothing.
+func TestSeveralBaseDNsAreOneScope(t *testing.T) {
+	src, dst := seedSource(), fakedir.New(domain)
+	o := options(t, allKinds()...)
+	o.BaseDNs = []string{tokyo, "OU=Groups," + base}
+	rep, err := Run(context.Background(), src, dst, o, Options{UserPassword: "Fixed1!", Workers: 4}, &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.ReferencedKinds["user"] != 1 {
+		t.Fatalf("Bob, in neither base DN, is the one referenced object: %+v", rep.ReferencedKinds)
+	}
+	members := strings.Join(dst.Lookup(eng).Values("member"), "|")
+	if !strings.Contains(members, alice) || !strings.Contains(members, bob) {
+		t.Fatalf("Eng (in the second base DN) holds Alice (in the first): %s", members)
+	}
+	if got := strings.Join(dst.Lookup(alice).Values("manager"), ""); got != bob {
+		t.Fatalf("Alice's manager: %q", got)
+	}
+	if diffs := runDiff(t, src, dst, o); len(diffs) != 0 {
+		t.Fatalf("diff: %+v", diffs)
 	}
 }
 
@@ -275,7 +305,7 @@ func TestDiffOnEmptyTargetListsEverythingAsMissing(t *testing.T) {
 
 func TestMissingBaseDNOnSourceIsAnError(t *testing.T) {
 	o := options(t, allKinds()...)
-	o.BaseDN = "OU=Typo," + domain
+	o.BaseDNs = []string{"OU=Typo," + domain}
 	if _, err := Run(context.Background(), seedSource(), fakedir.New(domain), o, Options{}, &bytes.Buffer{}); err == nil {
 		t.Fatal("expected error instead of an empty plan")
 	}

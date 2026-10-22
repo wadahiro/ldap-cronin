@@ -28,7 +28,7 @@ func Survey(ctx context.Context, src directory.Directory, job Job, bar *progress
 		k := &job.Kinds[i]
 		u := Usage{Kind: k, Attrs: map[string]int{}, Names: map[string]string{}}
 		bar.Phase(k.Name, -1)
-		err := src.Walk(ctx, job.BaseDN, k.Filter, []string{directory.AllAttrs}, func(e directory.Entry) error {
+		err := WalkBases(ctx, src, job.BaseDNs, k.Filter, []string{directory.AllAttrs}, func(e directory.Entry) error {
 			u.Entries++
 			bar.Add(1)
 			seen := map[string]bool{}

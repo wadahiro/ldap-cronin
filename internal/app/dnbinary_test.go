@@ -94,7 +94,7 @@ func TestADNBinaryAttributeIsAReference(t *testing.T) {
 
 	// A dump carries the entry a DN-Binary value names outside its base, as it does a member's.
 	var dumped bytes.Buffer
-	counts, err := dump.Write(ctx, w.src, profile.AD, dump.Options{BaseDN: base, Server: "ldaps://src:636", Version: "test"}, &dumped)
+	counts, err := dump.Write(ctx, w.src, profile.AD, dump.Options{BaseDNs: []string{base}, Server: "ldaps://src:636", Version: "test"}, &dumped)
 	if err != nil {
 		t.Fatal(err)
 	}

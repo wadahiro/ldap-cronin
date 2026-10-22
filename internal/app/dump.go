@@ -20,9 +20,10 @@ import (
 // DumpOptions are what ldap-cronin dump is given on its command line: it reads no config file, so it can be run on
 // production's side with nothing but the binary.
 type DumpOptions struct {
-	Conn   ldapdir.ConnConfig // without the password, asked by Dump
-	BaseDN string
-	Out    string // .gz is compressed
+	Conn ldapdir.ConnConfig // without the password, asked by Dump
+	// BaseDNs are what to dump (dump.Options.BaseDNs).
+	BaseDNs []string
+	Out     string // .gz is compressed
 	// MaskValue and Masked mask attributes in the file itself.
 	MaskValue string
 	Masked    []string
@@ -73,7 +74,7 @@ func Dump(ctx context.Context, o DumpOptions, password func() (string, error), l
 		z = gzip.NewWriter(tmp)
 		w = z
 	}
-	counts, err := dump.Write(ctx, src, prof, dump.Options{BaseDN: o.BaseDN, MaskValue: o.MaskValue, Masked: o.Masked,
+	counts, err := dump.Write(ctx, src, prof, dump.Options{BaseDNs: o.BaseDNs, MaskValue: o.MaskValue, Masked: o.Masked,
 		Server: o.Conn.URL, Version: o.Version, Now: time.Now, Progress: o.Progress}, w)
 	if err != nil {
 		return counts, err

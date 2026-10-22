@@ -73,7 +73,7 @@ func (p *Plan) Holders(ctx context.Context) ([]Holder, error) {
 	found := map[string]*Holder{} // normalized DN
 	for i := range p.job.Kinds {
 		k := &p.job.Kinds[i]
-		err := p.src.Walk(ctx, p.job.BaseDN, refsFilter(k, backs), backs, func(e directory.Entry) error {
+		err := WalkBases(ctx, p.src, p.job.BaseDNs, refsFilter(k, backs), backs, func(e directory.Entry) error {
 			for _, b := range backs {
 				for _, v := range e.Values(b) {
 					d := dn.RefDN(v)

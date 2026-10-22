@@ -86,7 +86,7 @@ func TestGroupsOutsideTheScopeAreGivenTheirMembersOfIt(t *testing.T) {
 
 	// A dump carries both groups, with every member, so a clone of it gives the same.
 	var dumped bytes.Buffer
-	if _, err := dump.Write(ctx, w.src, profile.AD, dump.Options{BaseDN: base, Server: "ldaps://src:636", Version: "test"}, &dumped); err != nil {
+	if _, err := dump.Write(ctx, w.src, profile.AD, dump.Options{BaseDNs: []string{base}, Server: "ldaps://src:636", Version: "test"}, &dumped); err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{"dn: " + vpn + "\n", "dn: " + admins + "\n", "# holders: "} {

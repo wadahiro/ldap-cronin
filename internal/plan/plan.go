@@ -24,9 +24,12 @@ import (
 // Job is what to clone or compare. It holds no run-time switches: those are Read, and the options of clone and diff.
 type Job struct {
 	Profile profile.Profile
-	// RootDN is the top of the naming context that contains BaseDN. Empty means the profile's RootResolver decides.
+	// RootDN is the top of the naming context that contains the base DNs. Empty means the profile's RootResolver
+	// decides.
 	RootDN string
-	BaseDN string
+	// BaseDNs are where the entries to clone are, each with what is below it: one or more, none below another, all
+	// in one naming context. The root itself is the whole naming context.
+	BaseDNs []string
 	// Kinds are the enabled kinds in the profile's order, with their filters and allow lists resolved.
 	Kinds  []Kind
 	Masker mask.Masker
@@ -123,7 +126,45 @@ func Root(ctx context.Context, src directory.Directory, job Job) (string, error)
 	if job.RootDN != "" {
 		return job.RootDN, nil
 	}
-	return job.Profile.Root.Root(ctx, src, job.BaseDN)
+	return job.Profile.Root.Root(ctx, src, job.BaseDNs[0])
+}
+
+// InBase reports whether d is one of the base DNs or below one.
+func (j Job) InBase(d string) bool {
+	for _, b := range j.BaseDNs {
+		if dn.Equal(d, b) || dn.IsDescendant(d, b) {
+			return true
+		}
+	}
+	return false
+}
+
+// WalkBases walks under each of bases in turn, as one search: what is to clone or compare.
+func WalkBases(ctx context.Context, src directory.Directory, bases []string, filter string, attrs []string, fn func(directory.Entry) error) error {
+	for _, b := range bases {
+		if err := src.Walk(ctx, b, filter, attrs, fn); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// CheckBases refuses base DNs one of which is another's or below it: their entries would be cloned twice.
+func CheckBases(bases []string) error {
+	if len(bases) == 0 {
+		return fmt.Errorf("base_dn is required")
+	}
+	for i, a := range bases {
+		for j, b := range bases {
+			switch {
+			case i < j && dn.Equal(a, b):
+				return fmt.Errorf("base_dn %q is given twice", a)
+			case i != j && dn.IsDescendant(a, b):
+				return fmt.Errorf("base_dn %q is below %q, another base_dn: give the upper one alone", a, b)
+			}
+		}
+	}
+	return nil
 }
 
 // Scope is the set of target DNs. It holds only an 8-byte hash per entry, so even a million entries fit in tens of MB.
@@ -194,15 +235,20 @@ func Build(ctx context.Context, src directory.Directory, job Job, read Read) (*P
 	p := &Plan{Root: root, Scope: NewScope(), src: src, job: job, read: read, leaves: map[string]int{}}
 	// The root itself is the whole naming context: the root entry is the target's own (no kind selects it), and the
 	// built-in entries are never selected (the profile's SystemFilter).
-	if !dn.Equal(job.BaseDN, root) && !dn.IsDescendant(job.BaseDN, root) {
-		return nil, fmt.Errorf("base_dn %q must be the root %q or below it", job.BaseDN, root)
+	if err := CheckBases(job.BaseDNs); err != nil {
+		return nil, err
 	}
-	base, err := src.Get(ctx, job.BaseDN, []string{"objectClass"})
-	if err != nil {
-		return nil, fmt.Errorf("read base_dn %s: %w", job.BaseDN, err)
-	}
-	if base == nil {
-		return nil, fmt.Errorf("base_dn %s does not exist on source", job.BaseDN)
+	for _, b := range job.BaseDNs {
+		if !dn.Equal(b, root) && !dn.IsDescendant(b, root) {
+			return nil, fmt.Errorf("base_dn %q must be the root %q or below it", b, root)
+		}
+		base, err := src.Get(ctx, b, []string{"objectClass"})
+		if err != nil {
+			return nil, fmt.Errorf("read base_dn %s: %w", b, err)
+		}
+		if base == nil {
+			return nil, fmt.Errorf("base_dn %s does not exist on source", b)
+		}
 	}
 	if err := p.discoverRefs(ctx); err != nil {
 		return nil, err
@@ -227,7 +273,7 @@ func Build(ctx context.Context, src directory.Directory, job Job, read Read) (*P
 	for i := range p.job.Kinds {
 		k := &p.job.Kinds[i]
 		if k.Role == profile.RoleContainer {
-			err = src.Walk(ctx, job.BaseDN, k.Filter, p.withRead(k.Attrs), func(e directory.Entry) error {
+			err = WalkBases(ctx, src, job.BaseDNs, k.Filter, p.withRead(k.Attrs), func(e directory.Entry) error {
 				p.Containers = append(p.Containers, Node{Entry: job.Masker.Apply(e), Kind: k})
 				p.Scope.Add(e.DN)
 				selected[dn.Normalize(e.DN)] = true
@@ -235,7 +281,7 @@ func Build(ctx context.Context, src directory.Directory, job Job, read Read) (*P
 				return nil
 			})
 		} else {
-			err = src.Walk(ctx, job.BaseDN, k.Filter, []string{directory.NoAttrs}, func(e directory.Entry) error {
+			err = WalkBases(ctx, src, job.BaseDNs, k.Filter, []string{directory.NoAttrs}, func(e directory.Entry) error {
 				p.leaves[k.Name]++
 				p.Scope.Add(e.DN)
 				noteAncestors(e.DN)
@@ -383,7 +429,7 @@ func (p *Plan) Unselected(ctx context.Context) (map[string]int, error) {
 	if sys != "" {
 		attrs = append(attrs, sys)
 	}
-	err := p.src.Walk(ctx, p.job.BaseDN, "(!(|"+any.String()+"))", attrs, func(e directory.Entry) error {
+	err := WalkBases(ctx, p.src, p.job.BaseDNs, "(!(|"+any.String()+"))", attrs, func(e directory.Entry) error {
 		if p.Scope.Has(e.DN) {
 			return nil
 		}
@@ -544,7 +590,7 @@ func (p *Plan) WalkRefs(ctx context.Context, k *Kind, names []string, fn func(di
 	if len(names) == 0 {
 		return nil
 	}
-	return p.src.Walk(ctx, p.job.BaseDN, refsFilter(k, names), names, fn)
+	return WalkBases(ctx, p.src, p.job.BaseDNs, refsFilter(k, names), names, fn)
 }
 
 // CountRefs counts the entries of k that have one of the DN reference attributes names, as WalkRefs streams them,
@@ -554,7 +600,7 @@ func (p *Plan) CountRefs(ctx context.Context, k *Kind, names []string) (int, err
 		return 0, nil
 	}
 	n := 0
-	err := p.src.Walk(ctx, p.job.BaseDN, refsFilter(k, names), []string{directory.NoAttrs}, func(directory.Entry) error {
+	err := WalkBases(ctx, p.src, p.job.BaseDNs, refsFilter(k, names), []string{directory.NoAttrs}, func(directory.Entry) error {
 		n++
 		return nil
 	})
@@ -571,7 +617,7 @@ func refsFilter(k *Kind, names []string) string {
 
 // Walk streams the entries of k page by page with masking applied and what Read asks for added to names.
 func (p *Plan) Walk(ctx context.Context, k *Kind, names []string, fn func(directory.Entry) error) error {
-	return p.src.Walk(ctx, p.job.BaseDN, k.Filter, p.withRead(names), func(e directory.Entry) error {
+	return WalkBases(ctx, p.src, p.job.BaseDNs, k.Filter, p.withRead(names), func(e directory.Entry) error {
 		return fn(p.job.Masker.Apply(e))
 	})
 }

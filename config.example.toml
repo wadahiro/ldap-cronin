@@ -36,6 +36,8 @@ insecure_skip_verify = true
 # (isCriticalSystemObject: Administrator, Domain Admins, ...) are never written, the target has its own.
 # Parent OUs / containers above the starting point are created automatically if they do not exist on the target.
 base_dn = "OU=IDM,DC=ad,DC=example,DC=com"
+# base_dn = ["OU=Tokyo,DC=ad,DC=example,DC=com", "OU=Osaka,DC=ad,DC=example,DC=com"]   # several OUs as one scope:
+#                                    # a reference from one to another is a reference of the scope (none below another)
 # objects = ["ou", "group", "user"] # every kind of the profile if omitted (ad: also computer and contact)
 # references = "clone"               # an entry outside the scope that a reference names (a member outside base_dn):
 #                                    # clone (default) creates it as its kind, without its own references, so every

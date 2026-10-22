@@ -194,7 +194,7 @@ func Run(ctx context.Context, src, dst directory.Directory, job plan.Job, o Opti
 	r.sum.Duplicates = r.loc.duplicates
 
 	for _, k := range job.Kinds {
-		err := dst.Walk(ctx, job.BaseDN, k.Filter, []string{directory.NoAttrs}, func(e directory.Entry) error {
+		err := plan.WalkBases(ctx, dst, job.BaseDNs, k.Filter, []string{directory.NoAttrs}, func(e directory.Entry) error {
 			// Entries matched by identifier are RENAMED (or already explained by a parent move), so they are not target-only.
 			if !p.Scope.Has(e.DN) && !r.loc.found.Has(e.DN) {
 				r.report(Difference{Kind: OnlyTarget, DN: e.DN})

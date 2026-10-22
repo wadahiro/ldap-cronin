@@ -65,7 +65,8 @@ then clones; with native = true it writes Samba's database directly, keeping obj
 Flags (dump):
   -url <url>, -bind-dn <dn>   The source (the password: LDAP_CRONIN_SOURCE_PASSWORD, or asked)
   -base-dn <dn>    What to dump: the entries under it, the root of its naming context and the entries in between, the
-                   entries outside it its references name (and their parents), the schema; credentials never
+                   entries outside it its references name (and their parents), the schema; credentials never.
+                   Repeat it for several OUs (none below another), as [scope] base_dn lists them
   -o <file>        The dump (.gz: compressed). Written to a temporary file and renamed when complete
   -mask <a,b>      Attributes masked in the file itself (-mask-value, default ********)
   -ca-file <file>, -insecure-skip-verify, -start-tls, -timeout <d>   The connection, as in [source]
@@ -340,7 +341,8 @@ func runDump(ctx context.Context, args []string, log io.Writer) error {
 	fs := flag.NewFlagSet("dump", flag.ContinueOnError)
 	url := fs.String("url", "", "the source: ldap:// or ldaps://")
 	bindDN := fs.String("bind-dn", "", "the DN to bind as (read access is enough)")
-	baseDN := fs.String("base-dn", "", "what to dump")
+	var baseDNs listFlag
+	fs.Var(&baseDNs, "base-dn", "what to dump (repeat it for several)")
 	out := fs.String("o", "", "the dump file (.gz: compressed)")
 	maskAttrs := fs.String("mask", "", "attributes masked in the dump, comma separated")
 	maskValue := fs.String("mask-value", config.DefaultMaskValue, "the value masked attributes get")
@@ -352,7 +354,7 @@ func runDump(ctx context.Context, args []string, log io.Writer) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *url == "" || *bindDN == "" || *baseDN == "" || *out == "" {
+	if *url == "" || *bindDN == "" || len(baseDNs) == 0 || *out == "" {
 		return errors.New("dump needs -url, -bind-dn, -base-dn and -o")
 	}
 	mode, err := progress.ParseMode(*progressMode)
@@ -368,8 +370,8 @@ func runDump(ctx context.Context, args []string, log io.Writer) error {
 	display, bar := progress.Start(mode, os.Stderr, "dump ← "+*url)
 	defer display.Stop()
 	_, err = app.Dump(ctx, app.DumpOptions{
-		Conn:   ldapdir.ConnConfig{URL: *url, BindDN: *bindDN, CAFile: *caFile, InsecureSkipVerify: *insecure, StartTLS: *startTLS, Timeout: *timeout},
-		BaseDN: *baseDN, Out: *out, MaskValue: *maskValue, Masked: masked, Version: version, Progress: bar,
+		Conn:    ldapdir.ConnConfig{URL: *url, BindDN: *bindDN, CAFile: *caFile, InsecureSkipVerify: *insecure, StartTLS: *startTLS, Timeout: *timeout},
+		BaseDNs: baseDNs, Out: *out, MaskValue: *maskValue, Masked: masked, Version: version, Progress: bar,
 	}, secrets.SourceBind, display.Writer(log))
 	return err
 }
@@ -436,5 +438,15 @@ func listAttrs(_ context.Context, args []string, out io.Writer) error {
 			fmt.Fprintf(out, "  %s\n", name)
 		}
 	}
+	return nil
+}
+
+// listFlag is a flag given once per value (-base-dn A -base-dn B).
+type listFlag []string
+
+func (l *listFlag) String() string { return strings.Join(*l, "; ") }
+
+func (l *listFlag) Set(v string) error {
+	*l = append(*l, v)
 	return nil
 }

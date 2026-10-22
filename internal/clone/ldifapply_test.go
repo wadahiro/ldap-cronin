@@ -149,7 +149,7 @@ func dryRunEqualsClone(t *testing.T, src, dst *fakedir.Dir, job plan.Job, preser
 	opt := Options{UserPassword: "Fixed1!", Workers: 4, Preserve: preserve, Operational: preserve}
 	var res identity.Resolver = identity.ByIdentity(job.Profile.Identity)
 	if !preserve {
-		root, err := identity.RootKey(context.Background(), src, job.BaseDN, job.Profile.Identity)
+		root, err := identity.RootKey(context.Background(), src, job.BaseDNs[0], job.Profile.Identity)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -190,7 +190,7 @@ func TestDryRunLDIFWithThePasswordNeedsNoCloneAfterIt(t *testing.T) {
 		dst := fakedir.New(domain)
 		dst.IDPrefix = 0xd1
 		job := options(t, allKinds()...)
-		root, err := identity.RootKey(context.Background(), src, job.BaseDN, job.Profile.Identity)
+		root, err := identity.RootKey(context.Background(), src, job.BaseDNs[0], job.Profile.Identity)
 		if err != nil {
 			t.Fatal(err)
 		}

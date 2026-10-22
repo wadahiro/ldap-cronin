@@ -31,8 +31,10 @@ const Magic = "# ldap-cronin dump"
 
 // Meta is what the header of a dump says.
 type Meta struct {
-	Version, DumpedAt, Server, Profile, BaseDN, RootDN, MaskValue string
-	Masked, Excluded                                              []string
+	Version, DumpedAt, Server, Profile, RootDN, MaskValue string
+	// BaseDNs are the base DNs the dump was taken of (one "# base-dn:" line each).
+	BaseDNs          []string
+	Masked, Excluded []string
 	// Operational are the attributes the dump read by name, which "*" does not return (entryUUID, ...).
 	Operational []string
 	Entries     int
@@ -259,7 +261,7 @@ func (d *Dir) header(l string, end *int) *[]string {
 	case key == "profile":
 		d.meta.Profile = value
 	case key == "base-dn":
-		d.meta.BaseDN = value
+		d.meta.BaseDNs = append(d.meta.BaseDNs, value)
 	case key == "root-dn":
 		d.meta.RootDN = value
 	case key == "holders":

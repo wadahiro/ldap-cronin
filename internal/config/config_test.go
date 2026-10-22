@@ -56,6 +56,9 @@ func TestParseReadsTimeouts(t *testing.T) {
 func TestParseRejectsInvalid(t *testing.T) {
 	cases := map[string]string{
 		"base outside root_dn":       strings.Replace(valid, "[scope]", "[scope]\nroot_dn = \"DC=other,DC=example,DC=com\"", 1),
+		"overlapping base_dn":        strings.Replace(valid, `base_dn = "OU=IDM,DC=ad,DC=example,DC=com"`, `base_dn = ["OU=IDM,DC=ad,DC=example,DC=com", "OU=Users,OU=IDM,DC=ad,DC=example,DC=com"]`, 1),
+		"base_dn in two domains":     strings.Replace(valid, `base_dn = "OU=IDM,DC=ad,DC=example,DC=com"`, `base_dn = ["OU=IDM,DC=ad,DC=example,DC=com", "OU=X,DC=other,DC=example,DC=com"]`, 1),
+		"base_dn not a DN":           strings.Replace(valid, `base_dn = "OU=IDM,DC=ad,DC=example,DC=com"`, `base_dn = 3`, 1),
 		"unmaskable attribute":       strings.Replace(withProfile("ad"), `["mail"]`, `["sAMAccountName"]`, 1),
 		"unknown field":              valid + "\n[bogus]\nx = 1\n",
 		"same server":                strings.Replace(valid, "ldap://dst:389", "ldaps://src:636", 1),
@@ -245,5 +248,22 @@ func TestMappingRejectsKeysOfAnotherModeAndUnusableAttributes(t *testing.T) {
 	cfg, _ = Parse([]byte(valid + "[mapping]\nmode = \"preserve\"\n"))
 	if _, _, err := cfg.MappingFor(profile.AD); err == nil {
 		t.Fatal("AD cannot preserve identifiers over LDAP")
+	}
+}
+
+// base_dn is a DN, or a list of DNs (several OUs as one scope).
+func TestBaseDNIsADNOrAList(t *testing.T) {
+	c, err := Parse([]byte(valid))
+	if err != nil || strings.Join(c.Scope.BaseDNs, "|") != "OU=IDM,DC=ad,DC=example,DC=com" {
+		t.Fatalf("one: %v %v", c, err)
+	}
+	two := strings.Replace(valid, `base_dn = "OU=IDM,DC=ad,DC=example,DC=com"`, `base_dn = ["OU=Tokyo,DC=ad,DC=example,DC=com", "OU=Osaka,DC=ad,DC=example,DC=com"]`, 1)
+	c, err = Parse([]byte(two))
+	if err != nil || strings.Join(c.Scope.BaseDNs, "|") != "OU=Tokyo,DC=ad,DC=example,DC=com|OU=Osaka,DC=ad,DC=example,DC=com" {
+		t.Fatalf("two: %v %v", c, err)
+	}
+	job, err := c.JobFor(profile.AD)
+	if err != nil || len(job.BaseDNs) != 2 {
+		t.Fatalf("the job: %v %v", job.BaseDNs, err)
 	}
 }

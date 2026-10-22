@@ -117,8 +117,11 @@ type Scope struct {
 	Profile string `toml:"profile"`
 	// RootDN is the top of the naming context that holds base_dn. Only needed when it cannot be derived
 	// (a generic LDAP base_dn without DC= components that the server does not list in namingContexts).
-	RootDN  string            `toml:"root_dn"`
-	BaseDN  string            `toml:"base_dn"`
+	RootDN string `toml:"root_dn"`
+	// BaseDNValue is base_dn as written: a DN, or a list of DNs (several OUs as one scope). Read it through BaseDNs.
+	BaseDNValue any `toml:"base_dn"`
+	// BaseDNs is base_dn as a list, set by Parse.
+	BaseDNs []string          `toml:"-"`
 	Objects []string          `toml:"objects"` // empty: every kind of the profile
 	Filters map[string]string `toml:"filters"`
 	// References is what is done with a reference to an entry outside the scope: clone (default), existing or
@@ -226,6 +229,11 @@ func Parse(raw []byte) (*Config, error) {
 	if err := dec.Decode(&c); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
+	bases, err := baseDNs(c.Scope.BaseDNValue)
+	if err != nil {
+		return nil, err
+	}
+	c.Scope.BaseDNs = bases
 	if c.Run.Workers == 0 {
 		c.Run.Workers = defaultWorkers
 	}
@@ -380,8 +388,8 @@ func (c *Config) validate() error {
 	if c.Source.LDIF == "" && strings.EqualFold(strings.TrimRight(c.Source.URL, "/"), strings.TrimRight(c.Target.URL, "/")) {
 		return fmt.Errorf("source and target are the same server (%s)", c.Source.URL)
 	}
-	if c.Scope.BaseDN == "" {
-		return fmt.Errorf("[scope] base_dn is required")
+	if err := plan.CheckBases(c.Scope.BaseDNs); err != nil {
+		return fmt.Errorf("[scope] %w", err)
 	}
 	explicit, isExplicit, err := c.explicitProfile()
 	if err != nil {
@@ -389,8 +397,13 @@ func (c *Config) validate() error {
 	}
 	// Where the naming context starts is the profile's business and may need the server, so only reject what is
 	// certainly wrong here: a base_dn outside the root it was given. The root itself is the whole naming context.
-	if root := c.Scope.RootDN; root != "" && !dn.Equal(c.Scope.BaseDN, root) && !dn.IsDescendant(c.Scope.BaseDN, root) {
-		return fmt.Errorf("[scope] base_dn must be the root (root_dn) or below it: %q", c.Scope.BaseDN)
+	for _, b := range c.Scope.BaseDNs {
+		if root := c.Scope.RootDN; root != "" && !dn.Equal(b, root) && !dn.IsDescendant(b, root) {
+			return fmt.Errorf("[scope] base_dn must be the root (root_dn) or below it: %q", b)
+		}
+		if root := dn.DomainRoot(c.Scope.BaseDNs[0]); c.Scope.RootDN == "" && root != "" && !dn.Equal(dn.DomainRoot(b), root) {
+			return fmt.Errorf("[scope] every base_dn must be in one domain: %q is not in %q", b, root)
+		}
 	}
 	if c.Run.Workers < 1 {
 		return fmt.Errorf("[run] workers must be >= 1")
@@ -564,7 +577,7 @@ func (c *Config) JobFor(p profile.Profile) (plan.Job, error) {
 	if _, _, err := c.MappingFor(p); err != nil {
 		return plan.Job{}, err
 	}
-	job := plan.Job{Profile: p, RootDN: c.Scope.RootDN, BaseDN: c.Scope.BaseDN, Masker: mask.New(c.Mask.Value, c.Mask.Attributes),
+	job := plan.Job{Profile: p, RootDN: c.Scope.RootDN, BaseDNs: c.Scope.BaseDNs, Masker: mask.New(c.Mask.Value, c.Mask.Attributes),
 		References: c.Scope.References, ConfigurationRefs: c.Scope.ConfigurationRefs,
 		OutsideGroups: c.Scope.OutsideGroups, BuiltinGroups: c.Scope.BuiltinGroups,
 		ACL: c.Target.Lab != nil && c.Target.Lab.Native && c.Target.Lab.ACL == ServerAttributesSource}
@@ -593,4 +606,28 @@ func contains(list []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// baseDNs reads base_dn: a DN, or a list of DNs.
+func baseDNs(v any) ([]string, error) {
+	switch v := v.(type) {
+	case nil:
+		return nil, nil
+	case string:
+		if v == "" {
+			return nil, nil
+		}
+		return []string{v}, nil
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, x := range v {
+			s, ok := x.(string)
+			if !ok || s == "" {
+				return nil, fmt.Errorf("parse config: [scope] base_dn: every value of the list must be a DN, got %v", x)
+			}
+			out = append(out, s)
+		}
+		return out, nil
+	}
+	return nil, fmt.Errorf("parse config: [scope] base_dn must be a DN or a list of DNs, got %T", v)
 }

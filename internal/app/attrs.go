@@ -78,7 +78,7 @@ func (s *Session) writeAttrTable(out io.Writer, usage []plan.Usage, targetHas ma
 		for _, l := range lines {
 			width = max(width, len(l.name))
 		}
-		fmt.Fprintf(out, "[%s] %d entries under %s\n", u.Kind.Name, u.Entries, s.Job.BaseDN)
+		fmt.Fprintf(out, "[%s] %d entries under %s\n", u.Kind.Name, u.Entries, strings.Join(s.Job.BaseDNs, "; "))
 		for _, l := range lines {
 			line := fmt.Sprintf("  %-10s  %-*s  %7d", l.status, width, l.name, l.count)
 			if l.note != "" {

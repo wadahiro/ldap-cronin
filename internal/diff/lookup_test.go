@@ -19,7 +19,7 @@ const (
 
 func jobOf(t *testing.T, p profile.Profile, base string) plan.Job {
 	t.Helper()
-	job := plan.Job{Profile: p, BaseDN: base, Masker: mask.New("*", nil)}
+	job := plan.Job{Profile: p, BaseDNs: []string{base}, Masker: mask.New("*", nil)}
 	for _, spec := range p.Kinds {
 		attrs, err := p.Attrs(spec.Name, profile.Override{})
 		if err != nil {

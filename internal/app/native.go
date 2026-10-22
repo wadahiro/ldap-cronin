@@ -148,7 +148,15 @@ func (s *Session) nativeACLs(ctx context.Context, n directory.Directory, root st
 		written++
 		return nil
 	}
-	parents := append([]string{root}, reverseDNs(dn.Ancestors(s.Job.BaseDN, root))...)
+	parents, seen := []string{root}, map[string]bool{}
+	for _, b := range s.Job.BaseDNs {
+		for _, a := range reverseDNs(dn.Ancestors(b, root)) {
+			if !seen[dn.Normalize(a)] {
+				seen[dn.Normalize(a)] = true
+				parents = append(parents, a)
+			}
+		}
+	}
 	for _, d := range parents {
 		e, err := s.Src.Get(ctx, d, []string{sdAttr})
 		if err != nil {
@@ -162,7 +170,7 @@ func (s *Session) nativeACLs(ctx context.Context, n directory.Directory, root st
 			above += written - before
 		}
 	}
-	if err := s.Src.Walk(ctx, s.Job.BaseDN, "(objectClass=*)", []string{sdAttr}, write); err != nil {
+	if err := plan.WalkBases(ctx, s.Src, s.Job.BaseDNs, "(objectClass=*)", []string{sdAttr}, write); err != nil {
 		return err
 	}
 	if written == 0 {

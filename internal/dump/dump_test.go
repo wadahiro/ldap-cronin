@@ -23,14 +23,14 @@ func TestWhatCannotBeMaskedIsRefused(t *testing.T) {
 	src.Put(base, map[string][]string{"objectClass": {"top", "organizationalUnit"}, "ou": {"IDM"}})
 	for _, attr := range []string{"member", "sAMAccountName"} {
 		var out bytes.Buffer
-		_, err := Write(context.Background(), src, profile.AD, Options{BaseDN: base, MaskValue: "x", Masked: []string{attr}}, &out)
+		_, err := Write(context.Background(), src, profile.AD, Options{BaseDNs: []string{base}, MaskValue: "x", Masked: []string{attr}}, &out)
 		if err == nil || !strings.Contains(err.Error(), "cannot be masked") || out.Len() != 0 {
 			t.Errorf("%s: %v, %d bytes written", attr, err, out.Len())
 		}
 	}
 	// The whole domain is a base DN too.
 	var out bytes.Buffer
-	if c, err := Write(context.Background(), src, profile.AD, Options{BaseDN: domain}, &out); err != nil || c.Base == 0 {
+	if c, err := Write(context.Background(), src, profile.AD, Options{BaseDNs: []string{domain}}, &out); err != nil || c.Base == 0 {
 		t.Errorf("the domain root itself: %+v %v", c, err)
 	}
 }

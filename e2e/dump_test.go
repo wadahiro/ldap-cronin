@@ -58,8 +58,8 @@ func TestCloneFromADumpOfTheSource(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "prod.ldif.gz")
 	var log bytes.Buffer
 	_, err := app.Dump(ctx, app.DumpOptions{
-		Conn:   ldapdir.ConnConfig{URL: srcURL, BindDN: adminDN, InsecureSkipVerify: true},
-		BaseDN: scope, Out: path, MaskValue: "********", Masked: []string{"mail"}, Version: "e2e",
+		Conn:    ldapdir.ConnConfig{URL: srcURL, BindDN: adminDN, InsecureSkipVerify: true},
+		BaseDNs: []string{scope}, Out: path, MaskValue: "********", Masked: []string{"mail"}, Version: "e2e",
 	}, func() (string, error) { return adminPw, nil }, &log)
 	must(err)
 	d, err := ldifdir.Open(path)

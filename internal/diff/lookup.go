@@ -3,6 +3,7 @@ package diff
 import (
 	"context"
 	"errors"
+	"slices"
 
 	"github.com/wadahiro/ldap-cronin/internal/directory"
 	"github.com/wadahiro/ldap-cronin/internal/dn"
@@ -28,7 +29,7 @@ func ChooseResolver(ctx context.Context, src, dst directory.Directory, job plan.
 		return nil, "", err
 	}
 	if probe == nil {
-		if probe, err = src.Get(ctx, job.BaseDN, attrs); err != nil {
+		if probe, err = src.Get(ctx, job.BaseDNs[0], attrs); err != nil {
 			return nil, "", err
 		}
 		if probe == nil {
@@ -56,8 +57,8 @@ func firstSelected(ctx context.Context, src directory.Directory, job plan.Job, a
 	stop := errors.New("found")
 	for _, k := range job.Kinds {
 		var found *directory.Entry
-		err := src.Walk(ctx, job.BaseDN, k.Filter, attrs, func(e directory.Entry) error {
-			if dn.Equal(e.DN, job.BaseDN) {
+		err := plan.WalkBases(ctx, src, job.BaseDNs, k.Filter, attrs, func(e directory.Entry) error {
+			if slices.ContainsFunc(job.BaseDNs, func(b string) bool { return dn.Equal(e.DN, b) }) {
 				return nil
 			}
 			c := e

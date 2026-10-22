@@ -209,7 +209,7 @@ base_dn = %q
 	// A dump of the source stands for it: entryUUID and the creation metadata, which "*" does not return, are read by
 	// name and kept so; diff against the dump finds nothing, and a clone from it writes nothing more.
 	var dumped bytes.Buffer
-	if _, err := dump.Write(context.Background(), src, prof, dump.Options{BaseDN: olClone, Server: "ldap://openldap"}, &dumped); err != nil {
+	if _, err := dump.Write(context.Background(), src, prof, dump.Options{BaseDNs: []string{olClone}, Server: "ldap://openldap"}, &dumped); err != nil {
 		t.Fatal(err)
 	}
 	dumpPath := filepath.Join(t.TempDir(), "openldap.ldif")

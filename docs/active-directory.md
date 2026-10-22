@@ -16,7 +16,8 @@ bind_dn = "CN=Administrator,CN=Users,DC=ad,DC=example,DC=com"
 url = "ldaps://dst-ad.example.com:636"   # LDAPS: required to set passwords
 bind_dn = "CN=Administrator,CN=Users,DC=ad,DC=example,DC=com"
 [scope]
-base_dn = "OU=IDM,DC=ad,DC=example,DC=com"   # or the domain root, for the whole domain (built-ins left out)
+base_dn = "OU=IDM,DC=ad,DC=example,DC=com"   # or the domain root, for the whole domain (built-ins left out),
+                                             # or a list of OUs as one scope: ["OU=Tokyo,...", "OU=Osaka,..."]
 # [mapping]
 # mode = "marker"                   # the default here: clone writes a marker of the source object
 # attribute = "adminDisplayName"    # the attribute that holds it
