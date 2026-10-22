@@ -301,6 +301,7 @@ instance_profile = "ldap-cronin-lab"    # a role with AmazonSSMManagedInstanceCo
 # password_parameter = "/ldap-cronin/ldap-cronin-ad/admin-password"
 # ldaps_name = "ldap.test.example.com"  # one more DNS name of its LDAPS certificate (the DC's and the domain's are in it)
 # ldap_port = 13389                      # LDAP (389) forwarded there too, for clients that do not use LDAPS
+# recycle_bin = true                     # the AD Recycle Bin enabled (forest level 2008 R2 or higher)
 ```
 
 ```sh
@@ -314,6 +315,11 @@ ldap-cronin lab up --config config.toml --dry-run
 - LDAP (389) as well, for a client that does not use LDAPS: `ldap_port` forwards it to that local port. Windows
   Server 2019 takes a simple bind there without signing by default, and StartTLS (measured); the user data sets
   `LDAPServerIntegrity` to 1 (signing not required) for 2025, which requires it for a new forest (unverified).
+- The forest has the source's functional levels (`forestFunctionality` and `domainFunctionality` of its root DSE,
+  which a dump carries): Install-ADDSForest is given them as `-ForestMode` and `-DomainMode`. A level a Windows
+  Server of today cannot make (below 2008) or that needs a newer one (2025's, on `windows = "2022"`) is refused
+  before anything is made; a dump taken before the levels were carried leaves the highest the instance makes.
+- `recycle_bin = true` enables the AD Recycle Bin once the domain is up (it cannot be turned off again).
 - `native` and `image` are refused (Windows lets no one choose a domain SID or an objectGUID). `check` and `clone`
   refuse an EC2 lab for now (`check -no-target` reads the source alone).
 - What it needs and what is still unverified: [design/ec2-lab.md](design/ec2-lab.md).

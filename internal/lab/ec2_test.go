@@ -51,16 +51,20 @@ func TestEC2UserDataMakesTheSourcesDomainAndReadsThePasswordFromTheParameter(t *
 // What would leave the script's quotes, or a domain Windows cannot create, is refused before anything is made.
 func TestEC2LabRefusesWhatTheScriptCannotTake(t *testing.T) {
 	for name, change := range map[string]func(*EC2Lab){
-		"a quote in the parameter": func(e *EC2Lab) { e.PasswordParameter = "/x'; Remove-Item C:\\ -Recurse; '" },
-		"a dollar in the region":   func(e *EC2Lab) { e.Region = "$(whoami)" },
-		"a single-label domain":    func(e *EC2Lab) { e.Domain = "corp" },
-		"a quote in the domain":    func(e *EC2Lab) { e.Domain = "ad'.example.com" },
-		"a long NetBIOS name":      func(e *EC2Lab) { e.NetBIOS = "ABCDEFGHIJKLMNOP" },
-		"no port":                  func(e *EC2Lab) { e.LocalPort = 0 },
-		"a quote in ldaps_name":    func(e *EC2Lab) { e.LDAPSName = "ldap.example.com'; whoami; '" },
-		"a single-label name":      func(e *EC2Lab) { e.LDAPSName = "ldap" },
-		"ldap_port the LDAPS one":  func(e *EC2Lab) { e.LDAPPort = e.LocalPort },
-		"a brace in the name":      func(e *EC2Lab) { e.Name = "ldap-cronin-ad-x}]" },
+		"a quote in the parameter":  func(e *EC2Lab) { e.PasswordParameter = "/x'; Remove-Item C:\\ -Recurse; '" },
+		"a dollar in the region":    func(e *EC2Lab) { e.Region = "$(whoami)" },
+		"a single-label domain":     func(e *EC2Lab) { e.Domain = "corp" },
+		"a quote in the domain":     func(e *EC2Lab) { e.Domain = "ad'.example.com" },
+		"a long NetBIOS name":       func(e *EC2Lab) { e.NetBIOS = "ABCDEFGHIJKLMNOP" },
+		"no port":                   func(e *EC2Lab) { e.LocalPort = 0 },
+		"a quote in ldaps_name":     func(e *EC2Lab) { e.LDAPSName = "ldap.example.com'; whoami; '" },
+		"a single-label name":       func(e *EC2Lab) { e.LDAPSName = "ldap" },
+		"ldap_port the LDAPS one":   func(e *EC2Lab) { e.LDAPPort = e.LocalPort },
+		"a 2025 forest on 2022":     func(e *EC2Lab) { e.ForestLevel, e.DomainLevel = 10, 10 },
+		"a 2003 forest":             func(e *EC2Lab) { e.ForestLevel, e.DomainLevel = 2, 2 },
+		"a domain below the forest": func(e *EC2Lab) { e.ForestLevel, e.DomainLevel = 7, 6 },
+		"a recycle bin on 2008":     func(e *EC2Lab) { e.ForestLevel, e.DomainLevel, e.RecycleBin = 3, 3, true },
+		"a brace in the name":       func(e *EC2Lab) { e.Name = "ldap-cronin-ad-x}]" },
 	} {
 		e := testEC2Lab()
 		change(&e)
@@ -110,5 +114,27 @@ func TestAWSCommandShellQuotes(t *testing.T) {
 	c := AWSCommand{Args: []string{"ec2", "x", "--a", "it's", "--b", "<instance>", "--c", "plain-value_1.2/3", "--d", ""}}
 	if got, want := c.Shell(), `aws ec2 x --a 'it'\''s' --b <instance> --c plain-value_1.2/3 --d ''`; got != want {
 		t.Errorf("got  %s\nwant %s", got, want)
+	}
+}
+
+// The forest is made with the source's functional levels, and the Recycle Bin enabled when asked; without them,
+// Windows' defaults.
+func TestEC2FunctionalLevelsAndRecycleBin(t *testing.T) {
+	e := testEC2Lab()
+	ud, err := e.UserData()
+	if err != nil || !strings.Contains(ud, "$ForestMode = ''") || !strings.Contains(ud, "$RecycleBin = ''") {
+		t.Fatalf("defaults: %v", err)
+	}
+	e.ForestLevel, e.DomainLevel, e.RecycleBin = 6, 7, true
+	ud, err = e.UserData()
+	for _, want := range []string{"$ForestMode = 'Win2012R2'", "$DomainMode = 'WinThreshold'", "$RecycleBin = 'yes'", "Install-ADDSForest @forest",
+		"Enable-ADOptionalFeature -Credential $cred -Identity $feature -Scope ForestOrConfigurationSet"} {
+		if err != nil || !strings.Contains(ud, want) {
+			t.Errorf("lacks %q (%v)", want, err)
+		}
+	}
+	e.Windows, e.ForestLevel, e.DomainLevel = "2025", 10, 10
+	if ud, err := e.UserData(); err != nil || !strings.Contains(ud, "$ForestMode = 'Win2025'") {
+		t.Errorf("a 2025 forest on 2025: %v", err)
 	}
 }

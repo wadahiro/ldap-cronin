@@ -15,6 +15,9 @@ $Region = '{{.Region}}'
 $Marker = '{{.MarkerAttribute}}'
 $ExtraName = '{{.LDAPSName}}'   # one more DNS name of the LDAPS certificate (empty: none)
 $PlainLDAP = '{{if .LDAPPort}}yes{{end}}'   # clients bind over LDAP (389) without signing too (empty: as Windows has it)
+$ForestMode = '{{.ForestMode}}'   # the source's functional levels (empty: the highest this Windows Server makes)
+$DomainMode = '{{.DomainMode}}'
+$RecycleBin = '{{if .RecycleBin}}yes{{end}}'   # the AD Recycle Bin enabled (empty: as Windows has it, off)
 $Dir = 'C:\ldap-cronin'
 New-Item -ItemType Directory -Force -Path $Dir | Out-Null
 if (Test-Path "$Dir\ready") { exit 0 }
@@ -26,8 +29,11 @@ try {
         Write-Output "creating the forest $Domain ($NetBIOS)"
         Set-LocalUser -Name Administrator -Password $secure
         Install-WindowsFeature AD-Domain-Services -IncludeManagementTools | Out-Null
-        Install-ADDSForest -DomainName $Domain -DomainNetbiosName $NetBIOS -SafeModeAdministratorPassword $secure `
-            -InstallDns -Force -NoRebootOnCompletion | Out-Null
+        $forest = @{ DomainName = $Domain; DomainNetbiosName = $NetBIOS; SafeModeAdministratorPassword = $secure
+            InstallDns = $true; Force = $true; NoRebootOnCompletion = $true }
+        if ($ForestMode) { $forest.ForestMode = $ForestMode; Write-Output "forest functional level $ForestMode" }
+        if ($DomainMode) { $forest.DomainMode = $DomainMode; Write-Output "domain functional level $DomainMode" }
+        Install-ADDSForest @forest | Out-Null
         Restart-Computer -Force
         exit 0
     }
@@ -62,6 +68,13 @@ try {
         if ((Get-ItemProperty -Path $ntds -Name LDAPServerIntegrity -ErrorAction SilentlyContinue).LDAPServerIntegrity -ne 1) {
             Write-Output 'LDAP without signing on 389'
             Set-ItemProperty -Path $ntds -Name LDAPServerIntegrity -Value 1 -Type DWord
+        }
+    }
+    if ($RecycleBin) {
+        $feature = Get-ADOptionalFeature -Credential $cred -Filter "name -eq 'Recycle Bin Feature'"
+        if (-not $feature.EnabledScopes) {
+            Write-Output 'AD Recycle Bin'
+            Enable-ADOptionalFeature -Credential $cred -Identity $feature -Scope ForestOrConfigurationSet -Target $Domain -Confirm:$false
         }
     }
     Write-Output 'password policy for the fixed password of the cloned users'

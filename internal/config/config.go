@@ -86,6 +86,8 @@ type Lab struct {
 	// LDAPPort (EC2) forwards the instance's LDAP (389) to this local port too, and has the instance take a simple
 	// bind there without signing: for clients that do not use LDAPS (clone itself does).
 	LDAPPort int `toml:"ldap_port"`
+	// RecycleBin (EC2) enables the AD Recycle Bin on the lab's forest.
+	RecycleBin bool `toml:"recycle_bin"`
 }
 
 // Platforms of [target.lab].
@@ -329,6 +331,9 @@ func (c *Config) validate() error {
 			}
 			if l.LDAPPort != 0 {
 				return fmt.Errorf("[target.lab] ldap_port is for platform = %q (a docker lab publishes LDAP on its own port)", PlatformEC2)
+			}
+			if l.RecycleBin {
+				return fmt.Errorf("[target.lab] recycle_bin is for platform = %q (Samba has no AD Recycle Bin)", PlatformEC2)
 			}
 		case PlatformEC2:
 			if l.Native {

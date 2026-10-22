@@ -191,7 +191,15 @@ func (s *Session) EC2Lab(ctx context.Context) (lab.EC2Lab, error) {
 	e := lab.EC2Lab{
 		Name: name, Domain: settings.Domain, NetBIOS: netbios,
 		Region: lt.Region, Subnet: lt.Subnet, InstanceType: lt.InstanceType, Windows: lt.Windows, InstanceProfile: lt.InstanceProfile,
-		PasswordParameter: lt.PasswordParameter, LocalPort: port.LDAPSPort, LDAPSName: lt.LDAPSName, LDAPPort: lt.LDAPPort,
+		PasswordParameter: lt.PasswordParameter, LocalPort: port.LDAPSPort, LDAPSName: lt.LDAPSName, LDAPPort: lt.LDAPPort, RecycleBin: lt.RecycleBin,
+	}
+	// The forest is made with the source's functional levels, which its root DSE says (a dump taken before they were
+	// carried does not: the highest the instance's Windows Server makes is taken then).
+	if root, err := s.Src.Get(ctx, "", []string{"forestFunctionality", "domainFunctionality"}); err != nil {
+		return lab.EC2Lab{}, err
+	} else if root != nil {
+		e.ForestLevel, _ = strconv.Atoi(strings.TrimSpace(firstValue(root.Values("forestFunctionality"))))
+		e.DomainLevel, _ = strconv.Atoi(strings.TrimSpace(firstValue(root.Values("domainFunctionality"))))
 	}
 	if e.PasswordParameter == "" {
 		e.PasswordParameter = "/ldap-cronin/" + name + "/admin-password"
@@ -202,4 +210,11 @@ func (s *Session) EC2Lab(ctx context.Context) (lab.EC2Lab, error) {
 		e.MarkerAttribute = attr
 	}
 	return e, e.Check()
+}
+
+func firstValue(v []string) string {
+	if len(v) == 0 {
+		return ""
+	}
+	return v[0]
 }

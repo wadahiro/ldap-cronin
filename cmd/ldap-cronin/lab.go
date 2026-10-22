@@ -342,6 +342,11 @@ func writeEC2Plan(out io.Writer, e lab.EC2Lab) error {
 		return err
 	}
 	fmt.Fprintf(out, "The EC2 lab %s (dry run: nothing is done on AWS): a domain controller of %s (NetBIOS %s)\n", e.Name, e.Domain, e.NetBIOS)
+	if e.ForestLevel == 0 {
+		fmt.Fprintln(out, "functional levels: the highest the instance's Windows Server makes (the source does not say its own: a dump taken before they were carried?)")
+	} else {
+		fmt.Fprintf(out, "functional levels: the source's, forest %d (%s) and domain %d (%s)\n", e.ForestLevel, e.ForestMode(), e.DomainLevel, e.DomainMode())
+	}
 	fmt.Fprintf(out, "\n==> The user data of the instance\n%s\n", strings.TrimRight(userData, "\n"))
 	fmt.Fprintln(out, "\n==> The aws commands lab up will run (<ami> and <instance> are what an earlier one returned)")
 	for i, c := range e.UpCommands() {

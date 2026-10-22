@@ -22,7 +22,8 @@ import (
 
 // rootDSE are the attributes of the root DSE the tool reads from a source.
 var rootDSE = []string{"supportedCapabilities", "namingContexts", "defaultNamingContext", "rootDomainNamingContext",
-	"schemaNamingContext", "configurationNamingContext", "subschemaSubentry", "dnsHostName", "vendorName", "vendorVersion"}
+	"schemaNamingContext", "configurationNamingContext", "subschemaSubentry", "dnsHostName", "vendorName", "vendorVersion",
+	"forestFunctionality", "domainFunctionality"}
 
 // Options are what the dump is of.
 type Options struct {

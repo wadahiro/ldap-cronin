@@ -38,6 +38,27 @@ type EC2Lab struct {
 	// LDAPPort, when set, is where LDAP (389) of the instance is forwarded too, for clients that do not use LDAPS;
 	// the instance then takes a simple bind there without signing.
 	LDAPPort int
+	// ForestLevel and DomainLevel are the source's functional levels (msDS-Behavior-Version: 7 is Windows Server
+	// 2016), the forest made with them; 0 leaves the highest the instance's Windows Server makes.
+	ForestLevel, DomainLevel int
+	// RecycleBin enables the AD Recycle Bin (forest level 4, 2008 R2, or higher).
+	RecycleBin bool
+}
+
+// modes are the names Install-ADDSForest takes for the functional levels a Windows Server of today makes: none
+// below 2008 (3), and 2025 (10) from Windows Server 2025 only.
+var modes = map[int]string{3: "Win2008", 4: "Win2008R2", 5: "Win2012", 6: "Win2012R2", 7: "WinThreshold", 10: "Win2025"}
+
+// ForestMode and DomainMode are the -ForestMode and -DomainMode of Install-ADDSForest, "" for the default.
+func (e EC2Lab) ForestMode() string { return modes[e.ForestLevel] }
+func (e EC2Lab) DomainMode() string { return modes[e.DomainLevel] }
+
+// maxLevel is the highest functional level the instance's Windows Server makes.
+func (e EC2Lab) maxLevel() int {
+	if e.windows() == "2025" {
+		return 10
+	}
+	return 7
 }
 
 // AWSCommand is one aws command lab up runs; Stdin, when set, says what it is given on standard input (never shown).
@@ -80,6 +101,21 @@ func (e EC2Lab) Check() error {
 	}
 	if e.LocalPort <= 0 {
 		return fmt.Errorf("[target] url needs a port for the EC2 lab's port forwarding")
+	}
+	for name, level := range map[string]int{"forest": e.ForestLevel, "domain": e.DomainLevel} {
+		switch {
+		case level == 0:
+		case level > e.maxLevel():
+			return fmt.Errorf("the source's %s functional level is %d: Windows Server %s makes %d at most (windows = \"2025\" makes 10)", name, level, e.windows(), e.maxLevel())
+		case modes[level] == "":
+			return fmt.Errorf("the source's %s functional level is %d, which Windows Server %s cannot make (2008, 3, at least)", name, level, e.windows())
+		}
+	}
+	if e.ForestLevel != 0 && e.DomainLevel != 0 && e.DomainLevel < e.ForestLevel {
+		return fmt.Errorf("domain functional level %d below the forest's %d", e.DomainLevel, e.ForestLevel)
+	}
+	if e.RecycleBin && e.ForestLevel != 0 && e.ForestLevel < 4 {
+		return fmt.Errorf("the AD Recycle Bin needs forest functional level 4 (2008 R2) or higher; the source's is %d", e.ForestLevel)
 	}
 	if e.LDAPPort < 0 || e.LDAPPort > 65535 || e.LDAPPort != 0 && e.LDAPPort == e.LocalPort {
 		return fmt.Errorf("ldap_port %d: a local port other than that of [target] url (%d)", e.LDAPPort, e.LocalPort)
