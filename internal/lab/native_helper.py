@@ -47,16 +47,22 @@ FAST = False
 nt_hashes = {}  # password -> NT hash
 fast_count = 0
 
-# whenCreated: an add sets it to the time of the add, whatever it is given, even with the provision and relax
-# controls; a modify as the system session then sets it (over LDAP only the system may). Measured on 4.19.5:
-# kept across a restart, dbcheck clean. whenChanged cannot be set that way: every change gives it the time again.
-WHEN_CREATED = False
-when_created_count = 0
+# The attributes the server keeps for an object, the source's on the lab ([target.lab] server_attributes): an add
+# takes the time of the add as whenCreated whatever it is given, even with the provision and relax controls, and
+# the others are the server's own; a modify as the system session then sets each (over LDAP only the system may;
+# Windows refuses them all). Measured on 4.19.5: kept across a restart, dbcheck clean. Not settable that way:
+# whenChanged (every change gives it the time again), pwdLastSet (0 or -1 only), the USNs (each DC's counters).
+SERVER_ATTRS = ["whenCreated", "lastLogonTimestamp", "lastLogon", "logonCount", "lockoutTime", "badPwdCount",
+                "sIDHistory", "mS-DS-CreatorSID"]
+SERVER = False
+server_count = 0
+SERVER_LOWER = {n.lower() for n in SERVER_ATTRS}
 
 
-def set_when_created(dn, value):
+def set_server_attrs(dn, attrs):
     m = ldb.Message(ldb.Dn(db, dn))
-    m["whenCreated"] = ldb.MessageElement([value], ldb.FLAG_MOD_REPLACE, "whenCreated")
+    for name, values in attrs.items():
+        m[name] = ldb.MessageElement(values, ldb.FLAG_MOD_REPLACE, name)
     db.modify(m)
 
 
@@ -108,9 +114,9 @@ def rid_of(sid_bytes):
 
 
 def op_hello(req):
-    global FAST, WHEN_CREATED
+    global FAST, SERVER
     FAST = bool(req.get("fast_password"))
-    WHEN_CREATED = bool(req.get("when_created"))
+    SERVER = bool(req.get("server_attributes"))
     # Try the same operation up front so the import does not fail midway (the transaction is cancelled, so nothing remains).
     ver = getattr(samba, "version", "")  # samba.version is a string
     guid = uuid.uuid4()
@@ -131,14 +137,17 @@ def op_hello(req):
         got = str(ndr_unpack(misc.GUID, res[0]["objectGUID"][0]))
         if got != str(guid):
             return fail(1, "self-check: objectGUID did not take the specified value (%s != %s)" % (got, guid))
-        if WHEN_CREATED:
+        if SERVER:
+            given = {"whenCreated": [b"20010203040506.0Z"], "lastLogonTimestamp": [b"133000000000000000"],
+                     "sIDHistory": [ndr_pack(security.dom_sid("S-1-5-21-1-2-3-4567"))]}
             try:
-                set_when_created(str(msg.dn), b"20010203040506.0Z")
+                set_server_attrs(str(msg.dn), given)
             except ldb.LdbError as e:
-                return fail(e.args[0], "self-check: setting whenCreated was rejected (when_created = \"source\" is not usable with this Samba): %s" % e.args[1])
-            got = str(db.search(base=msg.dn, scope=ldb.SCOPE_BASE, attrs=["whenCreated"])[0]["whenCreated"][0])
-            if got != "20010203040506.0Z":
-                return fail(1, "self-check: whenCreated did not take the value given (%s): when_created = \"source\" is not usable with this Samba" % got)
+                return fail(e.args[0], "self-check: the source's server attributes were rejected (server_attributes = \"source\" is not usable with this Samba): %s" % e.args[1])
+            res = db.search(base=msg.dn, scope=ldb.SCOPE_BASE, attrs=list(given))[0]
+            for name, values in given.items():
+                if name not in res or [bytes(v) for v in res[name]] != values:
+                    return fail(1, "self-check: %s did not take the value given: server_attributes = \"source\" is not usable with this Samba" % name)
         if FAST:
             nt_hash = bytes(range(1, 17))
             try:
@@ -176,9 +185,12 @@ def op_search(req):
 
 
 def op_add(req):
-    global max_rid, when_created_count
+    global max_rid, server_count
     attrs = dict(req["attrs"])
-    created = attrs.pop("whenCreated", None)
+    server = {}
+    for name in list(attrs):
+        if name.lower() in SERVER_LOWER:
+            server[name] = [b64d(v) for v in attrs.pop(name)]
     controls = []
     if "objectGUID" in attrs or "objectSid" in attrs:
         controls = CONTROLS
@@ -197,9 +209,9 @@ def op_add(req):
             return fail(e.args[0], "objectSid %s collided with an existing object in the lab (%s): %s" % (sid, owners or "unknown", e.args[1]))
         raise
     max_rid = max(max_rid, rid)
-    if WHEN_CREATED and created:
-        set_when_created(req["dn"], b64d(created[0]))
-        when_created_count += 1
+    if SERVER and server:
+        set_server_attrs(req["dn"], server)
+        server_count += 1
     return ok()
 
 
@@ -261,7 +273,7 @@ def op_finish(_req):
     summary = out[-1] if out else ""
     if proc.returncode != 0 or ", 0 errors" not in summary and "(0 errors)" not in summary:
         return fail(1, "dbcheck reported an error (relax loosens the consistency checks, so this is the last line of defense): " + " / ".join(out[-5:]))
-    return ok(max_rid=max_rid, rid_next=bumped, dbcheck=summary, fast_passwords=fast_count, when_created=when_created_count)
+    return ok(max_rid=max_rid, rid_next=bumped, dbcheck=summary, fast_passwords=fast_count, server_attributes=server_count)
 
 
 def bump_rid(maximum):

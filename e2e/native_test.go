@@ -86,6 +86,26 @@ func TestNativeImportKeepsObjectGUIDAndObjectSid(t *testing.T) {
 	must(err)
 	defer src.Close()
 
+	// What only the system may write (over LDAP the server refuses them), given to a user of the source from inside
+	// its container: the lab must carry them to the import ([target.lab] server_attributes defaults to "source").
+	serverAttrs := map[string]string{"lastLogonTimestamp": "133000000000000000", "lastLogon": "133200000000000000", "logonCount": "7",
+		"lockoutTime": "133100000000000000", "badPwdCount": "3", "whenCreated": "20100102030405.0Z"}
+	const withServerAttrs = "CN=Bob Staff,OU=Tokyo,OU=Users,OU=IDM,"
+	setScript := "import ldb\nfrom samba.samdb import SamDB\nfrom samba.auth import system_session\nfrom samba.param import LoadParm\n" +
+		"lp = LoadParm(); lp.load('/etc/samba/smb.conf')\ndb = SamDB(url='/var/lib/samba/private/sam.ldb', session_info=system_session(), lp=lp)\n" +
+		"m = ldb.Message(ldb.Dn(db, '" + withServerAttrs + base + "'))\n"
+	for k, v := range serverAttrs {
+		setScript += fmt.Sprintf("m[%q] = ldb.MessageElement([%q], ldb.FLAG_MOD_REPLACE, %q)\n", k, v, k)
+	}
+	// SIDs are binary: packed from their text.
+	setScript += "from samba.ndr import ndr_pack\nfrom samba.dcerpc import security\n" +
+		"for name in ('sIDHistory', 'mS-DS-CreatorSID'):\n" +
+		"    m[name] = ldb.MessageElement([ndr_pack(security.dom_sid('S-1-5-21-1111111111-2222222222-3333333333-1234'))], ldb.FLAG_MOD_REPLACE, name)\n" +
+		"db.modify(m)\n"
+	if out, err := exec.Command("docker", "exec", srcLab.Prefix+"-ad-src", "python3", "-c", setScript).CombinedOutput(); err != nil {
+		t.Fatalf("setting the server attributes on the source: %v\n%s", err, out)
+	}
+
 	root, err := src.Get(context.Background(), base, []string{"objectSid", "objectGUID"})
 	must(err)
 	srcSID, err := ad.SIDText([]byte(root.Values("objectSid")[0]))
@@ -156,8 +176,8 @@ func TestNativeImportKeepsObjectGUIDAndObjectSid(t *testing.T) {
 	must(err)
 	defer dst.Close()
 
-	// objectGUID, objectSid and whenCreated match for all objects ([target.lab] when_created defaults to "source").
-	names := []string{"objectGUID", "objectSid", "whenCreated"}
+	// objectGUID, objectSid and what the server keeps match for all objects ([target.lab] server_attributes defaults to "source").
+	names := []string{"objectGUID", "objectSid", "whenCreated", "lastLogonTimestamp", "lastLogon", "logonCount", "lockoutTime", "badPwdCount", "sIDHistory", "mS-DS-CreatorSID"}
 	checked := 0
 	err = src.Walk(context.Background(), cloneBase, "(|(objectClass=user)(objectClass=group)(objectClass=organizationalUnit))", names, func(e directory.Entry) error {
 		got, err := dst.Get(context.Background(), e.DN, names)
@@ -165,6 +185,9 @@ func TestNativeImportKeepsObjectGUIDAndObjectSid(t *testing.T) {
 			return fmt.Errorf("%s does not exist on the target: %v", e.DN, err)
 		}
 		for _, n := range names {
+			if e.DN == withServerAttrs+base && n != "objectGUID" && n != "objectSid" && len(e.Values(n)) == 0 {
+				return fmt.Errorf("the source lacks %s on %s: it was not set", n, e.DN)
+			}
 			if strings.Join(e.Values(n), ",") != strings.Join(got.Values(n), ",") {
 				return fmt.Errorf("%s of %s does not match: %x / %x", n, e.DN, e.Values(n), got.Values(n))
 			}

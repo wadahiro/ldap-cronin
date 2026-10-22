@@ -62,9 +62,10 @@ type Lab struct {
 	// FastPassword (native only) gives the users the fixed password's NT hash directly: about 3 times faster,
 	// without Kerberos AES keys.
 	FastPassword bool `toml:"fast_password"`
-	// WhenCreated (native only): "source" (the default) gives each object the source's whenCreated, "lab" leaves the
-	// time of the import.
-	WhenCreated string `toml:"when_created"`
+	// ServerAttributes (native only): "source" (the default) gives each object the source's values of what the
+	// server keeps (whenCreated, lastLogonTimestamp, lastLogon, logonCount, lockoutTime, badPwdCount, sIDHistory,
+	// mS-DS-CreatorSID); "lab" leaves the lab's own.
+	ServerAttributes string `toml:"server_attributes"`
 
 	// platform = "ec2": where and how the instance runs. The aws command's own configuration (credentials, profile)
 	// applies; Region overrides its region.
@@ -86,10 +87,10 @@ const (
 	PlatformEC2    = "ec2"
 )
 
-// The [target.lab] when_created settings.
+// The [target.lab] server_attributes settings.
 const (
-	WhenCreatedSource = "source"
-	WhenCreatedLab    = "lab"
+	ServerAttributesSource = "source"
+	ServerAttributesLab    = "lab"
 )
 
 // OnEC2 is whether the lab runs on Amazon EC2.
@@ -334,13 +335,13 @@ func (c *Config) validate() error {
 		if l.FastPassword && !l.Native {
 			return errors.New("[target.lab] fast_password is for native = true: it writes the lab's database directly")
 		}
-		switch l.WhenCreated {
-		case "", WhenCreatedSource, WhenCreatedLab:
+		switch l.ServerAttributes {
+		case "", ServerAttributesSource, ServerAttributesLab:
 		default:
-			return fmt.Errorf("[target.lab] when_created must be %q or %q, got %q", WhenCreatedSource, WhenCreatedLab, l.WhenCreated)
+			return fmt.Errorf("[target.lab] server_attributes must be %q or %q, got %q", ServerAttributesSource, ServerAttributesLab, l.ServerAttributes)
 		}
-		if l.WhenCreated != "" && !l.Native {
-			return errors.New("[target.lab] when_created is for native = true: over LDAP only the server sets whenCreated")
+		if l.ServerAttributes != "" && !l.Native {
+			return errors.New("[target.lab] server_attributes is for native = true: over LDAP only the server sets them")
 		}
 		if l.Native && c.Scope.ConfigurationRefs == plan.ConfigurationRefsClone {
 			return fmt.Errorf("[target.lab] native = true writes the domain partition only; [scope] configuration_refs = %q needs a clone over LDAP", plan.ConfigurationRefsClone)
