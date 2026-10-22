@@ -50,6 +50,13 @@ func TestThePrimaryGroupIsTheSourcesByItsDN(t *testing.T) {
 	if code, err := s.Diff(ctx, DiffOutput{}, &out); err != nil || code != ExitSame {
 		t.Fatalf("the same group by DN, another RID (%d, %v):\n%s", code, err, out.String())
 	}
+	// The group itself is compared too: no reference names it and no memberOf lists it.
+	g.Attrs["sAMAccountName"] = []string{"renamed"}
+	out.Reset()
+	if code, err := s.Diff(ctx, DiffOutput{}, &out); err != nil || code != ExitDiff || !strings.Contains(out.String(), contractors) {
+		t.Fatalf("the primary group outside the scope is compared (%d, %v):\n%s", code, err, out.String())
+	}
+	g.Attrs["sAMAccountName"] = []string{"contractors"}
 	a.Attrs["primaryGroupID"] = []string{"513"}
 	out.Reset()
 	if code, err := s.Diff(ctx, DiffOutput{}, &out); err != nil || code != ExitDiff || !strings.Contains(out.String(), "Domain Users") {

@@ -35,6 +35,9 @@ func (r *runner) checkHolders(ctx context.Context, dst directory.Directory, work
 			r.unheld("is a group outside the scope the target lacks ([scope] outside_groups = \"existing\")")
 			return nil
 		case !h.Builtin && !h.Existing && !r.namedOutside(h.DN):
+			r.primaryMu.Lock()
+			r.held[dn.Normalize(h.DN)] = true
+			r.primaryMu.Unlock()
 			e, err := r.p.ReadReferenced(ctx, h.DN, h.Kind)
 			if err != nil || e == nil {
 				return err

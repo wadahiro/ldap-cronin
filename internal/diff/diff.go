@@ -106,7 +106,8 @@ type Options struct {
 // With a Lookup, objects whose source DN is missing on the target are looked up by identifier, and reported as
 // RENAMED if found at a different DN. This verifies changes made by another program that renamed or moved objects on the target.
 func Run(ctx context.Context, src, dst directory.Directory, job plan.Job, o Options, emit func(Difference)) (Summary, error) {
-	r := &runner{job: job, emit: emit, outside: map[string]string{}, sum: Summary{Compared: map[string]int{}, Differences: map[Kind]int{}, NotCompared: map[string]int{}, NotComparedWhy: map[string]int{}, Unheld: map[string]int{}}}
+	r := &runner{job: job, emit: emit, outside: map[string]string{}, sum: Summary{Compared: map[string]int{}, Differences: map[Kind]int{}, NotCompared: map[string]int{}, NotComparedWhy: map[string]int{}, Unheld: map[string]int{}},
+		primaryOutside: map[string]string{}, held: map[string]bool{}}
 	if o.Resolver != nil {
 		r.sum.Matching = o.Resolver.Describe()
 	}
@@ -184,6 +185,9 @@ func Run(ctx context.Context, src, dst directory.Directory, job plan.Job, o Opti
 	if err := r.checkHolders(ctx, dst, o.Workers); err != nil {
 		return r.sum, err
 	}
+	if err := r.checkPrimaryGroups(ctx, o.Workers); err != nil {
+		return r.sum, err
+	}
 	r.sum.Duplicates = r.loc.duplicates
 
 	for _, k := range job.Kinds {
@@ -206,9 +210,16 @@ type runner struct {
 	job plan.Job
 	// dstGroups maps the RID of each target group to its DN, for the primary groups (readGroups).
 	dstGroups map[string]string
-	p         *plan.Plan
-	loc       *locator
-	emit      func(Difference)
+	ctx       context.Context // the run's, for the source's groups read on the first primary group that needs them
+	// primaryOutside are the primary groups outside the scope met while comparing (normalized DN -> DN), and held
+	// the holders checkHolders compared as groups; primaryErr the first error reading the source's groups.
+	primaryMu      sync.Mutex
+	primaryOutside map[string]string
+	held           map[string]bool
+	primaryErr     error
+	p              *plan.Plan
+	loc            *locator
+	emit           func(Difference)
 
 	mu  sync.Mutex // guards sum and serializes emit
 	sum Summary

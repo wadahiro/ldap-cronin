@@ -2,22 +2,23 @@ package diff
 
 import (
 	"context"
+	"sort"
 	"strings"
 
 	"github.com/wadahiro/ldap-cronin/internal/directory"
+	"github.com/wadahiro/ldap-cronin/internal/dn"
 	"github.com/wadahiro/ldap-cronin/internal/plan"
+	"github.com/wadahiro/ldap-cronin/internal/workpool"
 )
 
-// readGroups reads the groups of both sides by RID, for the primary groups (profile.PrimaryGrouper): once, before
-// the comparison.
+// readGroups reads the target's groups by RID, for the primary groups (profile.PrimaryGrouper), once before the
+// comparison. The source's are read only for a primary group that is not a built-in one (plan.PrimaryGroupDN).
 func (r *runner) readGroups(ctx context.Context, dst directory.Directory) error {
 	pg := r.job.Profile.PrimaryGroup
 	if pg == nil {
 		return nil
 	}
-	if _, err := r.p.PrimaryGroupDN(ctx, ""); err != nil {
-		return err
-	}
+	r.ctx = ctx
 	var err error
 	r.dstGroups, err = pg.Groups(ctx, dst, r.p.Root)
 	return err
@@ -63,9 +64,48 @@ func (r *runner) primaryDNs(want, got directory.Entry) (directory.Entry, directo
 		if pg.WellKnown(rid) {
 			return r.dstGroups[rid] // the same group in every domain, which a dump need not carry
 		}
-		d, _ := r.p.PrimaryGroupDN(context.Background(), rid) // read by readGroups already
+		d, err := r.p.PrimaryGroupDN(r.ctx, rid)
+		r.primaryMu.Lock()
+		defer r.primaryMu.Unlock()
+		if err != nil && r.primaryErr == nil {
+			r.primaryErr = err
+		}
+		if d != "" && !r.p.Scope.Has(d) {
+			r.primaryOutside[dn.Normalize(d)] = d // compared as a group outside the scope (checkPrimaryGroups)
+		}
 		return d
 	})
 	got = translate(got, func(rid string) string { return r.dstGroups[rid] })
 	return want, got
+}
+
+// checkPrimaryGroups compares the primary groups outside the scope clone created (a user's group of another OU that
+// no reference names and no memberOf lists), as their kind, without their own references; a built-in one is the
+// target's own.
+func (r *runner) checkPrimaryGroups(ctx context.Context, workers int) error {
+	r.primaryMu.Lock()
+	err := r.primaryErr
+	var groups []string
+	for key, d := range r.primaryOutside {
+		if !r.namedOutside(d) && !r.held[key] {
+			groups = append(groups, d)
+		}
+	}
+	r.primaryMu.Unlock()
+	if err != nil {
+		return err
+	}
+	sort.Strings(groups)
+	return workpool.Each(ctx, workers, groups, func(ctx context.Context, d string) error {
+		h, err := r.p.Holder(ctx, d)
+		if err != nil || h.Why != "" || h.Builtin || h.Existing {
+			return err
+		}
+		e, err := r.p.ReadReferenced(ctx, d, h.Kind)
+		if err != nil || e == nil {
+			return err
+		}
+		r.referenced()
+		return r.check(ctx, *e, r.withoutRefs(h.Kind.Attrs), h.Kind, false)
+	})
 }

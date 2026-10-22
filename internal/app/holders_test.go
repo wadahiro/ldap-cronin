@@ -117,3 +117,23 @@ func TestGroupsOutsideTheScopeCanBeLeftAlone(t *testing.T) {
 		t.Fatalf("the summary says why:\n%s", sum.String())
 	}
 }
+
+// A dry-run cannot read the target, and every domain has Domain Admins: its LDIF adds the member, and the group of
+// another OU is created.
+func TestADryRunGivesTheBuiltinGroupItsMembers(t *testing.T) {
+	w, vpn, admins := holdersWorld()
+	s := w.open(t, "mode = \"off\"")
+	var ldif, log bytes.Buffer
+	rep, err := s.Clone(context.Background(), true, &ldif, &log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.BuiltinGroups != 1 || len(rep.Unheld) != 0 {
+		t.Fatalf("%+v\n%s", rep, log.String())
+	}
+	for _, want := range []string{"dn: " + admins + "\nchangetype: modify\nadd: member\nmember: " + alice, "dn: " + vpn + "\nchangetype: add\n"} {
+		if !strings.Contains(ldif.String(), want) {
+			t.Errorf("the LDIF lacks %q:\n%s", want, ldif.String())
+		}
+	}
+}

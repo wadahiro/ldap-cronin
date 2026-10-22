@@ -44,6 +44,9 @@ type Options struct {
 	Native bool
 	// Progress, when set, is told the phases and how far each is (nil: nothing is shown).
 	Progress *progress.Bar
+	// DryRun says the target is the LDIF of a dry-run, which holds only what the run wrote: a built-in group (Domain
+	// Admins) is taken to be there, as every domain has it.
+	DryRun bool
 }
 
 // maxWarnings caps the warnings kept and shown, so that a flood of out-of-scope reference targets does not exhaust memory with warnings.
@@ -208,6 +211,7 @@ func (r *runner) holders(ctx context.Context, p *plan.Plan, hs []plan.Holder) er
 			return r.unheld(h, h.Why)
 		}
 		switch {
+		case h.Builtin && r.opt.DryRun:
 		case h.Builtin || h.Existing:
 			cur, err := r.dst.Get(ctx, h.DN, []string{"objectClass"})
 			if err != nil {
@@ -215,6 +219,9 @@ func (r *runner) holders(ctx context.Context, p *plan.Plan, hs []plan.Holder) er
 			}
 			if cur == nil {
 				why := "is a group outside the scope the target lacks ([scope] outside_groups = \"existing\")"
+				if r.opt.DryRun {
+					why = "is a group outside the scope, which a dry-run cannot tell the target holds ([scope] outside_groups = \"existing\")"
+				}
 				if h.Builtin {
 					why = "is a built-in group the target lacks"
 				}

@@ -284,7 +284,9 @@ Next: ldap-cronin check -config config.toml, then ldap-cronin clone -config conf
 
 It asks for the **fixed password for cloned users** (unless `[accounts] fixed_password` sets it): every cloned user
 (and computer) gets it, since password hashes are never copied. It must satisfy the target's password policy (the
-lab's is Samba's default complexity).
+lab's is Samba's default complexity). Users who must change their password at the next logon on production must on
+the target too. The cloned members of Domain Admins and the other built-in groups are members there too (next
+paragraph), so the fixed password opens administrator accounts of the target: keep it as you keep the target.
 
 Before the first write it shows where it is about to write, and asks:
 
@@ -303,7 +305,11 @@ stopped) is refused with the command to run.
 
 What it does, in order: the OUs and parents, then groups, users, computers and contacts (users and computers are
 added disabled, given the password, then their source `userAccountControl`), then `member`, `manager` and the other
-references. It prints each write (`add`, `update`) and the counts at the end.
+references, then the primary groups that are not Domain Users, then the groups outside `base_dn` that hold entries
+of it (a user's group of another OU, Domain Admins: found through `memberOf`, created when not built-in, and given
+those members only; `[scope] outside_groups` and `builtin_groups` turn them off). It prints each write (`add`,
+`update`) and the counts at the end. A dump taken before groups outside its base DN were carried says so when it
+is read: dump again (step 2).
 
 While it runs, the bottom of the terminal shows the phase, how many of how many, the rate and the time left;
 `clone -config config.toml > clone.log` keeps the log in a file and the screen for the status alone.
