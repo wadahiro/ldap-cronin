@@ -103,7 +103,8 @@ Details per server type: [docs/active-directory.md](docs/active-directory.md) an
 - **Passwords** are never copied. Cloned users get the fixed password you enter (or `[accounts] fixed_password`), set when they are created and never reset by a re-run; how it is set depends on the server type (see the server docs).
 - **DN-valued attributes** (`member`, `manager`, `managedBy`, and anything you add such as `seeAlso`) are detected from the source schema, not from a fixed list.
   They are applied after all objects exist, because a reference to a missing object fails. **Every member is reproduced**: an object outside the scope that a reference names (a member outside `base_dn`) is cloned too, as its kind and without its own references (`[scope] references`); a built-in the target holds is referenced as it is; a value that still cannot be written (on AD, a built-in the target lacks, or an entry of the configuration partition such as the Exchange address list `showInAddressBook` names) is skipped with one warning per entry it names, the summaries count the values per attribute and reason, and `diff` counts them instead of comparing them. `[scope] configuration_refs = "clone"` creates the entries of the configuration partition such values name, for a lab.
-- Back links (`memberOf`, `directReports`, ...) and DN+binary / DN+string attributes are an error in the allow list.
+- A DN inside a DN-Binary or DN-String value (Exchange's `authOrig`, `dLMemSubmitPerms`, ...) is handled as such a reference, its binary or string part written as the source has it.
+- Back links (`memberOf`, `directReports`, ...) are an error in the allow list.
 
 ## diff (verifying changes made on the target)
 
