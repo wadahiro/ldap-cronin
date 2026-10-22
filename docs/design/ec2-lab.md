@@ -54,7 +54,8 @@ controller, and using the lab as a production copy.
   account name). The second phase relaxes the domain's policy for the cloned users only; a weaker password stops
   the first phase, and the forest is never made.
 - `subnet`: a subnet whose instances reach Systems Manager (a NAT gateway, or VPC endpoints for `ssm`,
-  `ssmmessages` and `ec2messages`).
+  `ssmmessages` and `ec2messages`, or an internet gateway with `public_ip = true`: an instance without a public
+  address in a subnet that routes to an internet gateway only never registers, as a user's first lab up showed).
 - `instance_profile`: a role with `AmazonSSMManagedInstanceCore`, for Systems Manager to run the readiness command
   and the tunnels.
 

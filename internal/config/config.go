@@ -94,6 +94,9 @@ type Lab struct {
 	SecurityGroups []string `toml:"security_groups"`
 	// Tags (EC2) are put on the instance and its volume, for an account whose policy requires some.
 	Tags map[string]string `toml:"tags"`
+	// PublicIP (EC2) gives the instance a public IPv4 address, for a subnet whose instances reach Systems Manager
+	// through an internet gateway only.
+	PublicIP bool `toml:"public_ip"`
 }
 
 // Platforms of [target.lab].
@@ -344,8 +347,8 @@ func (c *Config) validate() error {
 			if l.RecycleBin {
 				return fmt.Errorf("[target.lab] recycle_bin is for platform = %q (Samba has no AD Recycle Bin)", PlatformEC2)
 			}
-			if l.DiskSize != 0 || len(l.SecurityGroups) > 0 || len(l.Tags) > 0 {
-				return fmt.Errorf("[target.lab] disk_size, security_groups and tags are for platform = %q", PlatformEC2)
+			if l.DiskSize != 0 || len(l.SecurityGroups) > 0 || len(l.Tags) > 0 || l.PublicIP {
+				return fmt.Errorf("[target.lab] disk_size, security_groups, tags and public_ip are for platform = %q", PlatformEC2)
 			}
 		case PlatformEC2:
 			if l.Native {

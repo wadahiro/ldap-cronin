@@ -128,6 +128,13 @@ func TestEC2UpCommands(t *testing.T) {
 	if run := e.UpCommands()[2].Shell(); !strings.Contains(run, "--security-group-ids sg-02ed95a0b7fdab87c sg-0123456789abcdef0 ") {
 		t.Errorf("security_groups: %s", run)
 	}
+	if strings.Contains(text, "--associate-public-ip-address") {
+		t.Errorf("without public_ip, the subnet's own: %s", text)
+	}
+	e.PublicIP = true
+	if run := e.UpCommands()[2].Shell(); !strings.Contains(run, " --associate-public-ip-address ") {
+		t.Errorf("public_ip: %s", run)
+	}
 	e.Windows, e.InstanceType, e.DiskSize = "2025", "m5.xlarge", 80
 	if text := e.UpCommands()[1].Shell() + e.UpCommands()[2].Shell(); !strings.Contains(text, "Windows_Server-2025-") || !strings.Contains(text, "m5.xlarge") ||
 		!strings.Contains(text, "--block-device-mappings 'DeviceName=/dev/sda1,Ebs={VolumeSize=80,VolumeType=gp3,DeleteOnTermination=true}'") {

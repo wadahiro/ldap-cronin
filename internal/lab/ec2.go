@@ -55,6 +55,9 @@ type EC2Lab struct {
 	// Tags are put on the instance and its volume besides the lab's own (Name, ldap-cronin.lab, ldap-cronin.realm),
 	// for an account whose policy requires some; Name may be given, the lab's two not.
 	Tags map[string]string
+	// PublicIP gives the instance a public IPv4 address, for a subnet that does not, with no NAT gateway nor VPC
+	// endpoints of Systems Manager: its agent reaches Systems Manager through the internet gateway then.
+	PublicIP bool
 
 	instance string // the instance, once known (WithInstance)
 }
@@ -320,6 +323,9 @@ func (e EC2Lab) runArgs(ami, userData string) []string {
 		"--tag-specifications", e.tagSpecifications()}
 	if len(e.SecurityGroups) > 0 {
 		args = append(append(args, "--security-group-ids"), e.SecurityGroups...)
+	}
+	if e.PublicIP {
+		args = append(args, "--associate-public-ip-address")
 	}
 	if e.DiskSize > 0 { // the root device of the Windows Server images
 		args = append(args, "--block-device-mappings",
