@@ -16,7 +16,7 @@ import (
 	"github.com/wadahiro/ldap-cronin/internal/dn"
 )
 
-// A forward link of DN-Binary syntax on group, in the shape of Exchange's authOrig (who may send to a group): check
+// A forward link of DN-Binary syntax on group (attributeSyntax 2.5.5.7, as Exchange's authOrig, which is OR-Name): check
 // suggests it, schema carries it, clone writes its values with the binary part kept and creates the entry a value
 // names outside the scope, and diff compares them, a removed value showing.
 func TestADNBinaryLinkIsClonedAndCompared(t *testing.T) {

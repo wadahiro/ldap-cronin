@@ -11,7 +11,7 @@ import (
 	"github.com/wadahiro/ldap-cronin/internal/profile"
 )
 
-// A DN-Binary attribute (Exchange's authOrig and its kin) is a reference: mode = "all" takes it, clone writes each
+// A DN-Binary attribute is a reference: mode = "all" takes it, clone writes each
 // value with its binary part and creates the entry it names outside the scope, and diff compares it, translating
 // the DN alone. A credential of the same syntax (msDS-KeyCredentialLink) stays out.
 func TestADNBinaryAttributeIsAReference(t *testing.T) {

@@ -138,7 +138,7 @@ func (s *Schema) Writable(class string) ([]string, bool) {
 }
 
 // writable is whether a client can write a: not systemOnly, constructed or a back link. A DN inside a larger value
-// (DN-Binary, DN-String: authOrig, dLMemSubmitPerms) is written as a reference (dn.SplitRef).
+// (DN-Binary, DN-String) is written as a reference (dn.SplitRef).
 func writable(a *SchemaElement) bool {
 	flags, _ := strconv.Atoi(a.value("systemFlags"))
 	link, _ := strconv.Atoi(a.value("linkID"))

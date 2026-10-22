@@ -5,8 +5,8 @@ import (
 	"strings"
 )
 
-// A reference value is a DN, or a DN inside a larger value: AD's DN-Binary (B:<count>:<hex>:<DN>, as authOrig and
-// dLMemSubmitPerms hold) and DN-String (S:<count>:<string>:<DN>). <count> is the number of hex digits or of
+// A reference value is a DN (also Object(OR-Name), such as Exchange's authOrig), or a DN inside a larger value: AD's
+// DN-Binary (B:<count>:<hex>:<DN>, msDS-RevealedUsers) and DN-String (S:<count>:<string>:<DN>). <count> is the number of hex digits or of
 // characters of the middle part, which may itself hold colons. No DN starts with B: or S: (an RDN needs a type and =),
 // so the form alone tells them apart.
 

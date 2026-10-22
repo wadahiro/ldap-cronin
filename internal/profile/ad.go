@@ -197,7 +197,7 @@ func SanitizeUAC(v string) string {
 // attributeSyntax values in the AD schema.
 const (
 	syntaxDN       = "2.5.5.1"  // DS-DN (member, manager, managedBy, seeAlso, etc.)
-	syntaxDNBinary = "2.5.5.7"  // DN-Binary: B:<count>:<hex>:<DN> (authOrig, dLMemSubmitPerms, ...)
+	syntaxDNBinary = "2.5.5.7"  // DN-Binary, B:<count>:<hex>:<DN>, or Object(OR-Name), the DN alone (Exchange's authOrig)
 	syntaxDNString = "2.5.5.14" // DN-String: S:<count>:<string>:<DN>
 )
 
