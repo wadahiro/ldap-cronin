@@ -80,9 +80,12 @@ type Lab struct {
 	InstanceProfile string `toml:"instance_profile"` // with AmazonSSMManagedInstanceCore
 	// LDAPSName is one more DNS name of the lab's LDAPS certificate (its DC's and its domain's are always there).
 	LDAPSName string `toml:"ldaps_name"`
-	// LDAPPort (EC2) forwards the instance's LDAP (389) to this local port too, and has the instance take a simple
-	// bind there without signing: for clients that do not use LDAPS (clone itself does).
+	// LDAPPort (EC2) is the local port the instance's LDAP (389) is forwarded to too, for clients that do not use
+	// LDAPS (clone itself does). The instance listens on 389 whatever it is.
 	LDAPPort int `toml:"ldap_port"`
+	// LDAPUnsigned (EC2) has the instance take a simple bind on 389 without signing, which Windows Server 2025
+	// refuses by default for a new forest (2019 and 2022 take it).
+	LDAPUnsigned bool `toml:"ldap_unsigned"`
 	// RecycleBin (EC2) enables the AD Recycle Bin on the lab's forest.
 	RecycleBin bool `toml:"recycle_bin"`
 }
@@ -328,6 +331,9 @@ func (c *Config) validate() error {
 			}
 			if l.LDAPPort != 0 {
 				return fmt.Errorf("[target.lab] ldap_port is for platform = %q (a docker lab publishes LDAP on its own port)", PlatformEC2)
+			}
+			if l.LDAPUnsigned {
+				return fmt.Errorf("[target.lab] ldap_unsigned is for platform = %q (Samba's LDAP is the lab's own)", PlatformEC2)
 			}
 			if l.RecycleBin {
 				return fmt.Errorf("[target.lab] recycle_bin is for platform = %q (Samba has no AD Recycle Bin)", PlatformEC2)

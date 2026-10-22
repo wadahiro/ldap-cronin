@@ -35,9 +35,12 @@ type EC2Lab struct {
 	// LDAPSName, when set, is one more DNS name of the LDAPS certificate, besides the DC's and the domain's: the
 	// name a client verifying the certificate connects by.
 	LDAPSName string
-	// LDAPPort, when set, is where LDAP (389) of the instance is forwarded too, for clients that do not use LDAPS;
-	// the instance then takes a simple bind there without signing.
+	// LDAPPort, when set, is the local port LDAP (389) of the instance is forwarded to too, for clients that do not
+	// use LDAPS. The instance listens on 389 whatever it is.
 	LDAPPort int
+	// LDAPUnsigned has the instance take a simple bind on 389 without signing (LDAPServerIntegrity 1), as Windows
+	// Server 2019 and 2022 do by default and 2025 does not for a new forest.
+	LDAPUnsigned bool
 	// ForestLevel and DomainLevel are the source's functional levels (msDS-Behavior-Version: 7 is Windows Server
 	// 2016), the forest made with them; 0 leaves the highest the instance's Windows Server makes.
 	ForestLevel, DomainLevel int

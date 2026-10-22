@@ -300,7 +300,8 @@ instance_profile = "ldap-cronin-lab"    # a role with AmazonSSMManagedInstanceCo
 # instance_type = "t3.large"
 # windows = "2022"                      # 2016, 2019, 2022 or 2025
 # ldaps_name = "ldap.test.example.com"  # one more DNS name of its LDAPS certificate (the DC's and the domain's are in it)
-# ldap_port = 13389                      # LDAP (389) forwarded there too, for clients that do not use LDAPS
+# ldap_port = 13389                      # the local port LDAP (389) is forwarded to too, for clients without LDAPS
+# ldap_unsigned = true                   # a simple bind on 389 without signing taken (2025 refuses it by default)
 # recycle_bin = true                     # the AD Recycle Bin enabled (forest level 2008 R2 or higher)
 ```
 
@@ -328,9 +329,11 @@ ldap-cronin lab reset --config config.toml -y     # terminates the lab's instanc
   upper case, lower case, digits and symbols): it becomes the Administrator's before the domain exists, so lab up
   refuses another before AWS is asked anything.
 - **lab reset --config** terminates the instances of the lab's tag, after naming them (`-y` skips the question).
-- LDAP (389) as well, for a client that does not use LDAPS: `ldap_port` forwards it to that local port. Windows
-  Server 2019 takes a simple bind there without signing by default, and StartTLS (measured); the user data sets
-  `LDAPServerIntegrity` to 1 (signing not required) for 2025, which requires it for a new forest (unverified).
+- LDAP (389) as well, for a client that does not use LDAPS: `ldap_port` is the local port the tunnel forwards the
+  instance's 389 to (the instance listens on 389 whatever it is). Windows Server 2019 takes a simple bind there
+  without signing by default, and StartTLS (measured), as 2022 should; 2025 requires signing for a new forest, so
+  `ldap_unsigned = true` sets `LDAPServerIntegrity` to 1 (signing not required). Unverified on 2025: a domain
+  controllers' policy enforcing signing would set it back.
 - The forest has the source's functional levels (`forestFunctionality` and `domainFunctionality` of its root DSE,
   which a dump carries): Install-ADDSForest is given them as `-ForestMode` and `-DomainMode`. A level a Windows
   Server of today cannot make (below 2008) or that needs a newer one (2025's, on `windows = "2022"`) is refused

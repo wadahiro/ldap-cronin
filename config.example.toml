@@ -28,7 +28,8 @@ insecure_skip_verify = true
 #                              # --dry-run shows the plan only; docs/lab.md). It needs region, subnet, instance_profile;
 #                              # instance_type = "t3.large", windows = "2022" (2016, 2019, 2025) optional;
 #                              # ldaps_name = "ldap.test.example.com" adds a DNS name to its LDAPS certificate;
-#                              # ldap_port = 13389 forwards LDAP (389) too, for clients that do not use LDAPS;
+#                              # ldap_port = 13389, the local port LDAP (389) is forwarded to too; ldap_unsigned = true
+#                              # takes a simple bind on 389 without signing (Windows Server 2025 refuses it by default);
 #                              # recycle_bin = true enables the AD Recycle Bin. Its functional levels are the source's
 
 [scope]                              # what clone copies and diff compares

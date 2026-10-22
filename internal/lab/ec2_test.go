@@ -32,8 +32,12 @@ func TestEC2UserDataMakesTheSourcesDomain(t *testing.T) {
 	}
 	e := testEC2Lab()
 	e.LDAPPort = 13389
+	if ud, err := e.UserData(testPassword); err != nil || !strings.Contains(ud, "$PlainLDAP = ''") {
+		t.Errorf("ldap_port forwards only: %v", err)
+	}
+	e.LDAPUnsigned = true
 	if ud, err := e.UserData(testPassword); err != nil || !strings.Contains(ud, "$PlainLDAP = 'yes'") || !strings.Contains(ud, "LDAPServerIntegrity -Value 1") {
-		t.Errorf("ldap_port: %v", err)
+		t.Errorf("ldap_unsigned: %v", err)
 	}
 	if last := e.UpCommands()[len(e.UpCommands())-1].Shell(); !strings.Contains(last, "'portNumber=389,localPortNumber=13389'") {
 		t.Errorf("ldap_port forwarding: %s", last)
