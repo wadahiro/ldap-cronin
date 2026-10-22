@@ -146,7 +146,8 @@ var AD = Profile{
 // TPM owner information of a computer. No default allow list names them; they are listed so [attributes]
 // mode = "all", which takes every attribute a client can write, leaves them out too.
 var accountSecrets = []string{
-	"userPassword", "unixUserPassword", "userPKCS12", "msPKIAccountCredentials", "msPKIDPAPIMasterKeys", "msTPM-OwnerInformation",
+	"userPassword", "unixUserPassword", "userPKCS12", "msPKIAccountCredentials", "msPKIDPAPIMasterKeys", "msPKI-CredentialRoamingTokens",
+	"msTPM-OwnerInformation",
 }
 
 // computerCredentials are never cloned, compared or printed: LAPS (legacy and Windows LAPS), Windows Hello / shadow
@@ -176,8 +177,8 @@ func SanitizeUAC(v string) string {
 // attributeSyntax values in the AD schema.
 const (
 	syntaxDN       = "2.5.5.1"  // DS-DN (member, manager, managedBy, seeAlso, etc.)
-	syntaxDNBinary = "2.5.5.7"  // DN+binary; not supported because the DN inside the value cannot be rewritten
-	syntaxDNString = "2.5.5.14" // DN+string; same as above
+	syntaxDNBinary = "2.5.5.7"  // DN-Binary: B:<count>:<hex>:<DN> (authOrig, dLMemSubmitPerms, ...)
+	syntaxDNString = "2.5.5.14" // DN-String: S:<count>:<string>:<DN>
 )
 
 // adSchema reads attributeSchema entries from the schema naming context. An odd linkID marks a back link.
@@ -191,7 +192,7 @@ func (adSchema) Discover(ctx context.Context, src directory.Directory) (Schema, 
 	if root == nil || first(root.Values("schemaNamingContext")) == "" {
 		return Schema{}, false, nil
 	}
-	s := Schema{Refs: map[string]RefInfo{}, BackLinks: map[string]bool{}, Unsupported: map[string]bool{}}
+	s := Schema{Refs: map[string]RefInfo{}, BackLinks: map[string]bool{}}
 	filter := "(&(objectClass=attributeSchema)(|(attributeSyntax=" + syntaxDN + ")(attributeSyntax=" + syntaxDNBinary + ")(attributeSyntax=" + syntaxDNString + ")))"
 	err = src.Walk(ctx, first(root.Values("schemaNamingContext")), filter,
 		[]string{"lDAPDisplayName", "attributeSyntax", "linkID", "isSingleValued"}, func(e directory.Entry) error {
@@ -200,12 +201,9 @@ func (adSchema) Discover(ctx context.Context, src directory.Directory) (Schema, 
 				return nil
 			}
 			key := strings.ToLower(name)
-			switch first(e.Values("attributeSyntax")) {
-			case syntaxDN:
-				s.Refs[key] = RefInfo{Single: strings.EqualFold(first(e.Values("isSingleValued")), "TRUE")}
-			case syntaxDNBinary, syntaxDNString:
-				s.Unsupported[key] = true
-			}
+			// A DN-Binary or DN-String value is a reference too: its DN is what clone creates and diff compares,
+			// the binary or string part around it is written as it is (dn.SplitRef).
+			s.Refs[key] = RefInfo{Single: strings.EqualFold(first(e.Values("isSingleValued")), "TRUE")}
 			// The server computes a back link (memberOf, directReports, ...) and it cannot be written.
 			if id, err := strconv.Atoi(first(e.Values("linkID"))); err == nil && id%2 == 1 {
 				s.BackLinks[key] = true

@@ -45,8 +45,8 @@ func (l *locator) translateBack(values []string) []string {
 	out := make([]string, len(values))
 	for i, v := range values {
 		out[i] = v
-		if src, ok := l.renamedBack[dn.Normalize(v)]; ok {
-			out[i] = src
+		if src, ok := l.renamedBack[dn.Normalize(dn.RefDN(v))]; ok {
+			out[i] = dn.RewrapRef(v, src)
 		}
 	}
 	return out

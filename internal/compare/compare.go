@@ -13,8 +13,8 @@ import (
 // Normalizer maps a value to the form in which equal values are identical. nil compares values as they are.
 type Normalizer func(string) string
 
-// DN absorbs the case and escaping differences of DN values.
-var DN Normalizer = dn.Normalize
+// DN absorbs the case and escaping differences of DN values, also inside a DN-Binary or DN-String value.
+var DN Normalizer = dn.NormalizeRef
 
 // CaseIgnore compares values ignoring case (objectClass names).
 var CaseIgnore Normalizer = strings.ToLower

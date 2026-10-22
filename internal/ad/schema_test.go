@@ -196,7 +196,7 @@ func TestNewClassesComeInTheOrderTheyDependOnEachOther(t *testing.T) {
 }
 
 // What a client can write on a class: through the classes it derives from and their auxiliary classes, without what
-// only the server writes, the constructed attributes, the back links and the DN-Binary values.
+// only the server writes, the constructed attributes and the back links (a DN-Binary value is a reference).
 func TestWritableAttributesOfAClass(t *testing.T) {
 	d := schemaDir(srcSchemaNC)
 	for name, more := range map[string]map[string][]string{
@@ -225,7 +225,7 @@ func TestWritableAttributesOfAClass(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, ok := s.Writable("User")
-	if !ok || strings.Join(got, ",") != "acmeCode,cn,givenName,manager,mixinAttr,sAMAccountName" {
+	if !ok || strings.Join(got, ",") != "acmeCode,cn,givenName,manager,mixinAttr,msExchDelegates,sAMAccountName" {
 		t.Fatalf("%v %v", got, ok)
 	}
 	if _, ok := s.Writable("printer"); ok {

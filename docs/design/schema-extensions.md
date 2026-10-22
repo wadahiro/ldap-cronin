@@ -39,7 +39,7 @@ verified against Windows AD.
 
 - Resolved once in `app.Open` from the source schema: for each kind's class (`KindSpec.Class`), what it, the classes
   it derives from and their auxiliary classes must or may contain, without `systemOnly`, constructed
-  (`systemFlags` 0x4), back links (odd `linkID`), DN-Binary / DN-String syntaxes, `NeverClone`, the credentials, the
+  (`systemFlags` 0x4), back links (odd `linkID`), `NeverClone`, the credentials, the
   identifier and the marker; then `exclude`. The result is a static allow list, so the target schema check, the
   references, the comparison and the summaries work as before.
 - In clone and diff (not a dry-run), the attributes the target's schema lacks are dropped with a note instead of

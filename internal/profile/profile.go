@@ -112,8 +112,6 @@ type Schema struct {
 	Refs map[string]RefInfo // lowercase name
 	// BackLinks are computed by the server (memberOf, directReports, ...) and cannot be written.
 	BackLinks map[string]bool
-	// Unsupported hold a DN inside a larger value (DN-Binary, DN-String) that this tool cannot rewrite.
-	Unsupported map[string]bool
 }
 
 // RefDiscoverer finds the DN-valued attributes in the source schema. A fixed list would break attributes added

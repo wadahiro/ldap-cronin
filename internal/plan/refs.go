@@ -75,6 +75,7 @@ const (
 	WhySkipped       = "names an entry outside the scope ([scope] references = \"skip\")"
 	WhyNotOnTarget   = "names an entry outside the scope the target lacks ([scope] references = \"existing\")"
 	WhyFenced        = "names a schema definition or a partition of the forest, which clone never creates"
+	WhyWrapped       = "names a well-known principal inside a DN-Binary or DN-String value, which clone does not write"
 )
 
 // whyClass is the reason for a value naming an entry of an object class no kind copies.
@@ -115,6 +116,7 @@ func (c *Classifier) Why(ctx context.Context, v string) (string, error) {
 }
 
 // Write returns the form in which clone writes v: the principal's form for a RefPrincipal, v otherwise.
+// v may be a DN-Binary or DN-String value (dn.SplitRef): it is classified by its DN, and written as it is.
 func (c *Classifier) Write(ctx context.Context, v string) (string, error) {
 	chk, err := c.check(ctx, v)
 	if err != nil {
@@ -127,10 +129,14 @@ func (c *Classifier) Write(ctx context.Context, v string) (string, error) {
 }
 
 func (c *Classifier) check(ctx context.Context, v string) (*refCheck, error) {
-	if c.p.Scope.Has(v) {
+	prefix, d := dn.SplitRef(v)
+	if c.p.Scope.Has(d) {
 		return &refCheck{class: RefInScope}, nil
 	}
-	key := dn.Normalize(v)
+	key := dn.Normalize(d)
+	if prefix != "" {
+		key = "\x00" + key // a principal is written differently inside a DN-Binary value
+	}
 	c.mu.Lock()
 	chk, ok := c.seen[key]
 	if !ok {
@@ -140,7 +146,12 @@ func (c *Classifier) check(ctx context.Context, v string) (*refCheck, error) {
 		}
 	}
 	c.mu.Unlock()
-	chk.once.Do(func() { chk.err = c.classify(ctx, v, chk) })
+	chk.once.Do(func() {
+		if chk.err = c.classify(ctx, d, chk); chk.err == nil && prefix != "" && chk.class == RefPrincipal {
+			// Its SID form (<SID=...>) inside B:...: is not known to be taken.
+			chk.class, chk.write, chk.why = RefUnreproducible, "", WhyWrapped
+		}
+	})
 	return chk, chk.err
 }
 

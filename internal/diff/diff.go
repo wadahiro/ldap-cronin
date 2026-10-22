@@ -212,8 +212,8 @@ func (r *runner) noteOutside(want directory.Entry, names []string) {
 			continue
 		}
 		for _, v := range want.Values(n) {
-			if !r.p.Scope.Has(v) {
-				r.outside[dn.Normalize(v)] = v
+			if d := dn.RefDN(v); !r.p.Scope.Has(d) {
+				r.outside[dn.Normalize(d)] = d
 			}
 		}
 	}

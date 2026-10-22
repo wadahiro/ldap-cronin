@@ -166,8 +166,8 @@ func Write(ctx context.Context, src directory.Directory, prof profile.Profile, o
 				continue
 			}
 			for _, v := range values {
-				if !dn.Equal(v, o.BaseDN) && !dn.IsDescendant(v, o.BaseDN) {
-					outside[dn.Normalize(v)] = v
+				if d := dn.RefDN(v); !dn.Equal(d, o.BaseDN) && !dn.IsDescendant(d, o.BaseDN) {
+					outside[dn.Normalize(d)] = d
 				}
 			}
 		}

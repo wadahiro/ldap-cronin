@@ -483,11 +483,11 @@ func (r *runner) references(ctx context.Context, p *plan.Plan) error {
 						}
 						continue
 					case plan.RefReferenced:
-						if err := r.referenced(ctx, v); err != nil {
+						if err := r.referenced(ctx, dn.RefDN(v)); err != nil {
 							return err
 						}
 					case plan.RefConfiguration:
-						if err := r.configuration(ctx, v); err != nil {
+						if err := r.configuration(ctx, dn.RefDN(v)); err != nil {
 							if ctx.Err() != nil {
 								return err
 							}
@@ -517,7 +517,7 @@ func (r *runner) unwritten(ctx context.Context, name, from, v string) error {
 	if err != nil {
 		return err
 	}
-	key := strings.ToLower(name) + "\x00" + dn.Normalize(v)
+	key := strings.ToLower(name) + "\x00" + dn.NormalizeRef(v)
 	r.mu.Lock()
 	r.report.Unwritten[name+": "+why]++
 	first := !r.unwrote[key]
@@ -557,11 +557,11 @@ func (r *runner) applyReference(ctx context.Context, target, name string, values
 	}
 	haveSet := map[string]bool{}
 	for _, v := range have {
-		haveSet[dn.Normalize(v)] = true
+		haveSet[dn.NormalizeRef(v)] = true
 	}
 	var missing []string
 	for _, v := range values {
-		if !haveSet[dn.Normalize(v)] {
+		if !haveSet[dn.NormalizeRef(v)] {
 			missing = append(missing, v)
 		}
 	}
@@ -679,7 +679,7 @@ const configurationKind = "configuration"
 // notCreated is unwritten for a value whose configuration entry could not be created: the server's reason (a class
 // the target's schema lacks, most likely) is the warning, once per entry.
 func (r *runner) notCreated(name, from, v string, err error) {
-	key := strings.ToLower(name) + "\x00" + dn.Normalize(v)
+	key := strings.ToLower(name) + "\x00" + dn.NormalizeRef(v)
 	r.mu.Lock()
 	r.report.Unwritten[name+": names an entry of the configuration partition clone could not create"]++
 	first := !r.unwrote[key]

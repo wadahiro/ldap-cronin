@@ -122,7 +122,7 @@ func (p *Plan) Changes(want, got directory.Entry, names []string, skip func(name
 func (p *Plan) InScope(values []string) []string {
 	var out []string
 	for _, v := range values {
-		if p.Scope.Has(v) {
+		if p.Scope.Has(dn.RefDN(v)) {
 			out = append(out, v)
 		}
 	}

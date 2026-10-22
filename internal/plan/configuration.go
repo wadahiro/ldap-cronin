@@ -54,7 +54,7 @@ func (p *Plan) ReadConfiguration(ctx context.Context, entryDN string) (*director
 	for name, values := range e.Attrs {
 		key := strings.ToLower(name)
 		keep := key == "objectclass" || strings.EqualFold(name, rdn) ||
-			(allowed[key] && !never[key] && !p.IsRef(name) && !p.unsupported[key])
+			(allowed[key] && !never[key] && !p.IsRef(name))
 		if keep && len(values) > 0 {
 			out.Attrs[name] = values
 		}

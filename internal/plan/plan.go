@@ -147,8 +147,6 @@ type Plan struct {
 	leaves map[string]int
 	// configNC is the source's configuration partition (AD), "" where there is none.
 	configNC string
-	// unsupported are the attributes holding DN-Binary or DN-String values (lowercase).
-	unsupported map[string]bool
 	// writable caches, per object class, what a client can write on it (for the configuration entries clone creates).
 	writableMu sync.Mutex
 	writable   map[string][]string
@@ -446,15 +444,12 @@ func (p *Plan) discoverRefs(ctx context.Context) error {
 	for k := range schema.BackLinks {
 		delete(p.refs, k)
 	}
-	p.unsupported = schema.Unsupported
 	for _, k := range p.job.Kinds {
 		for _, name := range k.Attrs {
 			key := strings.ToLower(name)
 			switch {
 			case schema.BackLinks[key]:
 				return fmt.Errorf("attribute %q is a back link computed by the server and cannot be cloned (clone the forward link instead)", name)
-			case schema.Unsupported[key]:
-				return fmt.Errorf("attribute %q holds DN-Binary/DN-String values, whose embedded DNs this tool cannot rewrite", name)
 			case p.IsRef(name) && p.job.Masker.Masked(name):
 				return fmt.Errorf("attribute %q holds DNs and cannot be masked", name)
 			}

@@ -138,7 +138,7 @@ func (subschema) Discover(ctx context.Context, src directory.Directory) (Schema,
 	if err != nil || !ok {
 		return Schema{}, ok, err
 	}
-	s := Schema{Refs: map[string]RefInfo{}, BackLinks: map[string]bool{}, Unsupported: map[string]bool{}}
+	s := Schema{Refs: map[string]RefInfo{}, BackLinks: map[string]bool{}}
 	for name, single := range dnRefsFromSchema(defs) {
 		s.Refs[name] = RefInfo{Single: single}
 	}

@@ -137,14 +137,12 @@ func (s *Schema) Writable(class string) ([]string, bool) {
 	return out, true
 }
 
-// The attributeSyntax of values that hold a DN inside a larger value.
-var dnInsideSyntaxes = map[string]bool{"2.5.5.7": true, "2.5.5.14": true}
-
+// writable is whether a client can write a: not systemOnly, constructed or a back link. A DN inside a larger value
+// (DN-Binary, DN-String: authOrig, dLMemSubmitPerms) is written as a reference (dn.SplitRef).
 func writable(a *SchemaElement) bool {
 	flags, _ := strconv.Atoi(a.value("systemFlags"))
 	link, _ := strconv.Atoi(a.value("linkID"))
-	return !strings.EqualFold(a.value("systemOnly"), "TRUE") && flags&flagAttrIsConstructed == 0 && link%2 == 0 &&
-		!dnInsideSyntaxes[a.value("attributeSyntax")]
+	return !strings.EqualFold(a.value("systemOnly"), "TRUE") && flags&flagAttrIsConstructed == 0 && link%2 == 0
 }
 
 // SchemaChange is one step of a SchemaPlan: a new definition (Add), values added to a class the target has
