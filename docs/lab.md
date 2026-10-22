@@ -320,7 +320,7 @@ aws ssm start-session --target i-... --document-name AWS-StartPortForwardingSess
   --parameters 'portNumber=636,localPortNumber=12636'   # in a terminal of its own, as lab up printed it
 ldap-cronin check -config config.toml
 ldap-cronin clone -config config.toml
-ldap-cronin lab reset --config config.toml -y     # terminates the lab's instance
+ldap-cronin lab reset --config config.toml -y     # terminates the lab's instance (its snapshots stay)
 ```
 
 - **lab up** finds the lab's instance by its tag (`ldap-cronin.lab`, terminated ones left out): a running one is
@@ -335,7 +335,24 @@ ldap-cronin lab reset --config config.toml -y     # terminates the lab's instanc
   `ec2:DescribeInstanceAttribute` read. It must pass Windows' complexity rule (at least 8 characters, three of
   upper case, lower case, digits and symbols): it becomes the Administrator's before the domain exists, so lab up
   refuses another before AWS is asked anything.
-- **lab reset --config** terminates the instances of the lab's tag, after naming them (`-y` skips the question).
+- **lab reset --config** terminates the instances of the lab's tag, after naming them (`-y` skips the question);
+  `--snapshots` deletes the lab's snapshots too, which it otherwise keeps.
+- **lab down, status, snapshot, snapshots, restore, snapshot-rm** take `--config` too:
+
+  ```sh
+  ldap-cronin lab snapshot base --config config.toml --note "after the first clone"
+  ldap-cronin lab snapshots --config config.toml
+  ldap-cronin lab restore base --config config.toml   # then open the tunnels again, as it prints them
+  ldap-cronin lab down --config config.toml           # stopped; lab up --config starts it again
+  ```
+
+  A snapshot is an EBS snapshot of the instance's root volume, tagged with the lab, its name and note (and
+  `[target.lab] tags`). A running instance is stopped for it, so that the domain's database is closed, and started
+  again once it is taken: a few minutes, then READY as after lab up. It completes in the background; a restore of
+  one still pending waits for it. A restore replaces the instance's root volume by one made from the snapshot (the
+  instance restarts and keeps its id, so the tunnel commands are the same; the replaced volume is deleted) and
+  waits for READY. The lab is its forest's only domain controller, so a return to a past disk is safe. Snapshots
+  cost their stored size (a new domain is some 15 GB of the volume).
 - LDAP (389) as well, for a client that does not use LDAPS: `ldap_port` is the local port the tunnel forwards the
   instance's 389 to (the instance listens on 389 whatever it is). Windows Server 2019 takes a simple bind there
   without signing by default, and StartTLS (measured), as 2022 should; 2025 requires signing for a new forest, so
@@ -346,8 +363,7 @@ ldap-cronin lab reset --config config.toml -y     # terminates the lab's instanc
   Server of today cannot make (below 2008) or that needs a newer one (2025's, on `windows = "2022"`) is refused
   before anything is made; a dump taken before the levels were carried leaves the highest the instance makes.
 - `recycle_bin = true` enables the AD Recycle Bin once the domain is up (it cannot be turned off again).
-- `native` and `image` are refused (Windows lets no one choose a domain SID or an objectGUID); there are no
-  snapshots of an EC2 lab.
+- `native` and `image` are refused (Windows lets no one choose a domain SID or an objectGUID).
 - What it needs (IAM) and what is still unverified: [design/ec2-lab.md](design/ec2-lab.md).
 
 ## Using the offline package

@@ -1,6 +1,6 @@
 # A Windows Server lab on Amazon EC2 (`[target.lab] platform = "ec2"`)
 
-Status: stage 2 of 4 (`lab up --config` and `lab reset --config` run the aws command; `check`, `clone` and `diff`
+Status: stage 3 of 4 (`lab up --config` and `lab reset --config` run the aws command; `check`, `clone` and `diff`
 use the lab as any server through its tunnel). `lab up` ran on AWS on 2026-10-23 (Windows Server 2019), and a clone
 of a dump into it was diff clean (section 5). The project has no AWS account to test on, so a user tests each stage.
 
@@ -22,7 +22,12 @@ controller, and using the lab as a production copy.
 2. **lab up and lab reset** (this): the instance found by its tag, used, started or launched; the readiness asked
    until READY; the tunnel commands printed for the user to run; reset terminates the tagged instances. `check`,
    `clone` and `diff` take the lab as any server at `[target] url`.
-3. **status, down, snapshot, restore** on the resources tagged with the lab's name.
+3. **status, down, snapshot, restore** (this) on the resources tagged with the lab's name: `lab down`, `status`,
+   `snapshot`, `snapshots`, `restore`, `snapshot-rm` and `reset --snapshots` take `--config`. A snapshot is an EBS
+   snapshot of the root volume, the instance stopped for it (the domain's database closed) and started again; a
+   restore replaces the root volume by one made from it (EC2's replace root volume task: the instance keeps its
+   id, address and tunnel commands; the replaced volume is deleted), gives the new volume the lab's tags, and waits
+   for READY. The lab is its forest's only DC, so returning it to a past disk is safe (no USN rollback).
 4. **check and clone** knowing the lab: whether it exists and runs, as for a docker one.
 
 ## 3. Decisions
@@ -46,7 +51,9 @@ controller, and using the lab as a production copy.
 ## 4. What the user needs (to be confirmed on AWS)
 
 - The aws command v2 and the Session Manager plugin, credentials allowed to `ec2:DescribeInstances`,
-  `ec2:RunInstances`, `ec2:CreateTags`, `ec2:StartInstances`, `ec2:TerminateInstances`, `ssm:GetParameter` (the
+  `ec2:RunInstances`, `ec2:CreateTags`, `ec2:StartInstances`, `ec2:TerminateInstances`, and for stage 3
+  `ec2:StopInstances`, `ec2:CreateSnapshot`, `ec2:DescribeSnapshots`, `ec2:DeleteSnapshot`,
+  `ec2:CreateReplaceRootVolumeTask`, `ec2:DescribeReplaceRootVolumeTasks`; `ssm:GetParameter` (the
   public image parameter), `ssm:SendCommand`, `ssm:GetCommandInvocation`, `ssm:StartSession` and `iam:PassRole` for
   the instance profile.
 - A target password Windows accepts: `Set-LocalUser` and `Install-ADDSForest` apply the local complexity rule
@@ -91,3 +98,5 @@ By hand (2026-10-22, Windows Server 2019, the user data pasted into the console)
 - `Set-ADObject` on the marker's `searchFlags` (the test left the marker out: `[mapping] mode = "file"`).
 - Windows Server 2016, 2022 and 2025.
 - `lab up` with an instance that is stopped (started) or running (used); `lab reset --config`.
+- Stage 3 on AWS: snapshot, restore (whether the replacement volume keeps the original's tags before lab restore
+  gives it the lab's, for an account whose policy refuses an untagged volume), down, status.

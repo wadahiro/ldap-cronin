@@ -232,9 +232,8 @@ type ec2Tag struct {
 	Value string `json:"Value"`
 }
 
-// tagSpecifications are the tags of the instance and its volume, as JSON: what a user tag holds (commas, brackets,
-// quotes) needs no quoting there, as it would in the aws command's shorthand. The lab's Name gives way to tags'.
-func (e EC2Lab) tagSpecifications() string {
+// instanceTags are the lab's tags and tags', the lab's Name giving way to tags'.
+func (e EC2Lab) instanceTags() []ec2Tag {
 	name := e.Name
 	if n, ok := e.Tags["Name"]; ok {
 		name = n
@@ -250,11 +249,20 @@ func (e EC2Lab) tagSpecifications() string {
 	for _, k := range keys {
 		tags = append(tags, ec2Tag{k, e.Tags[k]})
 	}
-	type spec struct {
-		ResourceType string   `json:"ResourceType"`
-		Tags         []ec2Tag `json:"Tags"`
-	}
-	b, _ := json.Marshal([]spec{{"instance", tags}, {"volume", tags}})
+	return tags
+}
+
+// tagSpec is a tag specification as the EC2 API takes it in JSON.
+type tagSpec struct {
+	ResourceType string   `json:"ResourceType"`
+	Tags         []ec2Tag `json:"Tags"`
+}
+
+// tagSpecifications are the tags of the instance and its volume, as JSON: what a user tag holds (commas, brackets,
+// quotes) needs no quoting there, as it would in the aws command's shorthand.
+func (e EC2Lab) tagSpecifications() string {
+	tags := e.instanceTags()
+	b, _ := json.Marshal([]tagSpec{{"instance", tags}, {"volume", tags}})
 	return string(b)
 }
 

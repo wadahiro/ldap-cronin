@@ -154,7 +154,7 @@ func TestEC2ResetTerminatesTheLabsInstances(t *testing.T) {
 	if err := testEC2Lab().Reset(context.Background(), run(f, &bytes.Buffer{}), func(q string) bool { asked = q; return false }); err == nil {
 		t.Fatal("a no must stop it")
 	}
-	if f.called("ec2 terminate-instances") != 0 || !strings.Contains(asked, "i-1 (running), i-2 (stopped)") {
+	if f.called("ec2 terminate-instances") != 0 || !strings.Contains(asked, "i-1 (running), i-2 (stopped)") || !strings.HasSuffix(asked, "[y/N]: ") {
 		t.Fatalf("asked %q, calls %v", asked, f.calls)
 	}
 	f = &fakeAWS{answers: map[string][]fakeAnswer{"ec2 describe-instances": two}}

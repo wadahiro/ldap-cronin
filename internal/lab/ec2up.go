@@ -151,16 +151,7 @@ func (e EC2Lab) run(ctx context.Context, r EC2Run, ami, userData string) (string
 // shows the last line of its log meanwhile. Until its agent registers, and while it restarts, the instance is not
 // there to ask: that is "not yet", as a command that answers nothing.
 func (e EC2Lab) waitReady(ctx context.Context, r EC2Run, id string) error {
-	now, sleep, timeout := r.Now, r.Sleep, r.Timeout
-	if now == nil {
-		now = time.Now
-	}
-	if sleep == nil {
-		sleep = time.Sleep
-	}
-	if timeout == 0 {
-		timeout = DefaultReadyTimeout
-	}
+	now, sleep, timeout := r.clock()
 	deadline, last := now().Add(timeout), ""
 	for {
 		answer, err := e.ask(ctx, r, id)
@@ -213,6 +204,21 @@ func (e EC2Lab) ask(ctx context.Context, r EC2Run, id string) (string, error) {
 	return "", nil
 }
 
+// clock is r's Now, Sleep and Timeout, or their defaults.
+func (r EC2Run) clock() (func() time.Time, func(time.Duration), time.Duration) {
+	now, sleep, timeout := r.Now, r.Sleep, r.Timeout
+	if now == nil {
+		now = time.Now
+	}
+	if sleep == nil {
+		sleep = time.Sleep
+	}
+	if timeout == 0 {
+		timeout = DefaultReadyTimeout
+	}
+	return now, sleep, timeout
+}
+
 func (r EC2Run) sleepShort() {
 	if r.Sleep != nil {
 		r.Sleep(2 * time.Second)
@@ -239,7 +245,7 @@ func (e EC2Lab) Reset(ctx context.Context, r EC2Run, confirm func(string) bool) 
 		fmt.Fprintf(r.Log, "==> The lab %s has no instance\n", e.Name)
 		return nil
 	}
-	if confirm != nil && !confirm(fmt.Sprintf("Terminate the lab %s: %s (the domain and its data are lost)?", e.Name, instanceList(found))) {
+	if confirm != nil && !confirm(fmt.Sprintf("Terminate the lab %s: %s? The domain and its data are lost. [y/N]: ", e.Name, instanceList(found))) {
 		return errors.New("aborted: nothing was terminated")
 	}
 	args := []string{"ec2", "terminate-instances", "--instance-ids"}

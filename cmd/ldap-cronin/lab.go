@@ -79,6 +79,17 @@ Flags (reset):
   -y, --yes                 Do not ask for confirmation
   --snapshots               Also delete snapshots
 
+An EC2 lab (--config <file> of [target.lab] platform = "ec2"), found by its tag:
+  down --config              Stop its instance (the domain stays on its volume; lab up --config starts it again)
+  status --config            Show its instance, its addresses and how many snapshots it has
+  snapshot [name] --config   An EBS snapshot of its root volume, the instance stopped for it and started again
+                             (--note, --force as above); it completes in the background
+  snapshots --config         List its snapshots and their state
+  restore name --config      Replace its root volume by one made from the snapshot (the instance restarts and keeps
+                             its id; the replaced volume is deleted), then wait for the domain controller
+  snapshot-rm name --config  Delete a snapshot
+  reset --config --snapshots Also delete its snapshots (after a confirmation)
+
 Flags (snapshot):
   --note <text>             Note (shown in the list)
   --force                   Overwrite if the same name exists
@@ -167,13 +178,16 @@ func runLab(ctx context.Context, args []string, out, errW io.Writer) error {
 		fs.BoolVar(&reset.Yes, "yes", false, "")
 		fs.BoolVar(&reset.Snapshots, "snapshots", false, "")
 	case "snapshot":
+		fs.StringVar(&cfgPath, "config", "", "")
 		fs.StringVar(&snap.Note, "note", "", "")
 		fs.BoolVar(&snap.Force, "force", false, "")
 	case "restore":
+		fs.StringVar(&cfgPath, "config", "", "")
 		fs.StringVar(&password, "admin-password", "", "")
 		fs.IntVar(&ldapPort, "ldap-port", 0, "")
 		fs.IntVar(&ldapsPort, "ldaps-port", 0, "")
 	case "down", "status", "snapshots", "snapshot-rm":
+		fs.StringVar(&cfgPath, "config", "", "")
 	default:
 		fmt.Fprint(errW, labUsage)
 		return fmt.Errorf("unknown lab command: %q", sub)
@@ -203,6 +217,12 @@ func runLab(ctx context.Context, args []string, out, errW io.Writer) error {
 	}
 	if sub == "reset" && cfgPath != "" {
 		return labResetFromConfig(ctx, cfgPath, reset, out)
+	}
+	if cfgPath != "" {
+		if sub == "restore" && (password != "" || ldapPort != 0 || ldapsPort != 0) {
+			return errors.New("lab restore --config of an EC2 lab restores into its instance: --admin-password and the ports are for a docker lab")
+		}
+		return labEC2FromConfig(ctx, sub, cfgPath, name, snap, out)
 	}
 	l, err := newLab(c, out, errW)
 	if err != nil {
@@ -364,7 +384,67 @@ func labResetFromConfig(ctx context.Context, cfgPath string, reset lab.ResetOpti
 	if reset.Yes {
 		ask = nil
 	}
-	return s.EC2Reset(ctx, lab.EC2Run{AWS: lab.ExecAWS{}, Log: out}, ask)
+	r := lab.EC2Run{AWS: lab.ExecAWS{}, Log: out}
+	if err := s.EC2Reset(ctx, r, ask); err != nil {
+		return err
+	}
+	if !reset.Snapshots {
+		return nil
+	}
+	e, err := s.EC2Lab(ctx)
+	if err != nil {
+		return err
+	}
+	return e.RemoveSnapshots(ctx, r, ask)
+}
+
+// labEC2FromConfig is down, status, snapshot, snapshots, restore and snapshot-rm of an EC2 lab, by its tag.
+func labEC2FromConfig(ctx context.Context, sub, cfgPath, name string, snap lab.SnapshotOptions, out io.Writer) error {
+	s, err := openSession(ctx, cfgPath)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	if !s.Cfg.Target.Lab.OnEC2() {
+		return fmt.Errorf("lab %s --config is for an EC2 lab ([target.lab] platform = \"ec2\"); a docker lab is named by --prefix and --instance", sub)
+	}
+	e, err := s.EC2Lab(ctx)
+	if err != nil {
+		return err
+	}
+	r := lab.EC2Run{AWS: lab.ExecAWS{}, Log: out, Sleep: time.Sleep}
+	switch sub {
+	case "down":
+		return e.Down(ctx, r)
+	case "status":
+		return e.Status(ctx, r)
+	case "snapshot":
+		_, err := e.Snapshot(ctx, r, lab.EC2SnapshotOptions{Name: name, Note: snap.Note, Force: snap.Force})
+		return err
+	case "snapshots":
+		list, err := e.Snapshots(ctx, r.AWS)
+		if err != nil {
+			return err
+		}
+		fmt.Fprint(out, lab.FormatEC2Snapshots(list))
+		return nil
+	case "restore":
+		id, err := e.Restore(ctx, r, name)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "\nThe lab %s (%s) is in the snapshot's state. Its tunnels were cut by the restart: open them again, each in a terminal of its own:\n", e.Name, id)
+		for _, c := range e.WithInstance(id).TunnelCommands() {
+			fmt.Fprintf(out, "  %s\n    # %s\n", c.Shell(), c.Why)
+		}
+		return nil
+	case "snapshot-rm":
+		if name == "" {
+			return errors.New("specify the name of the snapshot to delete")
+		}
+		return e.SnapshotRemove(ctx, r, name)
+	}
+	return nil
 }
 
 // writeEC2Plan is lab up --dry-run of an EC2 lab: what it will do on AWS, done there by no one. The password is
