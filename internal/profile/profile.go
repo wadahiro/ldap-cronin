@@ -260,6 +260,8 @@ type Profile struct {
 	// into it is told apart from one into the domain; nil, or "", where there is none.
 	ConfigurationNC func(ctx context.Context, d directory.Directory) (string, error)
 	Account         Account
+	// PrimaryGroup is nil where an account has no primary group outside member (generic LDAP).
+	PrimaryGroup PrimaryGrouper
 	// Native is nil when clone -native is not possible for this server type.
 	Native NativeSupport
 }

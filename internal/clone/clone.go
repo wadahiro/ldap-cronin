@@ -59,6 +59,8 @@ type Report struct {
 	NotCloned map[string]int
 	// Unwritten counts the reference values clone could not write, per "attribute: why" (plan.Classifier.Why).
 	Unwritten map[string]int
+	// PrimaryGroups counts the accounts given their source's primary group (not their type's default).
+	PrimaryGroups int
 	// OutsideGroups and BuiltinGroups count the groups outside the scope given the entries of it they hold
 	// (plan.Holder); Unheld counts those left as they are, per why.
 	OutsideGroups, BuiltinGroups int
@@ -73,6 +75,9 @@ func (rep *Report) WriteSummary(w io.Writer) {
 	fmt.Fprintf(w, "\nadded=%d updated=%d unchanged=%d warnings=%d\n", rep.Added, rep.Updated, rep.Unchanged, rep.WarningCount)
 	if rep.Referenced > 0 {
 		plan.WriteCounts(w, "referenced objects outside the scope cloned", rep.ReferencedKinds)
+	}
+	if rep.PrimaryGroups > 0 {
+		fmt.Fprintf(w, "accounts given their primary group (not Domain Users or Domain Computers): %d\n", rep.PrimaryGroups)
 	}
 	if rep.OutsideGroups > 0 || rep.BuiltinGroups > 0 {
 		fmt.Fprintf(w, "groups outside the scope given its entries they hold: %d (built-in: %d)\n", rep.OutsideGroups+rep.BuiltinGroups, rep.BuiltinGroups)
@@ -106,6 +111,7 @@ type runner struct {
 	report  Report
 	skipped map[string]bool // normalized DNs not created (see upsert); the reference pass leaves them alone
 	unwrote map[string]bool // attribute and normalized DN of each value warned about as not written
+	primary []primaryOf     // the accounts whose primary group is not their type's default (guarded by mu)
 	refs    *plan.Classifier
 	done    map[string]*onceErr // see once
 }
@@ -180,6 +186,11 @@ func (r *runner) run(ctx context.Context, p *plan.Plan) error {
 	if err := r.references(ctx, p); err != nil {
 		return err
 	}
+	// Before the holders: AD refuses a member value naming an account whose primary group the group is, so an
+	// account leaves Domain Users as its primary group before it is added to Domain Users' member.
+	if err := r.primaryGroups(ctx, p); err != nil {
+		return err
+	}
 	return r.holders(ctx, p, hs)
 }
 
@@ -248,6 +259,97 @@ func (r *runner) created(values []string) []string {
 	return out
 }
 
+// primaryOf is an account whose primary group is not its type's default, by the source's RID.
+type primaryOf struct{ dn, rid string }
+
+// primaryGroups gives the accounts the primary group they have on the source, by its DN: the group is created
+// first when it is outside the scope (as a holder is), its RID on the target is read, the account is added to its
+// member (AD takes only a group the account belongs to), then primaryGroupID is set, after which AD drops that
+// member value by itself, as the source's group lacks it.
+func (r *runner) primaryGroups(ctx context.Context, p *plan.Plan) error {
+	pg := r.prof.PrimaryGroup
+	if pg == nil || len(r.primary) == 0 {
+		return nil
+	}
+	attr := pg.Attr()
+	var wellKnown map[string]string // the target's groups by RID, for the built-in ones
+	for _, a := range r.primary {
+		var gdn string
+		var err error
+		if pg.WellKnown(a.rid) {
+			if wellKnown == nil {
+				if wellKnown, err = pg.Groups(ctx, r.dst, p.Root); err != nil {
+					return err
+				}
+			}
+			if gdn = wellKnown[a.rid]; gdn == "" {
+				r.notPrimary(a, "names a built-in group the target lacks")
+				continue
+			}
+		} else if gdn, err = p.PrimaryGroupDN(ctx, a.rid); err != nil {
+			return err
+		}
+		if gdn == "" {
+			r.notPrimary(a, "names a RID no group of the source has")
+			continue
+		}
+		if !p.Scope.Has(gdn) {
+			h, err := p.Holder(ctx, gdn)
+			if err != nil {
+				return err
+			}
+			if h.Why != "" {
+				r.notPrimary(a, "names a group that "+h.Why)
+				continue
+			}
+			if !h.Builtin && !h.Existing {
+				if err := r.outside(ctx, gdn, func() (*plan.Kind, error) { return h.Kind, nil }); err != nil {
+					return err
+				}
+			}
+		}
+		rid := ""
+		if g, err := r.dst.Get(ctx, gdn, []string{"objectSid"}); err != nil {
+			return err
+		} else if g != nil {
+			rid, _ = pg.RID(*g)
+		}
+		if rid == "" {
+			if pg.WellKnown(a.rid) {
+				rid = a.rid // the same RID in every domain
+			} else {
+				r.notPrimary(a, "names a group whose RID on the target cannot be read (it lacks the group, or a dry-run)")
+				continue
+			}
+		}
+		cur, err := r.dst.Get(ctx, a.dn, []string{attr})
+		if err != nil {
+			return err
+		}
+		if cur != nil && strings.TrimSpace(first(cur.Values(attr))) == rid {
+			continue
+		}
+		if err := r.applyReference(ctx, gdn, "member", []string{a.dn}); err != nil {
+			return fmt.Errorf("%s: add %s to the member of its primary group %s: %w", a.dn, a.dn, gdn, err)
+		}
+		if err := r.dst.Replace(ctx, a.dn, map[string][]string{attr: {rid}}); err != nil {
+			return fmt.Errorf("%s: primary group %s: %w", a.dn, gdn, err)
+		}
+		r.count(func(rep *Report) { rep.PrimaryGroups++ })
+		r.logf("update %s (%s: %s)\n", a.dn, attr, gdn)
+	}
+	return nil
+}
+
+// notPrimary counts an account left with its type's default primary group, and warns about it.
+func (r *runner) notPrimary(a primaryOf, why string) {
+	attr := r.prof.PrimaryGroup.Attr()
+	r.mu.Lock()
+	r.report.Unwritten[attr+": "+why]++
+	r.mu.Unlock()
+	r.warn("%s keeps the default primary group: its %s %s %s", a.dn, attr, a.rid, why)
+}
+
 // unheld counts a holder clone does not give its values, and warns about it.
 func (r *runner) unheld(h plan.Holder, why string) error {
 	r.mu.Lock()
@@ -281,6 +383,13 @@ func (r *runner) leaf(ctx context.Context, k *plan.Kind, e directory.Entry) erro
 	changed, err := account.Finish(ctx, r.dst, e, r.opt.UserPassword, cur)
 	if err != nil {
 		return fmt.Errorf("%s: %w", e.DN, err)
+	}
+	if pg := r.prof.PrimaryGroup; pg != nil {
+		if rid := strings.TrimSpace(first(e.Values(pg.Attr()))); rid != "" && rid != pg.Default(e) {
+			r.mu.Lock()
+			r.primary = append(r.primary, primaryOf{dn: e.DN, rid: rid})
+			r.mu.Unlock()
+		}
 	}
 	if len(changed) > 0 {
 		r.count(func(rep *Report) { rep.Updated++ })

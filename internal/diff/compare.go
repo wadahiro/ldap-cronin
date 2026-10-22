@@ -12,6 +12,7 @@ import (
 // compareEntry reports the attribute differences of one matched entry. Masked attributes are not compared, since
 // their values are expected to differ, nor is skip (an RDN attribute that a rename explains).
 func (r *runner) compareEntry(want, got directory.Entry, names []string, skip string) {
+	want, got = r.primaryDNs(want, got)
 	plain, refs := r.p.Changes(want, got, names, func(name string) bool {
 		return r.job.Masker.Masked(name) || (skip != "" && strings.EqualFold(name, skip))
 	})

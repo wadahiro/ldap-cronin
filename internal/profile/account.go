@@ -74,7 +74,7 @@ func (adAccount) AddEntry(e directory.Entry, _ string) directory.Entry {
 }
 
 func (adAccount) ReadExtra() []string   { return []string{attrUAC, attrPwdLastSet} }
-func (adAccount) SourceExtra() []string { return []string{attrPwdLastSet} }
+func (adAccount) SourceExtra() []string { return []string{attrPwdLastSet, "primaryGroupID"} }
 func (adAccount) Owned() []string       { return []string{attrUAC} }
 func (adAccount) PasswordAttr() string  { return attrUnicodePwd }
 

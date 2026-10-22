@@ -160,6 +160,10 @@ type Plan struct {
 	refs map[string]profile.RefInfo // lowercase attribute name
 	// holds pairs each back link with its forward link (profile.Schema.Holds).
 	holds map[string]string
+	// primary maps the RID of each source group to its DN (PrimaryGroupDN), read once.
+	primaryOnce sync.Once
+	primary     map[string]string
+	primaryErr  error
 	// parentLeaves are the normalized DNs of the leaves of the scope that are also ancestors, handled in
 	// Containers instead of by EachLeaf.
 	parentLeaves map[string]bool

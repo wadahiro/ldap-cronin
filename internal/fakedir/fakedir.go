@@ -3,8 +3,10 @@ package fakedir
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -32,6 +34,25 @@ type Dir struct {
 	// hand out the same one (real identifiers are globally unique).
 	IDPrefix byte
 	nextGUID uint64
+	// SIDs, when set, makes an Add of a group or a user without objectSid get one of the domain S-1-5-21-<SIDs>-<RID>,
+	// RIDs from 1100 on, as a DC gives them.
+	SIDs    string
+	nextRID uint32
+}
+
+// SID encodes a SID text (S-1-5-21-1-2-3-1105) as the bytes of objectSid.
+func SID(text string) string {
+	parts := strings.Split(strings.TrimPrefix(text, "S-"), "-")
+	b := []byte{1, byte(len(parts) - 2), 0, 0, 0, 0, 0, 0}
+	auth, _ := strconv.ParseUint(parts[1], 10, 48)
+	for i := 0; i < 6; i++ {
+		b[7-i] = byte(auth >> (8 * i))
+	}
+	for _, p := range parts[2:] {
+		n, _ := strconv.ParseUint(p, 10, 32)
+		b = binary.LittleEndian.AppendUint32(b, uint32(n))
+	}
+	return string(b)
 }
 
 // Operational are the attributes an Add may set only with the Relax control.
@@ -209,6 +230,10 @@ func (d *Dir) Add(ctx context.Context, e directory.Entry, controls ...directory.
 	}
 	added := &directory.Entry{DN: e.DN, Attrs: clone(e.Attrs)}
 	d.assignGUID(added.Attrs)
+	if d.SIDs != "" && len(added.Values("objectSid")) == 0 && (hasClassFold(*added, "group") || isADUser(*added)) {
+		d.nextRID++
+		added.Attrs["objectSid"] = []string{SID(fmt.Sprintf("S-1-5-21-%s-%d", d.SIDs, 1099+d.nextRID))}
+	}
 	if isADUser(*added) {
 		// AD creates a user without a password with pwdLastSet=0; setting unicodePwd makes it nonzero.
 		added.Attrs["pwdLastSet"] = []string{"0"}
@@ -467,6 +492,15 @@ func equalityMatches(e directory.Entry, filter string) bool {
 	}
 	for _, v := range e.Values(name) {
 		if v == string(raw) || (!escaped && strings.EqualFold(v, string(raw))) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasClassFold(e directory.Entry, class string) bool {
+	for _, c := range e.Values("objectClass") {
+		if strings.EqualFold(c, class) {
 			return true
 		}
 	}

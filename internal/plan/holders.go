@@ -37,6 +37,7 @@ const (
 	WhyHolderNotAGroup = "is not a group: only groups are given the entries of the scope they hold"
 	WhyHolderConfig    = "is in the configuration partition"
 	WhyHolderOtherNC   = "is in another naming context (another domain of the forest)"
+	WhyHolderNoGroups  = "is a group, a kind [scope] objects leaves out"
 	WhyHolderMissing   = "is missing on the source (a dump taken before groups outside its base DN were carried: dump again)"
 )
 
@@ -108,8 +109,19 @@ func (p *Plan) Holders(ctx context.Context) ([]Holder, error) {
 	return out, nil
 }
 
+// Holder decides what is done with the group at d outside the scope, as for a holder (an account's primary group).
+func (p *Plan) Holder(ctx context.Context, d string) (Holder, error) {
+	h := Holder{DN: d}
+	err := p.classifyHolder(ctx, &h)
+	return h, err
+}
+
 func (p *Plan) classifyHolder(ctx context.Context, h *Holder) error {
-	group, _ := p.job.Kind(profile.KindGroup)
+	group, ok := p.job.Kind(profile.KindGroup)
+	if !ok {
+		h.Why = WhyHolderNoGroups
+		return nil
+	}
 	if p.InConfiguration(h.DN) {
 		h.Why = WhyHolderConfig
 		return nil
@@ -169,4 +181,15 @@ func containsFold(list []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// PrimaryGroupDN is the DN of the source group whose RID an account's primary group value (primaryGroupID) is, ""
+// when the source has none of that RID. The groups are read once, on the first call.
+func (p *Plan) PrimaryGroupDN(ctx context.Context, rid string) (string, error) {
+	pg := p.job.Profile.PrimaryGroup
+	if pg == nil {
+		return "", nil
+	}
+	p.primaryOnce.Do(func() { p.primary, p.primaryErr = pg.Groups(ctx, p.src, p.Root) })
+	return p.primary[rid], p.primaryErr
 }

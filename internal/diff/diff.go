@@ -112,11 +112,18 @@ func Run(ctx context.Context, src, dst directory.Directory, job plan.Job, o Opti
 	}
 	bar := o.Progress
 	bar.Phase("reading the source", -1)
-	p, err := plan.Build(ctx, src, job, plan.Read{Identity: o.Resolver != nil})
+	read := plan.Read{Identity: o.Resolver != nil}
+	if pg := job.Profile.PrimaryGroup; pg != nil {
+		read.Extra = []string{pg.Attr()}
+	}
+	p, err := plan.Build(ctx, src, job, read)
 	if err != nil {
 		return r.sum, err
 	}
 	r.p = p
+	if err := r.readGroups(ctx, dst); err != nil {
+		return r.sum, err
+	}
 	bar.Stats(func() string {
 		r.mu.Lock()
 		defer r.mu.Unlock()
@@ -140,10 +147,10 @@ func Run(ctx context.Context, src, dst directory.Directory, job plan.Job, o Opti
 		names := []string{"objectClass"}
 		switch {
 		case n.Outside:
-			names = r.withoutRefs(n.Kind.Attrs)
+			names = r.withPrimary(n.Kind, r.withoutRefs(n.Kind.Attrs))
 			r.referenced()
 		case n.Kind != nil:
-			names = n.Kind.Attrs
+			names = r.withPrimary(n.Kind, n.Kind.Attrs)
 			r.compared(n.Kind.Name)
 			r.noteOutside(n.Entry, names)
 		}
@@ -157,7 +164,7 @@ func Run(ctx context.Context, src, dst directory.Directory, job plan.Job, o Opti
 			defer bar.Add(1)
 			r.compared(k.Name)
 			r.noteOutside(want, k.Attrs)
-			return r.check(ctx, want, k.Attrs, k, false)
+			return r.check(ctx, want, r.withPrimary(k, k.Attrs), k, false)
 		}); err != nil {
 			return r.sum, err
 		}
@@ -196,10 +203,12 @@ func Run(ctx context.Context, src, dst directory.Directory, job plan.Job, o Opti
 
 // runner is the state of one comparison. Workers share it, so everything that changes is behind a mutex.
 type runner struct {
-	job  plan.Job
-	p    *plan.Plan
-	loc  *locator
-	emit func(Difference)
+	job plan.Job
+	// dstGroups maps the RID of each target group to its DN, for the primary groups (readGroups).
+	dstGroups map[string]string
+	p         *plan.Plan
+	loc       *locator
+	emit      func(Difference)
 
 	mu  sync.Mutex // guards sum and serializes emit
 	sum Summary
@@ -244,7 +253,7 @@ func (r *runner) checkReferenced(ctx context.Context, refs *plan.Classifier, wor
 			return err
 		}
 		r.referenced()
-		return r.check(ctx, *e, r.withoutRefs(k.Attrs), k, false)
+		return r.check(ctx, *e, r.withPrimary(k, r.withoutRefs(k.Attrs)), k, false)
 	})
 }
 

@@ -109,6 +109,8 @@ var AD = Profile{
 	RefsNeedEntry: true,
 	Values: map[string]compare.Normalizer{
 		"useraccountcontrol": SanitizeUAC,
+		// diff compares the primary group by the DN of the group (its RID is each domain's own).
+		"primarygroupid": compare.DN,
 		// "never" has two representations: 0 and 2^63-1.
 		"accountexpires": func(v string) string {
 			if v == "0" {
@@ -137,8 +139,9 @@ var AD = Profile{
 		}
 		return first(root.Values("configurationNamingContext")), nil
 	},
-	Account: adAccount{},
-	Native:  adNative{},
+	Account:      adAccount{},
+	PrimaryGroup: adPrimaryGroup{},
+	Native:       adNative{},
 }
 
 // accountSecrets are the other secrets an account may hold, never cloned, compared or printed: the password a

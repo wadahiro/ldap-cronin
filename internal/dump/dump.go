@@ -163,8 +163,14 @@ func Write(ctx context.Context, src directory.Directory, prof profile.Profile, o
 	}
 
 	bar.Phase("under the base DN", -1)
-	outside := map[string]string{} // normalized DN -> DN of a value naming an entry outside the base
+	outside := map[string]string{}   // normalized DN -> DN of a value naming an entry outside the base
+	primaryRIDs := map[string]bool{} // the primary groups of the accounts that are not their type's default
 	if err := src.Walk(ctx, o.BaseDN, "(objectClass=*)", read, func(e directory.Entry) error {
+		if pg := prof.PrimaryGroup; pg != nil {
+			if rid := strings.TrimSpace(first(e.Values(pg.Attr()))); rid != "" && rid != pg.Default(e) {
+				primaryRIDs[rid] = true
+			}
+		}
 		for name, values := range e.Attrs {
 			base, _, _ := strings.Cut(name, ";")
 			if !refs[strings.ToLower(base)] && !holds[strings.ToLower(base)] {
@@ -185,6 +191,17 @@ func Write(ctx context.Context, src directory.Directory, prof profile.Profile, o
 		return c, fmt.Errorf("read %s: %w", o.BaseDN, err)
 	}
 
+	if pg := prof.PrimaryGroup; pg != nil && len(primaryRIDs) > 0 {
+		groups, err := pg.Groups(ctx, src, root)
+		if err != nil {
+			return c, fmt.Errorf("read the groups: %w", err)
+		}
+		for rid := range primaryRIDs {
+			if d := groups[rid]; d != "" && !dn.IsDescendant(d, o.BaseDN) {
+				outside[dn.Normalize(d)] = d
+			}
+		}
+	}
 	keys := make([]string, 0, len(outside))
 	for k := range outside {
 		keys = append(keys, k)
