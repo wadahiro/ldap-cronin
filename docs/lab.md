@@ -283,9 +283,8 @@ ldap-cronin diff -config config.toml      # matches objects by objectGUID direct
 For tests that need a real Windows Server domain controller rather than Samba, `lab up --config` makes one on EC2
 through the `aws` command: a new forest with the source's domain name, NetBIOS name and functional levels, its
 Administrator password the target password, LDAPS reached through Systems Manager at the port of `[target] url`.
-`check`, `clone` and `diff` then read and write it as any server, through that tunnel. Verified by hand on Windows
-Server 2019 (the user data pasted into the console, see [design/ec2-lab.md](design/ec2-lab.md)); `lab up` itself is
-new and not yet run on AWS.
+`check`, `clone` and `diff` then read and write it as any server, through that tunnel. Verified on Windows Server
+2019: `lab up` from nothing to READY in about 20 minutes, then a clone diff clean ([design/ec2-lab.md](design/ec2-lab.md)).
 
 ```toml
 [target]

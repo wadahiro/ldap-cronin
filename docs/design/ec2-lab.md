@@ -1,8 +1,8 @@
 # A Windows Server lab on Amazon EC2 (`[target.lab] platform = "ec2"`)
 
 Status: stage 2 of 4 (`lab up --config` and `lab reset --config` run the aws command; `check`, `clone` and `diff`
-use the lab as any server through its tunnel). The user data was verified by hand on Windows Server 2019; `lab up`
-itself has not run on AWS yet: the project has no AWS account to test on, so a user tests each stage.
+use the lab as any server through its tunnel). `lab up` ran on AWS on 2026-10-23 (Windows Server 2019), and a clone
+of a dump into it was diff clean (section 5). The project has no AWS account to test on, so a user tests each stage.
 
 ## 1. Goal
 
@@ -60,19 +60,34 @@ controller, and using the lab as a production copy.
 - `instance_profile`: a role with `AmazonSSMManagedInstanceCore`, for Systems Manager to run the readiness command
   and the tunnels.
 
-## 5. Verified by hand (2026-10-22, Windows Server 2019, the user data pasted into the console)
+## 5. Verified
 
-- The persisted user data runs again after the forest's restart (EC2Launch v2), as `AD\SYSTEM`, and the
-  `-Credential` AD cmdlets work there; the whole took about 13 minutes on t3.large, 4-5 of them waiting for AD Web
-  Services after the restart.
+By `lab up --config` (2026-10-23, Windows Server 2019, t3.large, a user's account), after three failed runs fixed
+on the way:
+
+- From nothing to READY in about 20 minutes, two restarts included, unattended; the tunnels printed; `check`,
+  `clone` and `diff` of a dump of a Windows Server 2019 domain (`OU=IDM`, forest and domain level 7, the Recycle Bin
+  asked for) through the LDAPS tunnel: diff clean.
+- `tags` on the instance and its volume (an account whose policy refuses an untagged instance), `security_groups`,
+  `disk_size`, and `public_ip`: a subnet without a NAT gateway nor Systems Manager's VPC endpoints has its
+  instances never register without a public address.
+- The instance profile is the account's own (`AmazonSSMManagedInstanceCore` attached).
+- AD cmdlets with `-Credential` and no `-Server` failed once the forest was up, for `AD\SYSTEM` ("The operation
+  failed because of a bad parameter") and in an Administrator's session ("the server has rejected the client
+  credentials"), while `-Server` with the DC's name or `localhost` took the same credential: the user data names
+  the DC for every AD cmdlet. That failure stopped the Recycle Bin's enabling, then the wait for AD.
+- NTDS takes the LDAPS certificate at a restart of the computer (the user data no longer restarts NTDS alone).
+
+By hand (2026-10-22, Windows Server 2019, the user data pasted into the console):
+
+- The persisted user data runs again after the forest's restart (EC2Launch v2), as `AD\SYSTEM`; the whole took
+  about 13 minutes on t3.large, 4-5 of them waiting for AD Web Services after the restart.
 - A self-signed certificate in `LocalMachine\My` alone is not enough: the DC closed every TLS handshake on 636 until
   the certificate was also in its trusted roots (`LocalMachine\Root`). The user data does both now.
 - LDAPS through `AWS-StartPortForwardingSession` from another machine works (ldapsearch with `LDAPTLS_REQCERT=never`).
-- Not exercised: `Get-SSMParameter` (the test wrote the password into the user data instead).
 
 ## 6. Unverified
 
-- That `Get-SSMParameter` (AWS Tools for PowerShell) is on every listed Windows image, and works under EC2Launch v2
-  before the instance profile's credentials are available.
 - `Set-ADObject` on the marker's `searchFlags` (the test left the marker out: `[mapping] mode = "file"`).
 - Windows Server 2016, 2022 and 2025.
+- `lab up` with an instance that is stopped (started) or running (used); `lab reset --config`.
