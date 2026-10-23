@@ -20,5 +20,5 @@ ldap-cronin (LDAP cRONIN): a Go CLI that clones OUs, groups and users between LD
 ## Gotchas
 
 - Unit tests use `internal/fakedir`; keep it behaving like a real server (it rejects missing parents and dangling references).
-- `lab` serves both kinds (Samba4 AD, OpenLDAP); everything that differs between them is in `lab.Server` (`internal/lab/server.go`). `clone -native` is AD/Samba only. Native import uses unsupported Samba internals (tested on 4.19.5); keep that stated wherever it is documented.
+- `lab` serves two docker labs (Samba4 AD, OpenLDAP), everything that differs between them in `lab.Server` (`internal/lab/server.go`), and the Windows Server lab on EC2 (`internal/lab/ec2*.go`, through the `aws` command). "Kind" means a kind of entries (`ou`, `group`, `user`, ...; README "Kinds"), not a kind of lab. `clone -native` is AD/Samba only. Native import uses unsupported Samba internals (tested on 4.19.5); keep that stated wherever it is documented.
 - Change docs together with behavior: `README.md` stays short, details live in `docs/`. Keep relative links and anchors valid.

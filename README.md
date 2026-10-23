@@ -18,7 +18,8 @@ The name is a pun on "clone" and "ronin", a masterless samurai: cRONIN is a **c*
 | [docs/active-directory.md](docs/active-directory.md) | Active Directory and Samba AD: how users are created, preparing a real AD as the target, limitations |
 | [docs/generic-ldap.md](docs/generic-ldap.md) | Generic LDAP servers (OpenLDAP and others): passwords, preserved `entryUUID`, limitations |
 | [docs/diff.md](docs/diff.md) | `diff` output and comparison rules (every pattern), rename and move detection |
-| [docs/lab.md](docs/lab.md) | The test lab (`lab`): usage, **taking and restoring snapshots**, using the offline package |
+| [docs/tutorial-ad.md](docs/tutorial-ad.md) | Tutorial: an AD read into a dump, cloned into the Samba4 lab and into a Windows Server AD |
+| [docs/lab.md](docs/lab.md) | The test labs (`lab`: Samba4 AD and OpenLDAP on docker, Windows Server AD on EC2): usage, **taking and restoring snapshots**, using the offline package |
 | [docs/dump.md](docs/dump.md) | `dump`: read production once into a file, and clone and diff from it |
 | [docs/operations.md](docs/operations.md) | Large data sets, load on the source and target AD, memory, performance figures |
 | [offline/README-OFFLINE.md](offline/README-OFFLINE.md) | Procedure for air-gapped environments (shipped inside the offline package) |
@@ -29,13 +30,13 @@ The name is a pun on "clone" and "ronin", a masterless samurai: cRONIN is a **c*
 | Command | Description |
 |---|---|
 | `dump -url u -bind-dn d -base-dn b -o f [-mask a,b]` | Read a source, read only, into one LDIF file (credentials never): `[source] ldif = "f"` then makes clone, diff and the rest read it instead of the server. `-base-dn` may be repeated for several OUs, as `[scope] base_dn` may list them, or be `OU=*,DC=...` for every OU right under the domain. See [docs/dump.md](docs/dump.md) |
-| `check -config f [-no-target] [-attrs]` | Say what `clone` would do, writing nothing: per object type the attributes the entries hold that it would leave behind (a schema extension of your own) with the `[attributes]` line that copies them, what the target's schema lacks and refuses, and the next steps to run. Exit code 1 when `clone` would refuse to start. `-no-target` reads the source alone; `-attrs` lists every attribute and what `clone` does with it |
+| `check -config f [-no-target] [-attrs]` | Say what `clone` would do, writing nothing: per kind the attributes the entries hold that it would leave behind (a schema extension of your own) with the `[attributes]` line that copies them, what the target's schema lacks and refuses, and the next steps to run. Exit code 1 when `clone` would refuse to start. `-no-target` reads the source alone; `-attrs` lists every attribute and what `clone` does with it |
 | `schema -config f [-apply [-y]]` | **AD**: compare the source's schema with the target's and print what the target lacks (attributes, classes, what a class both have allows) as LDIF for `ldapmodify` or `ldifde`; `-apply` writes it, after the same `[y/N]` question as `clone`. For a lab before its first clone, or as a file to review for a test AD |
 | `clone [-config f] [-dry-run [-with-password]] [-y] [-progress m]` | Add and update. Before the first write it shows the target (and the server name its root DSE gives) and the source, and asks `[y/N]`: only `y` writes, and without a terminal it stops unless `-y`. `-dry-run` does not connect to the target; it writes LDIF to standard output (progress logs go to standard error); `-with-password` puts the users' fixed password in it, so `ldapmodify` alone completes them |
 | `lab up --config f` | **Lab only**: make the lab of `[target.lab]` like the source of the config (the same domain, and on AD the same domain SID and GUID; the port of `[target] url`), start it if stopped, and give its schema the source's definitions it lacks. `clone` then writes it; with `[target.lab] native = true` (**Samba only**) it imports with the same `objectGUID` and `objectSid` as the source, writing Samba's database directly (unsupported internals), and `fast_password = true` writes the fixed password's NT hash directly, about 3 times faster, without Kerberos AES keys. See [docs/lab.md](docs/lab.md#the-lab-made-like-the-source-lab-up---config-and-targetlab) |
 | `diff [-config f] [-format text\|json] [-max-values n] [-progress m]` | Compare the source and the target. Exit code 1 if there are differences (2 on error). `-format json` writes JSON Lines for a program to read. For how to read the output see [docs/diff.md](docs/diff.md) |
-| `list-attrs [-profile ad\|ldap]` | Show the default attributes (allow list) per object type, reading nothing |
-| `lab up / down / reset / status` | Start and stop a test lab on docker: Samba4 AD, or OpenLDAP with `--profile ldap`. See [docs/lab.md](docs/lab.md) |
+| `list-attrs [-profile ad\|ldap]` | Show the [kinds](#kinds) (how each is told, created, and whether it is an account) and their default attributes (allow lists), reading nothing |
+| `lab up / down / reset / status` | Start and stop a test lab: Samba4 AD or OpenLDAP (`--profile ldap`) on docker, or with `--config` and `[target.lab] platform = "ec2"` a Windows Server AD on Amazon EC2. See [docs/lab.md](docs/lab.md) |
 | `lab snapshot / snapshots / restore` | Take, list and restore snapshots of the lab data |
 | `version` | Print the version |
 
@@ -45,7 +46,8 @@ Parents above `base_dn` are created automatically if they do not exist on the ta
 ## Usage
 
 For a first run against Active Directory, follow the [tutorial](docs/tutorial-ad.md): production read once into a
-dump, a complete configuration, a clone into the Samba4 lab with snapshots, and the same clone into a test AD.
+dump, a complete configuration, a clone into the Samba4 lab with snapshots, and the same clone into a Windows Server AD
+(the EC2 lab, or a test domain of your own).
 
 ```sh
 make build                           # produces bin/ldap-cronin (requires Go)
@@ -80,24 +82,44 @@ The target must be of the same type. The profile selects the default filters and
 | | `ad` (Active Directory, Samba AD) | `ldap` (generic) |
 |---|---|---|
 | Detection | root DSE `supportedCapabilities` contains `1.2.840.113556.1.4.800` | everything else |
-| Users | `(&(objectCategory=person)(objectClass=user))` | `(objectClass=inetOrgPerson)` |
-| Groups | `(objectClass=group)` | `groupOfNames`, `groupOfUniqueNames` or `posixGroup` |
-| OUs | `organizationalUnit` | `organizationalUnit` |
-| Computers, contacts | `(objectCategory=computer)`, `(objectClass=contact)` | none |
+| [Kinds](#kinds) | `ou`, `group`, `user`, `computer`, `contact` | `ou`, `group`, `user` |
+| `user` | `(&(objectCategory=person)(objectClass=user))` | `(objectClass=inetOrgPerson)` |
+| `group` | `(objectClass=group)` | `groupOfNames`, `groupOfUniqueNames` or `posixGroup` |
+| `ou` | `organizationalUnit` | `organizationalUnit` |
+| `computer`, `contact` | `(objectCategory=computer)`, `(objectClass=contact)` | none |
 | System objects | excluded (`isCriticalSystemObject=TRUE`) | none (there is no such marker) |
 | Fixed password | add (disabled), `unicodePwd` modify over LDAPS, then `userAccountControl` (users and computers) | `userPassword` sent with the plain value in the add (the server hashes it) |
 | DN-valued attributes | schema `attributeSyntax=2.5.5.1` | subschema `attributeTypes`, syntax DN / Name and Optional UID, following `SUP` |
 | Object identity (renames) | `objectGUID` | `entryUUID` |
 | Large `member` values | `member;range=0-N` | plain read |
-| `lab` | yes (Samba lab) | yes (OpenLDAP lab, `--profile ldap`) |
+| `lab` | yes (Samba lab on docker; Windows Server on EC2) | yes (OpenLDAP lab, `--profile ldap`) |
 | `[target.lab] native = true` | yes (Samba lab) | no (the relax control keeps `entryUUID` over LDAP) |
 
 Details per server type: [docs/active-directory.md](docs/active-directory.md) and [docs/generic-ldap.md](docs/generic-ldap.md).
 
+## Kinds
+
+The tool sorts entries into **kinds**, its own categories of entries, not object classes: `ou`, `group`, `user`, and
+on AD `computer` and `contact`. The configuration names them (`[scope] objects`, `[scope.filters]`,
+`[attributes.include]`, `[mask.kinds]`), and so do the summaries. A kind fixes how its entries are
+handled: when they are created (containers first, top down, then the leaves in order; references once every entry
+exists), whether they are accounts (the fixed password), and the default allow list.
+
+- **Under `base_dn`** an entry is of a kind by the kind's search filter. `[scope.filters]` replaces it, so it can
+  narrow a kind (enabled users only, say).
+- **Outside it** (an entry a reference names, a parent above `base_dn`) an entry is of a kind by its object classes
+  alone, whatever a filter narrows: on AD a `user` is of class `user` and not `computer` (a computer derives from
+  user), a `computer` is not a managed service account (they derive from computer); `[mask.kinds]` and `dump -mask
+  kind:attribute` tell an entry's kind the same way.
+- **An entry of no kind** is not cloned, and the summaries count it per object class: what a lab should not hold
+  (BitLocker recovery information, password settings, managed service accounts, GPOs) is of none on purpose.
+
+`ldap-cronin list-attrs [-profile ad|ldap]` prints the kinds, how each is told, and their default allow lists.
+
 ## How attributes are handled
 
-- **Allow-list based.** Only the listed attributes are copied. On AD the defaults are what Active Directory Users and Computers shows on its property sheets, plus a few production directories use ([active-directory.md](docs/active-directory.md)). Adjust the defaults with `extra_include` (add), `exclude` (remove) and `include.<type>` (replace) in `[attributes]`.
-- **Or every attribute** (AD): with `[attributes] mode = "all"`, every attribute the source's schema lets a client write on the class of each object type is copied and compared, your own extensions included; `exclude` still applies, and what the target's schema lacks is left out with a note. `ldap-cronin schema` gives the target the source's extensions first.
+- **Allow-list based.** Only the listed attributes are copied. On AD the defaults are what Active Directory Users and Computers shows on its property sheets, plus a few production directories use ([active-directory.md](docs/active-directory.md)). Adjust the defaults with `extra_include` (add), `exclude` (remove) and `include.<kind>` (replace) in `[attributes]`.
+- **Or every attribute** (AD): with `[attributes] mode = "all"`, every attribute the source's schema lets a client write on the class of each kind is copied and compared, your own extensions included; `exclude` still applies, and what the target's schema lacks is left out with a note. `ldap-cronin schema` gives the target the source's extensions first.
 - Attributes that cannot be migrated (`objectGUID`, `objectSid`, `unicodePwd`, `userPassword`, ...) are an error if you list them.
 - **Masking**: attributes in `[mask] attributes` are replaced with a fixed string on the target, and `diff` does not compare them; `[mask.kinds] user = ["mail"]` masks an attribute on the entries of one kind only (a user's mail, not a group's), besides those. Identity, unique, DN-valued and non-string attributes cannot be masked.
 - **Passwords** are never copied. Cloned users get the fixed password you enter (or `[accounts] fixed_password`), set when they are created and never reset by a re-run; how it is set depends on the server type (see the server docs).
@@ -123,7 +145,7 @@ RENAMED     source: CN=Cid,OU=Users,OU=IDM,DC=example,DC=com
             target: CN=Cid Renamed,OU=Users,OU=IDM,DC=example,DC=com   (renamed)
 ```
 
-| Kind | Meaning |
+| Result | Meaning |
 |---|---|
 | `DIFF` | Present on both sides, but an attribute value differs |
 | `ONLY_SOURCE` / `ONLY_TARGET` | Present only in the source / only on the target |

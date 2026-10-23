@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"text/tabwriter"
 
 	"github.com/wadahiro/ldap-cronin/internal/app"
 	"github.com/wadahiro/ldap-cronin/internal/clone"
@@ -43,7 +44,7 @@ Commands, in the order they are used:
                 writes them to the target instead
   clone         Add or update the source directory's OUs, groups, users, computers and contacts in the target (AD or generic LDAP)
   diff          Compare the source and the target (exit code 1 if there are differences)
-  list-attrs    Show the default allow lists per object type (-profile ad|ldap), without reading anything
+  list-attrs    Show the kinds and their default allow lists (-profile ad|ldap), without reading anything
   version       Show the version
 
 Flags (clone/diff):
@@ -435,6 +436,8 @@ func listAttrs(_ context.Context, args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	writeKinds(out, p)
+	fmt.Fprintln(out, "\nThe default allow lists, per kind ([attributes]; the profile's required attributes come with them):")
 	for _, k := range p.Kinds {
 		fmt.Fprintf(out, "[%s]\n", k.Name)
 		for _, name := range k.Default {
@@ -442,6 +445,29 @@ func listAttrs(_ context.Context, args []string, out io.Writer) error {
 		}
 	}
 	return nil
+}
+
+// writeKinds prints the kinds of p: the tool's categories of entries, which the configuration names.
+func writeKinds(out io.Writer, p profile.Profile) {
+	fmt.Fprintf(out, "The kinds of the %s profile: the tool's categories of entries, not object classes. [scope] objects,\n", p.Name)
+	fmt.Fprintln(out, "[scope.filters], [attributes.include] and [mask.kinds] name them. Under base_dn an entry is of a kind by")
+	fmt.Fprintln(out, "the kind's search filter ([scope.filters] replaces it); outside it (a member, a parent) by its object classes.")
+	fmt.Fprintln(out, "Containers are created first, top down, then the leaves in their order; references once every entry exists.")
+	fmt.Fprintln(out)
+	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "KIND\tCREATED\tACCOUNT\tSEARCH FILTER\tBY OBJECT CLASSES")
+	for _, k := range p.Kinds {
+		created := "container"
+		if k.Role == profile.RoleLeaf {
+			created = fmt.Sprintf("leaf %d", k.Order+1)
+		}
+		account := "no"
+		if k.Account {
+			account = "yes (the fixed password)"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", k.Name, created, account, k.Filter, k.ByClass)
+	}
+	tw.Flush()
 }
 
 // listFlag is a flag given once per value (-base-dn A -base-dn B).

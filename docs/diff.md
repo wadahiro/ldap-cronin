@@ -19,7 +19,7 @@ It is read-only.
 
 `diff` reads the same configuration file as clone and compares **only the attributes that are copied**.
 
-- What is compared is the final allow list (per object type) after applying `include` / `extra_include` / `exclude` in `[attributes]`.
+- What is compared is the final allow list (per [kind](../README.md#kinds)) after applying `include` / `extra_include` / `exclude` in `[attributes]`.
   An attribute that is `exclude`d or not in the allow list does not produce a difference even if its values differ (`ldap-cronin list-attrs` shows the default allow list).
 - **Masked attributes are not compared** (the target holds a fixed string, so the values are expected to differ). Password-related attributes (`unicodePwd`, `dBCSPwd`, `ntPwdHistory`, `lmPwdHistory`, `supplementalCredentials`) are not compared either (they cannot be read over LDAP).
 - Values are compared by **exact match** (case-sensitive). The following are normalized before comparing: attributes whose values are DNs (case and escaping),
@@ -30,9 +30,9 @@ It is read-only.
 - The objects compared are those that match `[scope] objects` and `[scope.filters]`.
 - Use the same configuration file for clone and diff; different settings change the result (an `exclude` added only for diff hides that attribute).
 
-## Kinds of output
+## Results
 
-| Kind | Meaning | Needs object matching |
+| Result | Meaning | Needs object matching |
 |---|---|---|
 | `ONLY_SOURCE` | Only in the source, not on the target (not cloned yet, or deleted on the target) | No |
 | `ONLY_TARGET` | Only on the target, not in the source (newly created on the target) | No |
@@ -41,7 +41,7 @@ It is read-only.
 | `REPLACED` | A different object than the cloned one exists at the same DN (its identifier or marker names another object), and the original is nowhere to be found | Yes |
 | `UNMARKED` | The object at the source DN has no marker (marker mode only): recreated, marker removed, or added to the source after the clone | Yes |
 
-Object matching tells which source object a target object was cloned from; it is on by default ([how it works](#how-rename-and-move-detection-works-and-its-configuration)). Without it, see [when matching is off](#6-when-matching-is-off). Every kind, `RENAMED`, `REPLACED` and `UNMARKED` included, makes the exit code 1: a rename alone is a change made on the target.
+Object matching tells which source object a target object was cloned from; it is on by default ([how it works](#how-rename-and-move-detection-works-and-its-configuration)). Without it, see [when matching is off](#6-when-matching-is-off). Every result, `RENAMED`, `REPLACED` and `UNMARKED` included, makes the exit code 1: a rename alone is a change made on the target.
 
 ## Patterns: what happened on the target and how it appears
 
@@ -287,9 +287,9 @@ not compared:
   and any attribute not listed above
 ```
 
-- `compared objects`: objects compared, per type.
+- `compared objects`: objects compared, per kind.
 - `RENAMED` / `REPLACED` / `UNMARKED` appear only when objects are matched (`rename/move check: on`; `REPLACED` and `UNMARKED` only when there are any). `not listed` is the number of entries left out because they merely moved along with their parent OU. A line saying objects were found more than once means a marker (or, on OpenLDAP, an `entryUUID`) was copied onto another object; the first one found was used.
-- `compared attributes`: the attributes that were compared (excluding masked ones); with `[attributes] mode = "all"`, how many per type (`check -attrs` names them), and the attributes left out because the target's schema lacks them are listed on standard error before the differences. `not compared`: what was not compared (masked, `exclude`d, the credentials, and attributes not in the allow list).
+- `compared attributes`: the attributes that were compared (excluding masked ones); with `[attributes] mode = "all"`, how many per kind (`check -attrs` names them), and the attributes left out because the target's schema lacks them are listed on standard error before the differences. `not compared`: what was not compared (masked, `exclude`d, the credentials, and attributes not in the allow list).
 
 ## JSON output (`-format json`)
 
@@ -308,7 +308,7 @@ object per line, a line per difference as it is found, then one summary line. St
 
 | Field | On | Meaning |
 |---|---|---|
-| `kind` | every line | `DIFF`, `ONLY_SOURCE`, `ONLY_TARGET`, `RENAMED`, `REPLACED`, `UNMARKED`, or `SUMMARY` on the last line |
+| `kind` | every line | The line's [result](#results): `DIFF`, `ONLY_SOURCE`, `ONLY_TARGET`, `RENAMED`, `REPLACED`, `UNMARKED`, or `SUMMARY` on the last line (the field's name predates the [kinds](../README.md#kinds) of entries, which key `compared` and `compared_attributes`; it stays for the programs reading it) |
 | `dn` | differences | The source DN; for a `DIFF` of a renamed object, its DN on the target (as in the text output) |
 | `attr` | `DIFF` | The attribute |
 | `source`, `target` | `DIFF` of a single-valued attribute | The value on each side, as a list (`[]` when that side has none) |
@@ -318,9 +318,9 @@ object per line, a line per difference as it is found, then one summary line. St
 | `target_dn`, `renamed`, `moved` | `RENAMED` | The DN on the target, and whether the RDN changed and whether the parent did |
 | `version` | `SUMMARY` | The format version (1). It changes when a field changes meaning or goes away; new fields may be added without it |
 
-The other `SUMMARY` fields are the [summary](#how-to-read-the-summary) as data: `compared` and `differences` per
-kind (every kind present, `0` included), `not_cloned` per object class, `references_not_compared` per attribute (`references_not_compared_why` per attribute and reason),
-`compared_attributes` per kind, and `masked`, `excluded` and `credentials`. `rename_check` is empty when
+The other `SUMMARY` fields are the [summary](#how-to-read-the-summary) as data: `compared` per kind of
+entries, `differences` per result (every result present, `0` included), `not_cloned` per object class, `references_not_compared` per attribute (`references_not_compared_why` per attribute and reason),
+`compared_attributes` per kind, and `masked` (one masked on a kind's entries only as `mail (user)`), `excluded` and `credentials`. `rename_check` is empty when
 renames are not detected. Fields of a line that do not apply are left out, so read them as optional.
 
 A program reads it line by line, for example with `jq`:

@@ -64,7 +64,7 @@ base_dn = "OU=IDM,DC=ad,DC=example,DC=com"
 # builtin_groups = "add"             # a built-in group holding them (Domain Admins): add (default) gives the target's own
 #                                    # those members, nothing else; skip
 
-# [scope.filters]                    # override the search filter per object type
+# [scope.filters]                    # replace a kind's search filter under base_dn (list-attrs shows the kinds)
 # user = "(&(objectCategory=person)(objectClass=user)(department=IT))"
 
 # [accounts]
@@ -85,11 +85,11 @@ workers = 8                          # parallel connections to the target, for c
 [attributes]
 # By default (AD) the attributes Active Directory Users and Computers shows on its property sheets are copied, and a
 # few more production uses (see `ldap-cronin list-attrs`, and docs/active-directory.md; -profile ldap for generic servers; `ldap-cronin check` says which attributes the entries hold that no list names, with the line to put here).
-# mode = "all"   # AD: every attribute a client can write on each type's class, your schema extensions included
+# mode = "all"   # AD: every attribute a client can write on each kind's class, your schema extensions included
 #                # (no include/extra_include then; exclude still applies). `ldap-cronin schema` carries the extensions.
-# extra_include = ["extensionAttribute1", "mailNickname"]   # add to all types
-# exclude = ["telephoneNumber"]                             # remove from all types
-# [attributes.include]                                      # replace the default per type
+# extra_include = ["extensionAttribute1", "mailNickname"]   # add to all kinds
+# exclude = ["telephoneNumber"]                             # remove from all kinds
+# [attributes.include]                                      # replace the default per kind
 # user = ["sAMAccountName", "givenName", "sn"]
 
 [mask]

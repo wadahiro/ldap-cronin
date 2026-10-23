@@ -68,7 +68,7 @@ base_dn = "OU=IDM,DC=ad,DC=example,DC=com"   # or the domain root, for the whole
 
 ## Limitations
 
-- Only OUs, groups, users, computers and contacts are cloned. Other object classes (BitLocker recovery information, password settings objects, managed service accounts, GPOs) are reachable only through custom per-kind `[scope.filters]` and `[attributes]`; a member of such a class is skipped with a warning and counted by `diff`.
+- Only the [kinds](../README.md#kinds) are cloned: OUs, groups, users, computers and contacts (`list-attrs` shows how each is told). Other object classes (BitLocker recovery information, password settings objects, managed service accounts, GPOs) are reachable only through custom per-kind `[scope.filters]` and `[attributes]`; a member of such a class is skipped with a warning and counted by `diff`. A managed service account derives from `computer` but is no `computer`: a group holding one does not bring it in as one.
 - Verified on Windows Server 2019 (a test forest on EC2, with the e2e tests run in both directions against Samba, as the Administrator):
   - the clone, a second run that writes nothing, the fixed password over LDAPS, diff;
   - adding a computer with `userAccountControl` 4130 and then setting 4096;

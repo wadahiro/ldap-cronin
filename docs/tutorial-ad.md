@@ -100,7 +100,8 @@ ldap-cronin dump -url ldaps://dc01.ad.example.com:636 \
   that holds everything the tests may need.
 - The file holds the entries **as production has them, personal data included**, without any credential (password
   hashes, LAPS, BitLocker): keep it as you keep production's data (it is written readable by its owner only).
-  `-mask mail,telephoneNumber` masks attributes in the file itself.
+  `-mask telephoneNumber,user:mail` masks attributes in the file itself (`user:mail` on users only, so a group's
+  or a contact's mail stays).
 - For fresh data, dump again (step 9). What is in the file and how it is read: [dump.md](dump.md).
 
 Carry `prod.ldif.gz` to the machine where the lab runs. To read production on every run instead, see
@@ -153,7 +154,9 @@ exclude = ["homeDirectory", "homeDrive", "profilePath", "scriptPath"]   # file s
 [mask]
 # Replaced with a fixed string on the target, and not compared by diff.
 value = "********"
-attributes = ["mail", "telephoneNumber", "mobile", "homePhone"]
+attributes = ["telephoneNumber", "mobile", "homePhone"]   # on every entry
+[mask.kinds]
+user = ["mail"]                             # on users only: a distribution group's or a contact's mail is kept
 ```
 
 Notes on the choices:
@@ -161,6 +164,8 @@ Notes on the choices:
 - `[mapping] mode = "auto"` writes `ldap-cronin:<source root>:<source key>` into `adminDisplayName` of every
   cloned object. Pick another attribute if your applications use that one; it must be a single-valued string
   attribute that is not in the allow lists.
+- `user`, `group` and the other keys are the tool's [kinds](../README.md#kinds), not object classes:
+  `ldap-cronin list-attrs` shows how each is told (on AD a `user` is never a computer).
 - Masked attributes must be plain strings: `member`, `sAMAccountName`, `userPrincipalName` and the like cannot be
   masked (a fixed string would break them).
 - `[target.lab]` says the target is a lab: `lab up --config config.toml` (step 5) makes it with the source's domain
@@ -394,8 +399,9 @@ compared attributes:
   ...
 not compared:
   masked (config [mask]):
-    mail
+    telephoneNumber
     ...
+    mail (user)
 ```
 
 `references not compared` are the values the warnings of `clone` named: diff leaves them out, and compares every
@@ -754,7 +760,8 @@ extra_include = ["acmeEmployeeCode"]        # every kind; or [attributes.include
 - If the target still lacks one, `clone` refuses to start and names it; nothing is written.
 - An attribute that holds DNs (`attributeSyntax: 2.5.5.1`, a custom `sponsor`, say) is found in the source schema
   and handled as a reference: applied after every object exists, compared like `member`.
-- Personal data in a string attribute can be masked (`[mask] attributes`); an attribute that must stay unique or
+- Personal data in a string attribute can be masked (`[mask] attributes`, or `[mask.kinds]` for one kind's
+  entries); an attribute that must stay unique or
   that holds DNs cannot.
 - An auxiliary class attached to single objects (not to `user` in the schema) shows in their `objectClass`, which
   `clone` always copies: the target needs that class even when none of its attributes is in an allow list.
