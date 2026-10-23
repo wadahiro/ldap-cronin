@@ -1,50 +1,101 @@
 # The test lab (`lab`) and snapshots
 
-`ldap-cronin lab` starts and stops a directory server for testing on docker, an AD-compatible Samba4 or (with `--profile ldap`) [OpenLDAP](#the-openldap-lab---profile-ldap), and lets you **take snapshots of the data and restore them at any time**.
-Keep the data created by `clone` as a snapshot, and bring it back in a few seconds whenever another program modifies the target.
+`ldap-cronin lab` makes a directory server to clone into, made like the source, and **takes snapshots of it to
+restore at any time**: keep the state right after `clone`, and bring it back whenever another program has changed
+the target. Three kinds:
 
-It needs only docker (no docker compose), and can be carried into an environment with no internet access ([offline package](#using-the-offline-package)).
+| Lab | Runs on | For | Snapshot / restore |
+|---|---|---|---|
+| **Samba4 AD** (the default for an AD source) | docker on your machine | most AD tests; offline too ([offline package](#using-the-offline-package)); the source's `objectGUID` and `objectSid` with [`native = true`](#importing-with-the-same-objectguid-and-objectsid-targetlab-native--true-samba-only) | tar files of its volumes, seconds |
+| **OpenLDAP** ([`--profile ldap`](#the-openldap-lab---profile-ldap), for a generic LDAP source) | docker | OpenLDAP, 389-ds and other generic sources | tar files of its volumes, seconds |
+| **Windows Server AD** ([`platform = "ec2"`](#a-windows-server-lab-on-amazon-ec2-targetlab-platform--ec2)) | Amazon EC2, through the `aws` command | tests that need a real Windows domain controller | EBS snapshots of its root volume, minutes |
 
-The simplest way: name the lab in the configuration, and `lab up --config` makes it like the source
-([below](#the-lab-made-like-the-source-lab-up---config-and-targetlab)):
+The docker labs need only docker (no docker compose). The EC2 lab needs the `aws` command, its Session Manager
+plugin and an AWS account ([what it needs](design/ec2-lab.md)).
+
+Every kind starts the same way: name the lab in the configuration (`[target.lab]`), and `lab up --config` makes it
+like the source ([below](#the-lab-made-like-the-source-lab-up---config-and-targetlab)):
 
 ```sh
 ldap-cronin lab up --config config.toml          # [target.lab]: the lab, like the source of config.toml
 ldap-cronin clone -config config.toml            # the data
-ldap-cronin lab snapshot baseline                # save the state right after the clone
-ldap-cronin diff -config config.toml             # later: see what another program changed
-ldap-cronin lab restore baseline                 # restore the original state (a few seconds)
+ldap-cronin lab snapshot baseline --config config.toml   # save the state right after the clone
+# ... another program modifies the target ...
+ldap-cronin diff -config config.toml             # see what it changed
+ldap-cronin lab restore baseline --config config.toml    # back to the state of the snapshot
 ```
 
-Or by hand:
+A docker lab can also be started by hand, without a configuration ([`lab up --realm`](#starting-a-docker-lab-by-hand-lab-up)),
+and its commands then take no `--config`.
+
+## The lab made like the source (`lab up --config` and `[target.lab]`)
+
+```toml
+[target]
+url = "ldaps://localhost:12636"
+bind_dn = "CN=Administrator,CN=Users,DC=ad,DC=example,DC=com"
+insecure_skip_verify = true
+[target.lab]
+image = "ldap-cronin/samba-ad:local"     # what lab up --config creates it from (default: the offline package's image)
+# instance = "dev2"                      # another instance (it must exist: instances come from snapshots)
+# prefix = "ldap-cronin"
+# native = true                          # see the next section
+# fast_password = true
+# server_attributes = "lab"              # native: the lab's own whenCreated, logons and lockout instead of the source's
+# acl = "source"                         # native: the source's ACLs, the domain root's included (default: the lab's own)
+```
 
 ```sh
-ldap-cronin lab up --realm corp.example.local    # start a Samba4 AD
-ldap-cronin clone -config config.toml            # create the data
-ldap-cronin lab snapshot baseline                # save the state right after the clone
-# ... another program modifies the target ...
-ldap-cronin diff -config config.toml             # see what changed
-ldap-cronin lab restore baseline                 # restore the original state (a few seconds)
+ldap-cronin lab up --config config.toml   # the lab, like the source
+ldap-cronin check -config config.toml     # what clone will do, reading the lab
+ldap-cronin clone -config config.toml     # the data
 ```
+
+`lab up --config <file>` takes everything from the config:
+
+1. **It creates the lab when it does not exist** (the default instance only): the source's domain name, and on AD its
+   NetBIOS name, domain SID and GUID, which can only be chosen when a domain is created; for a generic source an
+   OpenLDAP lab with its naming context. It listens on the port of `[target] url` (the other port: the default, or
+   `AD_LDAP_PORT` / `AD_LDAPS_PORT`), and its Administrator password is the target password
+   (`LDAP_CRONIN_TARGET_PASSWORD`, or asked), saved in `.env` like a password given to `lab up`. The prefix,
+   instance and image come from `[target.lab]` (`--prefix`, `--instance` and `--image` take precedence); the
+   settings of a lab given by hand (`--realm`, the ports, ...) are refused with it. A stopped lab is started; a lab
+   of another domain or other ports is refused, untouched.
+2. **It gives the lab's schema the source's definitions it lacks**, as `schema -apply` would (a lab's schema goes with
+   the lab; a real AD's cannot be undone, so there it stays a step of its own). Run again after a new dump, it adds
+   what the source's schema has gained.
+
+For an EC2 lab (`platform = "ec2"`), `lab up --config` launches a Windows Server instance instead, with the same
+domain name, NetBIOS name and functional levels ([below](#a-windows-server-lab-on-amazon-ec2-targetlab-platform--ec2)):
+Windows lets no one choose a domain SID, so not the source's.
+
+`[target.lab]` says the target is that lab: `[target] url` must be its, which `lab up --config`, `check` and `clone`
+check against the lab's port. `check` says whether the lab exists and runs (exit code 1 until it does, with the
+`lab up --config` to run), and reads it like any target. `clone` refuses a lab that does not exist or is stopped,
+naming the command. `diff`, `schema` and `lab snapshot` work as with any target. `[target.lab]` belongs in the
+configuration of a lab only: a real AD target has none.
 
 ## Commands
 
-| Command | Description |
-|---|---|
-| `lab up [--profile ldap]` | Loads the image (if missing), starts the Samba4 AD (or OpenLDAP) and checks that it works over LDAPS |
-| `lab down` | Stops it. The data is kept, and running `up` again resumes with the same settings |
-| `lab reset [-y] [--snapshots]` | Deletes the domain data and the settings (`.env`). Snapshots are kept by default |
-| `lab status` | Shows the state of the lab and the number of snapshots |
-| `lab snapshot [name] [--note text] [--force]` | Saves the current data as a snapshot |
-| `lab snapshots` | Lists the snapshots |
-| `lab restore [name]` | Restores the data to a snapshot's state. Without a name, you pick from a list. **If the target lab does not exist, it is created from the snapshot** ([starting another lab](#starting-another-lab-from-a-snapshot-on-a-different-port)) |
-| `lab snapshot-rm name` | Deletes a snapshot |
+| Command | Docker lab (Samba4, OpenLDAP) | EC2 lab (with `--config`) |
+|---|---|---|
+| `lab up` | Loads the image (if missing), creates or starts the lab and checks LDAPS | Launches the instance (or starts a stopped one) and waits until it is a domain controller; prints the tunnel commands |
+| `lab down` | Stops it; the data is kept and `up` resumes it | Stops the instance; `up` starts it again |
+| `lab reset [-y] [--snapshots]` | Deletes the domain data and `.env` | Terminates the instance |
+| `lab status` | The state of the lab (and its instances), the number of snapshots | The instance's state, type, root volume, addresses, the number of snapshots |
+| `lab snapshot [name] [--note text] [--force]` | Writes its volumes to tar files (seconds) | An EBS snapshot of its root volume, the instance stopped meanwhile (minutes) |
+| `lab snapshots` | Lists the snapshots | Lists the snapshots (with the state of one still pending) |
+| `lab restore [name]` | Restores the volumes; without a name, pick from a list. **Creates the lab from the snapshot if it does not exist**, also as [another instance on other ports](#starting-another-lab-from-a-snapshot-on-a-different-port) | Replaces the root volume by one made from the snapshot (a name is needed), waits until it is ready |
+| `lab snapshot-rm name` | Deletes a snapshot | Deletes a snapshot |
 
-Common options: `--profile` (`ad` or `ldap`; needed only for `up`, later commands take it from `.env` or the container), `--state-dir` (where `.env` is placed; default `.`), `--snapshot-dir` (default `<state-dir>/snapshots`), `--bundle-dir` (the location of the offline package; found automatically if omitted),
-and `--instance` (the instance to operate on; the default lab if omitted).
-`lab help` shows all options.
+Snapshots are kept by `lab reset` unless `--snapshots` is given.
 
-## Starting (`lab up`)
+Options of the docker labs: `--profile` (`ad` or `ldap`; needed only for `up`, later commands take it from `.env` or
+the container), `--state-dir` (where `.env` is placed; default `.`), `--snapshot-dir` (default
+`<state-dir>/snapshots`), `--bundle-dir` (the location of the offline package; found automatically if omitted), and
+`--instance` (the instance to operate on; the default lab if omitted). `lab help` shows all options.
+
+## Starting a docker lab by hand (`lab up`)
 
 ```sh
 ldap-cronin lab up                                  # asks for the domain name and the administrator password (interactive)
@@ -83,9 +134,9 @@ ldap-cronin lab snapshot baseline                                    # later com
 - **Snapshots** hold `/var/lib/ldap` (the database and the certificate) and `/etc/ldap/slapd.d` (the configuration). They record the kind, so restoring one into a Samba lab is refused; a new instance (`lab restore NAME --instance dev2`) takes the snapshot's kind by itself.
 - `native = true` does not apply: the relax control already keeps `entryUUID` over LDAP.
 
-## Snapshots
+## Snapshots of a docker lab
 
-A snapshot is the contents of the lab's docker volumes (the Samba databases) written out to files on the host.
+A snapshot of a docker lab is the contents of the lab's docker volumes (the Samba databases) written out to files on the host.
 
 ```
 snapshots/
@@ -190,49 +241,6 @@ About 7 seconds each to take and to restore with about 44 MB of data (Samba's in
 With `[mapping] mode = "preserve"` (the OpenLDAP lab) the identifiers are the source's, which is part of the data too. With `mode = "file"` the local file is a ledger of every object `clone` created from each source object, so it serves every snapshot and instance as it is.
 
 The lab image indexes `adminDisplayName` when the domain is created, before any data exists (Samba does not index values written before the index existed until a reindex), and on every start of an older lab. If you configure another marker attribute (`[mapping] attribute`), index it before the first `clone` as on a real AD ([active-directory.md](active-directory.md#when-the-target-is-a-real-ad)); for a lab that already holds markers in it, run `samba-tool dbcheck --reindex` in the container once afterwards.
-
-## The lab made like the source (`lab up --config` and `[target.lab]`)
-
-```toml
-[target]
-url = "ldaps://localhost:12636"
-bind_dn = "CN=Administrator,CN=Users,DC=ad,DC=example,DC=com"
-insecure_skip_verify = true
-[target.lab]
-image = "ldap-cronin/samba-ad:local"     # what lab up --config creates it from (default: the offline package's image)
-# instance = "dev2"                      # another instance (it must exist: instances come from snapshots)
-# prefix = "ldap-cronin"
-# native = true                          # see the next section
-# fast_password = true
-# server_attributes = "lab"              # native: the lab's own whenCreated, logons and lockout instead of the source's
-# acl = "source"                         # native: the source's ACLs, the domain root's included (default: the lab's own)
-```
-
-```sh
-ldap-cronin lab up --config config.toml   # the lab, like the source
-ldap-cronin check -config config.toml     # what clone will do, reading the lab
-ldap-cronin clone -config config.toml     # the data
-```
-
-`lab up --config <file>` takes everything from the config:
-
-1. **It creates the lab when it does not exist** (the default instance only): the source's domain name, and on AD its
-   NetBIOS name, domain SID and GUID, which can only be chosen when a domain is created; for a generic source an
-   OpenLDAP lab with its naming context. It listens on the port of `[target] url` (the other port: the default, or
-   `AD_LDAP_PORT` / `AD_LDAPS_PORT`), and its Administrator password is the target password
-   (`LDAP_CRONIN_TARGET_PASSWORD`, or asked), saved in `.env` like a password given to `lab up`. The prefix,
-   instance and image come from `[target.lab]` (`--prefix`, `--instance` and `--image` take precedence); the
-   settings of a lab given by hand (`--realm`, the ports, ...) are refused with it. A stopped lab is started; a lab
-   of another domain or other ports is refused, untouched.
-2. **It gives the lab's schema the source's definitions it lacks**, as `schema -apply` would (a lab's schema goes with
-   the lab; a real AD's cannot be undone, so there it stays a step of its own). Run again after a new dump, it adds
-   what the source's schema has gained.
-
-`[target.lab]` says the target is that lab: `[target] url` must be its, which `lab up --config`, `check` and `clone`
-check against the lab's port. `check` says whether the lab exists and runs (exit code 1 until it does, with the
-`lab up --config` to run), and reads it like any target. `clone` refuses a lab that does not exist or is stopped,
-naming the command. `diff`, `schema` and `lab snapshot` work as with any target. `[target.lab]` belongs in the
-configuration of a lab only: a real AD target has none.
 
 ## Importing with the same objectGUID and objectSid (`[target.lab] native = true`, Samba only)
 
@@ -400,3 +408,7 @@ For how the package is built see [DEVELOPMENT.md](DEVELOPMENT.md); for the proce
 | The OpenLDAP lab exits at its first start, and the log shows `ldap_add` / `ldap_modify` errors | A file in `--schema-dir` failed. Fix it, then `lab reset` and `lab up` again |
 | `port N is used by instance ...` | The host port overlaps with another instance. Change `--ldap-port` / `--ldaps-port` |
 | A warning that the image architecture differs | Rebuild the package for the receiving machine's `uname -m` (for example `make bundle PLATFORM=linux/arm64`) |
+| EC2: `lab up` keeps waiting, and the instance never shows in Systems Manager | The instance cannot reach Systems Manager: a subnet with an internet gateway and no NAT needs `public_ip = true`; else a NAT gateway or VPC endpoints. Its role needs `AmazonSSMManagedInstanceCore` |
+| EC2: `Invalid IAM Instance Profile name` | `instance_profile` names an instance profile, not a role: `aws iam list-instance-profiles` lists them |
+| EC2: `run-instances` refused by a tag policy | Give the tags the account requires in `[target.lab] tags`; they go on the instance, its volume and the snapshots |
+| EC2: `lab up` keeps waiting, its last line of `setup.log` showing an error | The user data failed. `C:\ldap-cronin\setup.log` on the instance has the whole of it (a Session Manager shell reads it); `lab reset --config` and `lab up --config` start over. Without READY, `lab up` gives up after 45 minutes |

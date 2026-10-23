@@ -1,8 +1,9 @@
-# Tutorial: clone an Active Directory into a Samba4 lab, and into a test AD
+# Tutorial: clone an Active Directory into a Samba4 lab, and into a Windows Server AD
 
 This walks through a complete run against an AD source: production read once into a dump file, one
 configuration file, a clone into the Samba4 lab (with snapshots, so every test starts from the same data), and
-then the same clone into a real AD test domain. The reference for each step is in
+then the same clone into a Windows Server AD: a lab on Amazon EC2 that `lab` makes like the source, with snapshots
+too, or a test domain of your own. The reference for each step is in
 [active-directory.md](active-directory.md), [dump.md](dump.md), [lab.md](lab.md) and [diff.md](diff.md).
 
 Throughout, the source domain is `ad.example.com` (`DC=ad,DC=example,DC=com`) and the part to clone is
@@ -14,12 +15,13 @@ Throughout, the source domain is `ad.example.com` (`DC=ad,DC=example,DC=com`) an
 - For the dump, a machine that reaches the source DC over LDAPS (636), with the tool's binary alone, and an
   account that can **read** everything under `base_dn` (a normal domain user can read most attributes; Domain
   Admins also sees the ones a delegation hides).
-- For part 2, a test AD domain **with the same domain name** as the source (see below).
+- For part 2, an AWS account and the `aws` command with its Session Manager plugin (the EC2 lab), or a test AD
+  domain **with the same domain name** as the source (see below).
 
 **The target must have the same domain name as the source.** `clone` writes every object at its source DN, and
 references (`member`, `manager`) name source DNs, so the target's naming context must be `DC=ad,DC=example,DC=com`
-too. The lab takes care of this (`lab up --config`, step 5); a real AD target is an isolated test forest built with the
-production domain name, never a domain that trusts or replicates with production.
+too. The labs take care of this (`lab up --config`, steps 5 and 11); a test domain of your own is an isolated test
+forest built with the production domain name, never a domain that trusts or replicates with production.
 
 ## 1. Build the tool and the lab image
 
@@ -433,12 +435,104 @@ When you want fresh data from production: dump again (step 2) to the same file, 
 again (it brings the lab up to date with the new dump), and `lab snapshot baseline --force`. Objects deleted on the source stay on the lab
 (nothing is deleted); for an exact copy, `lab reset -y` and start again from step 5.
 
-## Part 2: a real AD test domain
+## Part 2: a Windows Server AD
 
-The same configuration works against a Windows AD; only `[target]` and a few preparations change. There are no
-snapshots here: restoring a test domain is your backup's job, and `clone` never deletes anything.
+Samba is AD-compatible, not Windows. When the test needs a real Windows Server domain controller, the same
+configuration works against one; only `[target]` and `[target.lab]` change. Two ways:
 
-### 10. Prepare the test domain
+- **The EC2 lab** (steps 10 to 13): `lab up --config` launches a Windows Server instance on Amazon EC2 and makes it
+  a new forest like the source, as it made the Samba lab, with every preparation a target AD needs done for you,
+  and snapshots. You pay for the instance while it runs, and for the volume and the snapshots while they exist.
+- **A test domain of your own** (steps 14 to 17): you prepare it; no snapshots.
+
+### 10. Describe the EC2 lab
+
+Copy `config.toml` to `config-ec2.toml` and replace its `[target]` and `[target.lab]`:
+
+```toml
+[target]
+url = "ldaps://localhost:12636"                   # where the tunnel to the instance listens (step 11)
+bind_dn = "CN=Administrator,CN=Users,DC=ad,DC=example,DC=com"
+insecure_skip_verify = true                       # the domain controller's certificate is self-signed
+
+[target.lab]
+platform = "ec2"
+region = "ap-northeast-1"
+subnet = "subnet-0123456789abcdef0"               # its instances must reach Systems Manager
+instance_profile = "ldap-cronin-lab"              # an instance profile whose role has AmazonSSMManagedInstanceCore
+# windows = "2022"                                # 2016, 2019, 2022 or 2025
+# tags = { Owner = "me", Project = "idm-test" }   # what the account's tag policy requires
+# public_ip = true                                # a subnet with an internet gateway and no NAT needs it
+```
+
+- The `aws` command needs credentials for the account, and the [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html)
+  for the tunnels. The permissions it uses are listed in [design/ec2-lab.md](design/ec2-lab.md).
+- No inbound rule is needed: the instance is reached through Systems Manager only.
+- `native` does not apply (Windows lets no one choose an `objectGUID` or a domain SID). Every setting:
+  [lab.md](lab.md#a-windows-server-lab-on-amazon-ec2-targetlab-platform--ec2).
+
+### 11. Make it
+
+```sh
+export LDAP_CRONIN_TARGET_PASSWORD='Lab-Adm1n-Passw0rd!'      # its Administrator's: Windows' complexity rule applies
+./bin/ldap-cronin lab up --config config-ec2.toml --dry-run    # what it will do on AWS; nothing is done
+./bin/ldap-cronin lab up --config config-ec2.toml              # about 20 minutes
+```
+
+It launches the instance, which makes itself the domain controller of a new forest with the source's domain
+name, NetBIOS name and functional levels, and then does what step 14 asks of a test domain of your own: an
+LDAPS certificate, a password policy that takes the fixed password, the marker attribute indexed. `lab up`
+shows the last line of the instance's log meanwhile, and ends with the tunnel commands. Run each in a terminal
+of its own, as `lab up` printed them, and keep them running while you use the lab:
+
+```sh
+aws ssm start-session --target i-0123456789abcdef0 --document-name AWS-StartPortForwardingSession \
+  --parameters 'portNumber=636,localPortNumber=12636' --region ap-northeast-1
+```
+
+`lab status --config config-ec2.toml` shows the instance; `lab up --config` again uses the one there, or starts it
+if it is stopped.
+
+### 12. Schema extensions, then clone
+
+The Samba lab got the source's schema extensions from `lab up --config`; the EC2 lab is not reachable until the
+tunnel runs, so give them now. The lab is the forest's only domain controller, so it is the schema master, and
+its Administrator is a Schema Admin:
+
+```sh
+./bin/ldap-cronin schema -config config-ec2.toml               # read what it would add
+./bin/ldap-cronin schema -config config-ec2.toml -apply        # write it
+./bin/ldap-cronin check -config config-ec2.toml                # exit code 0: clone can start
+./bin/ldap-cronin clone -config config-ec2.toml
+./bin/ldap-cronin diff -config config-ec2.toml                 # no differences
+```
+
+A schema change cannot be undone in AD, but this forest exists for the test: a snapshot taken after it keeps it,
+and `lab reset` removes it with the lab. (`schema -apply` against the EC2 lab is not verified on AWS yet.)
+
+### 13. Save the state, and the test cycle
+
+```sh
+./bin/ldap-cronin lab snapshot baseline --config config-ec2.toml --note "right after clone"
+# ... the program under test changes the lab (ldaps://localhost:12636, through the tunnel) ...
+./bin/ldap-cronin diff -config config-ec2.toml                 # what it changed
+./bin/ldap-cronin lab restore baseline --config config-ec2.toml   # back to the clone; open the tunnels again
+```
+
+- A snapshot is an EBS snapshot of the instance's root volume, taken with the instance stopped, so the domain's
+  database is closed: a few minutes, then the lab is ready again. A restore replaces the root volume by one made from
+  the snapshot; the instance keeps its id, so the tunnel commands are the same, but it restarts, so open them again.
+  (Snapshots of the EC2 lab are not verified on AWS yet.)
+- `lab down --config config-ec2.toml` stops the instance while you do not use it (its volume and snapshots are
+  still billed); `lab up --config` starts it again.
+- `lab reset --config config-ec2.toml` terminates it; add `--snapshots` to delete its snapshots too.
+
+### Or: a test domain of your own
+
+The same configuration works against a Windows AD you prepare; only `[target]` and a few preparations change.
+There are no snapshots here: restoring a test domain is your backup's job, and `clone` never deletes anything.
+
+### 14. Prepare the test domain
 
 - **Same domain name** as the source (`ad.example.com`), isolated from production: no trust, no replication, its
   own DNS.
@@ -463,9 +557,9 @@ snapshots here: restoring a test domain is your backup's job, and `clone` never 
   ```
 
   Without it `clone` warns and still works.
-- The source's schema extensions: step 12, once the configuration points at the test domain.
+- The source's schema extensions: step 16, once the configuration points at the test domain.
 
-### 11. Point the configuration at it
+### 15. Point the configuration at it
 
 Replace `[target]`, and remove `[target.lab]`: a test domain is a server `clone` writes over LDAP, never creates.
 
@@ -480,7 +574,7 @@ timeout = "2m"
 workers = 4                                       # a real DC also serves others; start low
 ```
 
-### 12. Give the test domain the source's schema extensions
+### 16. Give the test domain the source's schema extensions
 
 Everything here is LDAP, so it is done from your machine like the clone. **A schema change cannot be undone in
 AD**: an attribute or class can only be made defunct, and the schema belongs to the whole forest. Add only what
@@ -497,11 +591,11 @@ production has, to a forest that exists for testing.
 
    On a Windows machine of the domain, `netdom query fsmo` says the same.
 
-2. **An account in Schema Admins.** The tool's account of step 10 is not one, and should not be: add a
+2. **An account in Schema Admins.** The tool's account of step 14 is not one, and should not be: add a
    test-domain administrator to Schema Admins for the change, and remove it afterwards. Membership takes effect at
    the next logon (bind).
 
-3. **Write the file and read it.** The configuration of step 11 reads the test domain's schema through any DC:
+3. **Write the file and read it.** The configuration of step 15 reads the test domain's schema through any DC:
 
    ```sh
    ./bin/ldap-cronin schema -config config.toml > schema.ldif
@@ -533,7 +627,7 @@ production has, to a forest that exists for testing.
 
 Then remove the account from Schema Admins.
 
-### 13. Dry-run, clone, diff
+### 17. Dry-run, clone, diff
 
 ```sh
 ./bin/ldap-cronin check -config config.toml                         # now against the test domain
@@ -639,8 +733,9 @@ objectClass: classSchema
 ...
 ```
 
-How to apply it: a lab gets it from `lab up --config` ([step 5](#5-make-the-lab)); a test AD as in
-[step 12](#12-give-the-test-domain-the-sources-schema-extensions).
+How to apply it: the Samba lab gets it from `lab up --config` ([step 5](#5-make-the-lab)); the EC2 lab from
+`schema -apply` ([step 12](#12-schema-extensions-then-clone)); a test domain of your own as in
+[step 16](#16-give-the-test-domain-the-sources-schema-extensions).
 
 ### Copy and compare them
 
@@ -715,7 +810,7 @@ exclude = ["homeDirectory", "homeDrive", "profilePath", "scriptPath"]   # still 
 | `... already exists on the target but its ... differs` | Only with `native = true`: the lab holds another object at that DN. Use a fresh lab (`lab reset -y`, then `clone`) |
 | `the lab's domain differs from the source's ...` | `native = true` into a lab not made like the source (by `lab up --realm`, say): `lab reset -y`, then `lab up --config` makes it like the source |
 | `[target] url ... is not the lab ...` | `[target] url` and `[target.lab]` name different labs: give the lab's port in the url, or the url's lab in `[target.lab]` |
-| `warning: [mapping] attribute adminDisplayName is not indexed on the target` | Index it (step 10); the lab does this itself |
+| `warning: [mapping] attribute adminDisplayName is not indexed on the target` | Index it (step 14); the labs do this themselves |
 | `x509: certificate signed by unknown authority` | Give the CA with `ca_file` |
 | `skip member values naming ...: it names ...` | A reference clone cannot write, with what it names: a principal of a trusted domain (class `foreignSecurityPrincipal`), a built-in the target lacks, an entry of the configuration partition (`showInAddressBook` naming an Exchange address list). One warning per entry named; the summary counts the values per attribute and reason, and `diff` counts them instead of comparing them. `[attributes] exclude` an attribute the test does not need |
 | `the existing container has different settings: domain ...` | The lab was made for another domain (or other ports): `lab reset -y`, then `lab up --config` makes it anew |

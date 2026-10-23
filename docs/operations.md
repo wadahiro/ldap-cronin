@@ -80,6 +80,6 @@ Cloning 400 users (measured with different `workers` values):
 - **Reads (diff, and the difference check on a re-run) get faster with parallelism**, but **writes to Samba hardly get faster**.
   Plain `ldapmodify` with 1 and 8 connections is the same (120 password settings: 4.49 s / 4.55 s): Samba serializes writes with a database lock.
 - Time goes mostly to setting passwords. Rule of thumb: **about 45 ms per user** (about 8 minutes for 10,000 users, about 75 minutes for 100,000 users).
-- These figures were measured before the lab stopped fsyncing its databases (`ldb:nosync`, [lab.md](lab.md#starting-lab-up)); since then the E2E's 1,600 users clone in about 19 s (about 12 ms per user) where they took 25 to 70 s. A real AD fsyncs: use the figures above for it.
+- These figures were measured before the lab stopped fsyncing its databases (`ldb:nosync`, [lab.md](lab.md#starting-a-docker-lab-by-hand-lab-up)); since then the E2E's 1,600 users clone in about 19 s (about 12 ms per user) where they took 25 to 70 s. A real AD fsyncs: use the figures above for it.
 - The effect of parallelism against a real AD has not been measured. Please try different `workers` values.
   For measurements you can run `go test -tags e2e -run Bulk -v ./e2e/` with `E2E_BULK_USERS` / `E2E_WORKERS` set (after `docker compose --profile e2e up -d`).
