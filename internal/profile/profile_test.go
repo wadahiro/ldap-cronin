@@ -60,3 +60,25 @@ func TestEncodePasswordIsQuotedUTF16LE(t *testing.T) {
 		t.Fatalf("%q", got)
 	}
 }
+
+// A kind is told by the object classes the same way its filter takes it: a computer is no user, a managed service
+// account (a subclass of computer, of its own objectCategory) is no computer; every kind says so in words.
+func TestKindOfByObjectClasses(t *testing.T) {
+	for want, classes := range map[string][]string{
+		KindUser:     {"top", "person", "organizationalPerson", "user"},
+		"":           {"top", "person", "organizationalPerson", "user", "computer", "msDS-GroupManagedServiceAccount"},
+		KindComputer: {"top", "person", "organizationalPerson", "user", "computer"},
+		KindContact:  {"top", "person", "organizationalPerson", "contact"},
+	} {
+		if got := AD.KindOf(classes); got != want {
+			t.Errorf("%v: %q, want %q", classes, got, want)
+		}
+	}
+	for _, p := range []Profile{AD, LDAP} {
+		for _, k := range p.Kinds {
+			if k.ByClass == "" || k.Is == nil {
+				t.Errorf("%s %s: no ByClass or Is", p.Name, k.Name)
+			}
+		}
+	}
+}

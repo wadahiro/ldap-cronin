@@ -23,12 +23,12 @@ var AD = Profile{
 		// back links memberOf and directReports; primaryGroupID; Terminal Services' private data) and with, after
 		// "beyond the mapping:", what the mapping leaves out that production directories use, each with why.
 		// Contacts have no mapping: they show the General, Address, Telephones and Organization sheets of a user.
-		{Name: KindOU, Class: "organizationalUnit", Role: RoleContainer, Filter: "(objectClass=organizationalUnit)", Is: classIs("organizationalUnit"), Default: []string{
+		{Name: KindOU, Class: "organizationalUnit", Role: RoleContainer, Filter: "(objectClass=organizationalUnit)", Is: classIs("organizationalUnit"), ByClass: "organizationalUnit", Default: []string{
 			"description", "street", "l", "st", "postalCode", "c", "managedBy",
 			// beyond the mapping: the display name and the country's name (c's companion, as on a user)
 			"displayName", "co",
 		}},
-		{Name: KindGroup, Class: "group", Role: RoleLeaf, Order: 0, Filter: "(objectClass=group)", Is: classIs("group"), Default: []string{
+		{Name: KindGroup, Class: "group", Role: RoleLeaf, Order: 0, Filter: "(objectClass=group)", Is: classIs("group"), ByClass: "group", Default: []string{
 			"sAMAccountName", "description", "mail", "groupType", "info", "member", "managedBy",
 			// beyond the mapping: the display name; adminDescription, Entra Connect's default filter; gidNumber, the
 			// UNIX Attributes sheet of Identity Management for UNIX
@@ -37,7 +37,7 @@ var AD = Profile{
 		// user excludes computer, which also has objectClass=user.
 		{Name: KindUser, Class: "user", Role: RoleLeaf, Order: 1, Account: true, Filter: "(&(objectCategory=person)(objectClass=user))",
 			// objectCategory=person and objectClass=user: a user or inetOrgPerson, not a computer (a subclass of user).
-			Is: func(c []string) bool { return hasClass(c, []string{"user"}, "computer") }, Default: []string{
+			Is: func(c []string) bool { return hasClass(c, []string{"user"}, "computer") }, ByClass: "user (inetOrgPerson too), not computer", Default: []string{
 				// General
 				"givenName", "sn", "initials", "displayName", "description", "physicalDeliveryOfficeName",
 				"telephoneNumber", "otherTelephone", "mail", "wWWHomePage", "url",
@@ -59,15 +59,18 @@ var AD = Profile{
 			}},
 		// Computers are what groups hold most besides users. A computer is an account too: it gets the fixed
 		// password, as a joined computer has one (a pre-staged computer without it is not what production holds).
-		// Service accounts (msDS-ManagedServiceAccount) have their own objectCategory and stay out.
-		{Name: KindComputer, Class: "computer", Role: RoleLeaf, Order: 2, Account: true, Filter: "(objectCategory=computer)", Is: classIs("computer"), Default: []string{
+		// Service accounts (msDS-ManagedServiceAccount and its kin) have their own objectCategory and stay out; they
+		// derive from computer, so Is leaves them out by name: a group holding one does not bring it in as a computer.
+		{Name: KindComputer, Class: "computer", Role: RoleLeaf, Order: 2, Account: true, Filter: "(objectCategory=computer)", Is: func(c []string) bool {
+			return hasClass(c, []string{"computer"}, "msDS-ManagedServiceAccount", "msDS-GroupManagedServiceAccount", "msDS-DelegatedManagedServiceAccount")
+		}, ByClass: "computer, not a managed service account", Default: []string{
 			"sAMAccountName", "dNSHostName", "userAccountControl", "description", "location",
 			"operatingSystem", "operatingSystemVersion", "operatingSystemServicePack",
 			// beyond the mapping: the Managed By sheet the snap-in has had since, servicePrincipalName (Kerberos
 			// finds a service by it), the display name and the notes
 			"managedBy", "servicePrincipalName", "displayName", "info",
 		}},
-		{Name: KindContact, Class: "contact", Role: RoleLeaf, Order: 3, Filter: "(objectClass=contact)", Is: classIs("contact"), Default: []string{
+		{Name: KindContact, Class: "contact", Role: RoleLeaf, Order: 3, Filter: "(objectClass=contact)", Is: classIs("contact"), ByClass: "contact", Default: []string{
 			// General
 			"givenName", "sn", "initials", "displayName", "description", "physicalDeliveryOfficeName",
 			"telephoneNumber", "otherTelephone", "mail", "wWWHomePage", "url",

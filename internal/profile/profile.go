@@ -64,6 +64,8 @@ type KindSpec struct {
 	// Is tells, from an entry's object classes, whether it is of this kind, as Filter would without its
 	// configured narrowing. It classifies an entry outside the scope that a reference names.
 	Is func(objectClasses []string) bool
+	// ByClass says in words what Is takes, for list-attrs.
+	ByClass string
 }
 
 // hasClass reports whether classes holds every name of want and none of not (case-insensitively).

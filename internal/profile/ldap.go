@@ -13,17 +13,17 @@ import (
 var LDAP = Profile{
 	Name: NameLDAP,
 	Kinds: []KindSpec{
-		{Name: KindOU, Role: RoleContainer, Filter: "(objectClass=organizationalUnit)", Is: classIs("organizationalUnit"), Default: []string{
+		{Name: KindOU, Role: RoleContainer, Filter: "(objectClass=organizationalUnit)", Is: classIs("organizationalUnit"), ByClass: "organizationalUnit", Default: []string{
 			"description", "businessCategory", "street", "l", "st", "postalCode", "postalAddress",
 			"telephoneNumber", "facsimileTelephoneNumber", "seeAlso",
 		}},
 		{Name: KindGroup, Role: RoleLeaf, Order: 1, Filter: "(|(objectClass=groupOfNames)(objectClass=groupOfUniqueNames)(objectClass=posixGroup))",
-			Is: classIsAny("groupOfNames", "groupOfUniqueNames", "posixGroup"), Default: []string{
+			Is: classIsAny("groupOfNames", "groupOfUniqueNames", "posixGroup"), ByClass: "groupOfNames, groupOfUniqueNames or posixGroup", Default: []string{
 				"description", "member", "uniqueMember", "owner", "seeAlso", "businessCategory",
 				"gidNumber", "memberUid",
 			}},
 		// Users first: groupOfNames must have a member at creation (see clone), and its members are the users.
-		{Name: KindUser, Role: RoleLeaf, Order: 0, Account: true, Filter: "(objectClass=inetOrgPerson)", Is: classIs("inetOrgPerson"), Default: []string{
+		{Name: KindUser, Role: RoleLeaf, Order: 0, Account: true, Filter: "(objectClass=inetOrgPerson)", Is: classIs("inetOrgPerson"), ByClass: "inetOrgPerson", Default: []string{
 			"uid", "givenName", "sn", "displayName", "description", "initials", "mail",
 			"telephoneNumber", "mobile", "homePhone", "pager", "facsimileTelephoneNumber",
 			"title", "departmentNumber", "employeeNumber", "employeeType", "o", "ou",
