@@ -38,6 +38,9 @@ func holdersWorld() (*world, string, string) {
 			d.Put("CN="+name+","+schemaNC, map[string][]string{"objectClass": {"attributeSchema"}, "cn": {name}, "lDAPDisplayName": {name},
 				"attributeID": {"1.9." + name}, "attributeSyntax": {"2.5.5.1"}, "linkID": {link}})
 		}
+		// The group's description is copied as every attribute a client can write (the default mode).
+		d.Put("CN=description,"+schemaNC, map[string][]string{"objectClass": {"attributeSchema"}, "cn": {"description"},
+			"lDAPDisplayName": {"description"}, "attributeID": {"1.9.description"}, "attributeSyntax": {"2.5.5.12"}})
 	}
 	return w, vpn, admins
 }
