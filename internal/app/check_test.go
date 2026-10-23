@@ -80,7 +80,7 @@ func TestCheckSaysWhatTheTargetLacksAndWhenCloneWouldRefuse(t *testing.T) {
 	}
 	w.src.Lookup(alice).Attrs["acmeCode"] = []string{"E-1"}
 	w.src.Lookup(alice).Attrs["acmeStamp"] = []string{"1"}
-	s := w.openWith(t, "[attributes]\nextra_include = [\"acmeSponsor\"]\n")
+	s := w.openWith(t, "[attributes]\nmode = \"allowlist\"\nextra_include = [\"acmeSponsor\"]\n")
 	var out bytes.Buffer
 	code, err := s.Check(context.Background(), CheckOptions{Config: "c.toml"}, &out)
 	if err != nil {

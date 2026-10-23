@@ -8,6 +8,7 @@ package diff
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"sort"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	"github.com/wadahiro/ldap-cronin/internal/dn"
 	"github.com/wadahiro/ldap-cronin/internal/identity"
 	"github.com/wadahiro/ldap-cronin/internal/plan"
+	"github.com/wadahiro/ldap-cronin/internal/profile"
 	"github.com/wadahiro/ldap-cronin/internal/progress"
 	"github.com/wadahiro/ldap-cronin/internal/workpool"
 )
@@ -298,6 +300,9 @@ func (r *runner) referenced() {
 }
 
 func (r *runner) report(d Difference) {
+	if d.Kind == Differ && profile.Set(r.job.Profile.CopiedSecrets)[strings.ToLower(d.Attr)] {
+		d = fingerprinted(d)
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.sum.Differences[d.Kind]++
@@ -373,4 +378,23 @@ func (r *runner) check(ctx context.Context, want directory.Entry, names []string
 		r.compareEntry(kind.Name, shown, *got, names, skip)
 	}
 	return nil
+}
+
+// fingerprinted is d with each value of a credential replaced by a fingerprint: enough to see that it changed and
+// which value went where, never the value. Every output (the text, JSON lines) goes through report, so none prints it.
+func fingerprinted(d Difference) Difference {
+	hide := func(values []string) []string {
+		if values == nil {
+			return nil
+		}
+		out := make([]string, len(values))
+		for i, v := range values {
+			sum := sha256.Sum256([]byte(v))
+			out[i] = fmt.Sprintf("(credential, sha256 %x)", sum[:6])
+		}
+		return out
+	}
+	d.Source, d.Target, d.OnlySource, d.OnlyTarget = hide(d.Source), hide(d.Target), hide(d.OnlySource), hide(d.OnlyTarget)
+	d.CaseOnly, d.SourceCasePair, d.TargetCasePair = false, nil, nil // case markers would point into the value
+	return d
 }

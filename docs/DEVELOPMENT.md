@@ -81,10 +81,10 @@ docker compose --profile e2e up -d --build   # plus the clone source (with sampl
 
 | Test | What it checks |
 |---|---|
-| `TestDefaultAttributesExistInSambaSchema` | Every attribute in the default allow list exists in the Samba schema |
+| `TestDefaultAttributesExistInSambaSchema` | Every attribute in the allow lists exists in the Samba schema |
 | `TestReferenceAttributesAreDetectedFromSambaSchema` | DN reference attributes are detected from the schema |
 | `TestSchemaCarriesAnExtensionThenCloneCopiesIt` | `check` says clone would refuse (exit 1) and names `schema -apply`; after it, `check` is ready and the extension is cloned and compared |
-| `TestTheCommandsSessionAgainstSamba` | The commands against Samba: dry-run, `check -attrs` (a held attribute no list names is suggested) |
+| `TestTheCommandsSessionAgainstSamba` | The commands against Samba: dry-run, `check -attrs` (a held attribute no list names is copied by default, and no list is suggested) |
 | `TestCloneThenDiffThenIdempotentThenDetectTamper` | clone -> 0 diffs -> re-run gives 0 changes -> diff detects a manual change; login over LDAPS with the fixed password works |
 | `TestBulkUsersPagingAndLargeGroupRanges` | 1600 users (paging) and a group of 1600 members (several range retrievals, range size 500) |
 | `TestRenameAndMoveOnTargetAreDetectedWithTheMarkers` | Renames, moves, OU moves and child deletions on the target are detected through the markers; the image indexes `adminDisplayName` |
@@ -93,6 +93,8 @@ docker compose --profile e2e up -d --build   # plus the clone source (with sampl
 | `TestLabSnapshotAndRestoreWithRealDocker` | `lab up` -> data -> snapshots -> modify -> restore; data survives `down` -> `up`; domain name mismatch is refused; another lab starts from a snapshot on a different port |
 | `TestNativeImportKeepsObjectGUIDAndObjectSid` | Before `lab up --config`, `check` exits 1 naming it and `clone` refuses; `lab up --config` makes the lab like the source, and `clone` with `[target.lab] native = true, fast_password = true` imports a sample (14 objects) (every enabled user logs on, another password is refused), re-run, rename detection, snapshot restore, creating a user over LDAP afterwards |
 | `TestLabUpConfigMakesTheLabLikeTheSourceAndGivesItTheSchema` | `lab up --config` creates a missing lab like the source and adds a schema extension of the source to it; `clone` copies its values over LDAP, diff finds nothing; a stopped lab: `clone` refuses it, `lab up --config` starts it from another directory asking nothing; a second clone writes nothing |
+| `TestCredentialsCopyAgainstSamba` | `[attributes] credentials = "copy"`: the credentials Samba returns (`userPKCS12`, `userPassword`) are copied, printed nowhere, the fixed password still logs the user on, diff finds nothing |
+| `TestTheLabTakesAOneCharacterPassword` | The lab's password policy: a password of one character is set and logs on; passwords never expire |
 | `TestGenericLDAPCloneWithOpenLDAP` | Clone between two throw-away OpenLDAP servers of our image (`E2E_LDAP_IMAGE`, built by `tests/e2e.sh`): password, references, diff, `entryUUID` and creation metadata kept with the relax control by an account with `manage` (not the rootdn), a `write`-only account stopped with the remedy, rename detection by the preserved identifier |
 | `TestOpenLDAPLabWithRealDocker` | The OpenLDAP lab: `up` with `--schema-dir` and the sample source -> clone and diff the sample data -> snapshot -> change -> restore -> another instance on another port -> a different suffix refused |
 
@@ -117,7 +119,7 @@ The `lab` E2E does not use docker compose and picks its own prefix and ports. It
 | Decision | Reason |
 |---|---|
 | LDAP through go-ldap, not external commands (ldapsearch etc.) | Parsing LDIF (line breaks, base64, folding) is cumbersome |
-| Attributes use an allow list, not an exclude list | An exclude list would silently copy unexpected attributes such as `extensionAttribute*` |
+| On AD every attribute a client can write is copied by default (the schema says which); allow lists are `mode = "allowlist"`, and the only way on a generic server | The clone is there to look like production. Allow lists as the default left out, without a word, what production holds and no list named: `extensionAttribute*`, `proxyAddresses`, an extension of one's own, the very attributes IdM products use. A generic server's subschema does not say who may write what, so it keeps its lists. Values wrong on any clone are left out by name (`gPLink`), with why |
 | Entries are not held in memory (`Directory.Walk` streams page by page; only the DN hash set and OUs stay resident) | The old implementation used about 3.3 KB per user (about 660 MB for 200,000 users); now about 10 MB (`internal/clone/memory_test.go`) |
 | Users are created in three steps: add -> password (modify) -> UAC | Samba accepts `unicodePwd` in an add, but Microsoft specifies it can only be set with a modify (KB 269190); Samba-only behavior would fail on a real AD |
 | DN reference attributes are applied after all objects exist and detected from the schema (`attributeSyntax=2.5.5.1`) | Adding fails if the DN does not exist yet; a fixed list would break attributes added through `extra_include` |

@@ -19,6 +19,8 @@ func withClasses(d *fakedir.Dir, userMay []string) {
 		switch c {
 		case "user":
 			e["mayContain"] = userMay
+		case "group":
+			e["mayContain"] = []string{"member", "description"}
 		case "computer":
 			e["subClassOf"] = []string{"user"}
 		case "top":
@@ -98,7 +100,7 @@ func TestModeAllCopiesWhatAClientCanWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := report.String()
-	if !strings.Contains(got, "[user] 1 entries; 1 attributes they hold are not copied ([attributes] exclude names them):\n  title ") {
+	if !strings.Contains(got, "[user] 1 entries; 1 attributes they hold are not copied:\n  title        1  [attributes] exclude names it\n") {
 		t.Fatalf("the excluded attribute is named:\n%s", got)
 	}
 	if strings.Contains(got, "  whenChanged ") || strings.Contains(got, "  memberOf ") || strings.Contains(got, "extra_include") {
@@ -110,7 +112,50 @@ func TestModeAllCopiesWhatAClientCanWrite(t *testing.T) {
 func TestModeAllNeedsAProfileThatReadsTheSchema(t *testing.T) {
 	w := newWorld()
 	_, err := w.tryOpen("[attributes]\nmode = \"all\"\n")
-	if err == nil || !strings.Contains(err.Error(), "source schema cannot be read") {
+	if err == nil || !strings.Contains(err.Error(), "needs the source schema, which cannot be read") {
 		t.Fatalf("a source without a readable schema: %v", err)
+	}
+}
+
+// The default on AD is every attribute a client can write, without gPLink (it links GPOs, which clone does not
+// copy): check names it with why. What no client can write is "never" in -attrs, not "not copied".
+func TestTheDefaultLeavesOutGPLinkAndSaysWhy(t *testing.T) {
+	w := newWorld()
+	withClasses(w.src, []string{"title"})
+	ou := w.src.Lookup("CN=organizationalUnit," + schemaNC)
+	ou.Attrs["mayContain"] = []string{"gPLink", "description"}
+	for _, name := range []string{"gPLink", "description", "title", "directReports"} {
+		e := map[string][]string{"objectClass": {"attributeSchema"}, "cn": {name}, "lDAPDisplayName": {name}, "attributeID": {"1.9." + name},
+			"attributeSyntax": {"2.5.5.12"}}
+		if name == "directReports" {
+			e["linkID"], e["attributeSyntax"] = []string{"43"}, []string{"2.5.5.1"}
+		}
+		w.src.Put("CN="+name+","+schemaNC, e)
+	}
+	w.src.Lookup("OU=Users," + base).Attrs["gPLink"] = []string{"[LDAP://cn={31B2F340-016D-11D2-945F-00C04FB984F9},cn=policies,cn=system," + domain + ";0]"}
+	w.src.Lookup(alice).Attrs["directReports"] = []string{"CN=Bob," + base}
+	s := w.openWith(t, "")
+	if !s.Job.AllWritable {
+		t.Fatal("the default on AD is every attribute a client can write")
+	}
+	k, _ := s.Job.Kind("ou")
+	if got := strings.Join(k.Attrs, ","); strings.Contains(got, "gPLink") || !strings.Contains(got, "description") {
+		t.Fatalf("ou attributes: %s", got)
+	}
+	var out bytes.Buffer
+	if _, err := s.Check(context.Background(), CheckOptions{NoTarget: true, Attrs: true, Config: "c.toml"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	for _, want := range []string{
+		"[ou] 2 entries; 1 attributes they hold are not copied:\n  gPLink        1  it links GPOs, which clone does not copy\n",
+		"never       directReports",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("check lacks %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "not copied  directReports") {
+		t.Errorf("a back link is never copied, not left behind:\n%s", got)
 	}
 }

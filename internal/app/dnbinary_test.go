@@ -85,7 +85,7 @@ func TestADNBinaryAttributeIsAReference(t *testing.T) {
 	// With the allow lists, check suggests it as what clone leaves behind (not as what only the server writes),
 	// and not the credential.
 	var checked bytes.Buffer
-	if _, err := w.openWith(t, "").Check(ctx, CheckOptions{Config: "c.toml"}, &checked); err != nil {
+	if _, err := w.openWith(t, "[attributes]\nmode = \"allowlist\"\n").Check(ctx, CheckOptions{Config: "c.toml"}, &checked); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(checked.String(), `"acmeAuthOrig"`) || strings.Contains(checked.String(), "KeyCredentialLink") {

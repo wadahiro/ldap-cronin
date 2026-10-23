@@ -45,6 +45,7 @@ func TestCloneFromADumpOfTheSource(t *testing.T) {
 		attrs := map[string][]string{"objectClass": {"user"}, "sAMAccountName": {fmt.Sprintf("d%06du%04d", runID, i)}, "mail": {fmt.Sprintf("u%d@example.com", i)}}
 		if i == 0 {
 			attrs["manager"] = []string{boss}
+			attrs["carLicense"] = []string{"U-0"} // in no allow list: the default copies every attribute a client can write
 		}
 		must(src.Add(ctx, directory.Entry{DN: d, Attrs: attrs}))
 		dns = append(dns, d)
@@ -98,9 +99,10 @@ func TestCloneFromADumpOfTheSource(t *testing.T) {
 	if e, err := dst.Get(ctx, group, []string{"member"}); err != nil || e == nil || len(e.Values("member")) != members {
 		t.Fatalf("the group on the target: %v", err)
 	}
-	if e, err := dst.Get(ctx, "CN=u0000,"+scope, []string{"manager", "mail"}); err != nil || e == nil ||
-		!strings.EqualFold(strings.Join(e.Values("manager"), ""), boss) || strings.Join(e.Values("mail"), "") != "********" {
-		t.Fatalf("the manager outside, created; mail as dumped: %v %v", e, err)
+	if e, err := dst.Get(ctx, "CN=u0000,"+scope, []string{"manager", "mail", "carLicense"}); err != nil || e == nil ||
+		!strings.EqualFold(strings.Join(e.Values("manager"), ""), boss) || strings.Join(e.Values("mail"), "") != "********" ||
+		strings.Join(e.Values("carLicense"), "") != "U-0" {
+		t.Fatalf("the manager outside, created; mail as dumped; carLicense by default: %v %v", e, err)
 	}
 	var diffOut bytes.Buffer
 	if code, err := s.Diff(ctx, app.DiffOutput{}, &diffOut); err != nil || code != app.ExitSame {

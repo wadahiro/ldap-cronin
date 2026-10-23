@@ -177,7 +177,7 @@ func TestConfigurationRefsFromADump(t *testing.T) {
 		w.dst.Put(configNC, map[string][]string{"objectClass": {"top", "configuration"}, "cn": {"Configuration"}})
 		w.dst.Put("CN=Services,"+configNC, map[string][]string{"objectClass": {"top", "container"}, "cn": {"Services"}})
 	}
-	const more = "configuration_refs = \"clone\"\n[attributes]\nextra_include = [\"seeAlso\"]\n"
+	const more = "configuration_refs = \"clone\"\n[attributes]\nmode = \"allowlist\"\nextra_include = [\"seeAlso\"]\n"
 
 	live := newWorld()
 	seed(live)

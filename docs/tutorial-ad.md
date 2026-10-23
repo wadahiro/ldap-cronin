@@ -146,9 +146,9 @@ mode = "auto"                               # on AD: a marker of the source obje
 attribute = "adminDisplayName"              # tells a renamed or recreated object from the cloned one
 
 [attributes]
-# The defaults (ldap-cronin list-attrs -profile ad) are what Active Directory Users and Computers shows; anything
-# not listed is neither copied nor compared. check (step 4) prints the extra_include line for what your entries
-# hold beyond them. To copy every attribute instead, see "Copy everything" below.
+# Every attribute a client can write is copied and compared (your extensions too, once the target has their
+# definitions); exclude takes some out. To copy only listed attributes, see "Every attribute (the default) or
+# allow lists" below.
 exclude = ["homeDirectory", "homeDrive", "profilePath", "scriptPath"]   # file server paths of production
 
 [mask]
@@ -163,7 +163,7 @@ Notes on the choices:
 
 - `[mapping] mode = "auto"` writes `ldap-cronin:<source root>:<source key>` into `adminDisplayName` of every
   cloned object. Pick another attribute if your applications use that one; it must be a single-valued string
-  attribute that is not in the allow lists.
+  attribute, and it is neither copied nor compared.
 - `user`, `group` and the other keys are the tool's [kinds](../README.md#kinds), not object classes:
   `ldap-cronin list-attrs` shows how each is told (on AD a `user` is never a computer).
 - Masked attributes must be plain strings: `member`, `sAMAccountName`, `userPrincipalName` and the like cannot be
@@ -189,29 +189,29 @@ to do next:
 source: the dump prod.ldif.gz (server dc01.ad.example.com)
 target: the lab ldap-cronin-ad does not exist yet: ldap-cronin lab up --config config.toml creates it like the source
 
-[ou] 12 entries: clone copies every attribute they hold that a client can write
-[group] 40 entries: clone copies every attribute they hold that a client can write
-[user] 1150 entries; 3 attributes they hold are not copied (no allow list names them):
-  codePage             1150
-  acmeEmployeeCode     1102
-  extensionAttribute3   870
-  (and 9 more only the server writes; -attrs lists every attribute)
+[ou] 12 entries; 1 attributes they hold are not copied:
+  gPLink           3  it links GPOs, which clone does not copy
+  (and 10 more only the server writes; -attrs lists every attribute)
+[group] 40 entries: clone copies every attribute they hold that a client can write (mode = "all")
+[user] 1150 entries; 4 attributes they hold are not copied:
+  homeDirectory  1150  [attributes] exclude names it
+  homeDrive      1150  [attributes] exclude names it
+  profilePath    1102  [attributes] exclude names it
+  scriptPath      870  [attributes] exclude names it
+  (and 12 more only the server writes; -attrs lists every attribute)
 ...
 
 next:
-  1. to copy and compare what clone leaves behind, put in config.toml (keep only those you want):
-       [attributes]
-       extra_include = ["acmeEmployeeCode", "codePage", "extensionAttribute3"]
-     or copy every attribute a client can write: [attributes] mode = "all"
-  2. make the lab: ldap-cronin lab up --config config.toml
-  3. check again: ldap-cronin check -config config.toml
-  4. clone: ldap-cronin clone -config config.toml
+  1. make the lab: ldap-cronin lab up --config config.toml
+  2. check again: ldap-cronin check -config config.toml
+  3. clone: ldap-cronin clone -config config.toml
 ```
 
 Until the lab exists `check` exits with 1, as `clone` would refuse.
 
-Put the line in `config.toml`, keeping the attributes your applications read (or every one), or copy them all with [`mode = "all"`](#copy-everything-mode--all). Once the
-lab exists, `check` also says what its schema lacks and what it refuses. `-no-target` reads the source alone (on a
+Everything else the entries hold is copied: what is listed is left out on purpose, each with why. With
+[allow lists](#every-attribute-the-default-or-allow-lists) `check` lists what no list names instead, with the `extra_include` line that copies it. Once the
+lab exists, `check` also says what its schema lacks (those attributes are left out until it has them) and what it refuses. `-no-target` reads the source alone (on a
 machine that reaches production only, say).
 `-attrs` adds a table of every attribute of every kind, held or named, and what `clone` does with it.
 
@@ -245,8 +245,8 @@ To review exactly what will be loaded and load it with `ldapmodify` yourself, in
 `-with-password`: the LDIF then carries the fixed password (asked for, or `[accounts] fixed_password`) and the
 `userAccountControl` set after it, so it alone gives users that can log on. Load it over LDAPS, into an empty
 target (`ldapmodify -H ldaps://... -D <admin> -W -f clone.ldif`), and keep the file where the password may be.
-It does not read the target, so what the target lacks or refuses (`mode = "all"`, `userParameters` on Samba) is
-still in it; `clone` leaves those out by itself.
+It does not read the target, so what the target lacks or refuses (an attribute of an extension, `userParameters` on
+Samba) is still in it; `clone` leaves those out by itself.
 
 ## Part 1: the Samba4 lab
 
@@ -669,8 +669,8 @@ there shows as a difference too.
 ## Attributes of your own (schema extensions)
 
 Production ADs often carry attributes of their own (an employee code, a cost center) or of a product. The target
-needs their definitions in its schema, and the clone copies them once an allow list names them (or with
-[`mode = "all"`](#copy-everything-mode--all)).
+needs their definitions in its schema; the clone then copies them (with [allow lists](#every-attribute-the-default-or-allow-lists), once a list
+names them).
 
 ### Find them
 
@@ -678,9 +678,9 @@ needs their definitions in its schema, and the clone copies them once an allow l
 ./bin/ldap-cronin check -config config.toml
 ```
 
-Every line under a kind is an attribute your entries hold that the clone leaves behind, with the number of entries
-holding it; `the target schema lacks it` marks the ones the target cannot hold yet, and `next:` gives the
-`extra_include` line that copies them. `extensionAttribute1`-`15` and
+Once the target is read, `check` names the attributes of the source's schema the target's lacks (`not copied or
+compared: the target schema lacks ...`) and gives the `schema` command that adds them; until then they are left out.
+`-attrs` marks each attribute your entries hold that the target cannot hold yet. `extensionAttribute1`-`15` and
 `msExch*` come from the Exchange schema, which a lab made from the image of step 1 has.
 
 ### Give the target their definitions
@@ -746,40 +746,32 @@ How to apply it: the Samba lab gets it from `lab up --config` ([step 5](#5-make-
 
 ### Copy and compare them
 
-```toml
-[attributes]
-extra_include = ["acmeEmployeeCode"]        # every kind; or [attributes.include] user = [...] for one kind
-```
+Nothing to configure: once the target has the definitions, they are copied and compared.
 
 ```sh
-./bin/ldap-cronin check -config config.toml                 # acmeEmployeeCode no longer listed; exit code 0
+./bin/ldap-cronin check -config config.toml                 # the target lacks nothing; exit code 0
 ./bin/ldap-cronin clone -config config.toml
 ./bin/ldap-cronin diff -config config.toml                  # compares acmeEmployeeCode too
 ```
 
-- If the target still lacks one, `clone` refuses to start and names it; nothing is written.
+- With allow lists, name them (`extra_include = ["acmeEmployeeCode"]`); if the target then lacks one, `clone`
+  refuses to start and names it, and nothing is written.
 - An attribute that holds DNs (`attributeSyntax: 2.5.5.1`, a custom `sponsor`, say) is found in the source schema
   and handled as a reference: applied after every object exists, compared like `member`.
 - Personal data in a string attribute can be masked (`[mask] attributes`, or `[mask.kinds]` for one kind's
   entries); an attribute that must stay unique or
   that holds DNs cannot.
 - An auxiliary class attached to single objects (not to `user` in the schema) shows in their `objectClass`, which
-  `clone` always copies: the target needs that class even when none of its attributes is in an allow list.
+  `clone` always copies: the target needs that class even when none of its attributes is copied.
   `schema` carries it like any other class.
 
-## Copy everything (mode = "all")
+## Every attribute (the default) or allow lists
 
-When the test needs the objects as production has them, rather than the attributes your applications read, copy
-every attribute instead of listing them:
-
-```toml
-[attributes]
-mode = "all"
-exclude = ["homeDirectory", "homeDrive", "profilePath", "scriptPath"]   # still applies
-```
+The clone is there to hold the objects as production has them, so by default every attribute is copied rather than
+the ones a list names:
 
 ```sh
-./bin/ldap-cronin schema -config config.toml -apply        # a test AD: your extensions first (a lab: clone does it)
+./bin/ldap-cronin schema -config config.toml -apply        # a test AD: your extensions first (a lab: lab up --config does it)
 ./bin/ldap-cronin check -config config.toml -attrs         # what each kind's entries hold, and what is copied
 ./bin/ldap-cronin clone -config config.toml
 ./bin/ldap-cronin diff -config config.toml
@@ -790,6 +782,7 @@ exclude = ["homeDirectory", "homeDrive", "profilePath", "scriptPath"]   # still 
   extensions and `proxyAddresses`, `mS-DS-ConsistencyGuid` or `msDS-cloudExtensionAttribute*` included.
 - Never copied all the same: what only the server writes (`systemOnly`, constructed attributes, back links such as
   `memberOf`), identifiers, every credential (`unicodePwd`, `userPassword`, LAPS, ...), and the marker attribute.
+  `gPLink` and `gPOptions` of an OU are left out too: they link GPOs, which are not cloned.
 - An attribute the target's schema lacks is left out with a note at the start of `clone` and `diff`, instead of
   stopping the run: give the target your extensions with `schema` first. A dry-run reads no target, so its LDIF has
   them all.
@@ -802,7 +795,11 @@ exclude = ["homeDirectory", "homeDrive", "profilePath", "scriptPath"]   # still 
 - Some attributes a client may write are refreshed by the server or the machine itself (`msDS-SupportedEncryptionTypes`
   of a live computer, say): they are copied once and may show as `DIFF` on a later diff. `exclude` them if they get
   in the way.
-- `include` and `extra_include` do not go with `mode = "all"`; it is either the lists or everything.
+- To copy only the attributes your applications read, use the allow lists: `[attributes] mode = "allowlist"`
+  copies what Active Directory Users and Computers shows (`ldap-cronin list-attrs`), `extra_include` adds to every
+  kind and `[attributes.include]` replaces a kind's list. `include` and `extra_include` go with it only: by default
+  they have nothing to add, and `clone` refuses them, naming `mode = "allowlist"`. Then `check` lists what the
+  entries hold and no list names, with the `extra_include` line that copies it.
 
 ## When something goes wrong
 

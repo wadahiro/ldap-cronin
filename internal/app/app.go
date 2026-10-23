@@ -132,7 +132,7 @@ func Open(ctx context.Context, cfg *config.Config, secrets Secrets, dial Dialer,
 		}
 	}
 	s := &Session{Cfg: cfg, Job: job, Src: src.View(prof.Ranged), Warn: warn, secrets: secrets, dial: dial, src: src}
-	if cfg.Attributes.All() {
+	if cfg.AllFor(prof) {
 		if err := s.writableAttrs(ctx); err != nil {
 			src.Close()
 			return nil, err
@@ -163,6 +163,11 @@ func openSource(ctx context.Context, cfg *config.Config, secrets Secrets, dial D
 	if !m.Holders {
 		fmt.Fprintln(warn, "  the dump was taken before groups outside its base DN were carried: memberships in them are left out; dump again")
 	}
+	// Copying none of them without a word was rejected: the option asks for them, and the dump cannot give them.
+	if cfg.Attributes.Credentials == config.CredentialsCopy && len(m.Credentials) == 0 {
+		d.Close()
+		return nil, fmt.Errorf("[attributes] credentials = %q: the dump %s carries no credentials; dump again with -with-credentials", config.CredentialsCopy, cfg.Source.LDIF)
+	}
 	return d, nil
 }
 
@@ -181,14 +186,22 @@ func (s *Session) writableAttrs(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if !ok && s.Cfg.Attributes.Mode == "" {
+		// A directory without a schema naming context is no AD server or dump (a test fake): the allow lists, as
+		// CheckMarker skips such a directory.
+		return nil
+	}
 	if !ok {
-		return fmt.Errorf("[attributes] mode = %q: the source schema cannot be read", config.AttributesAll)
+		return fmt.Errorf("[attributes] every attribute a client can write (mode = %q, the default on %s) needs the source schema, which cannot be read; set mode = %q to copy the allow lists", config.AttributesAll, prof.Name, config.AttributesListed)
 	}
 	_, marker, err := s.Cfg.MappingFor(prof)
 	if err != nil {
 		return err
 	}
 	never := profile.Set(append(append([]string{prof.Identity.Attr(), marker}, prof.NeverClone...), prof.PasswordAttrs...))
+	for n := range prof.NotAll {
+		never[n] = true
+	}
 	s.Job.AllWritable = true
 	for i := range s.Job.Kinds {
 		k := &s.Job.Kinds[i]
@@ -221,7 +234,7 @@ type leftOut struct {
 func (s *Session) targetHas(ctx context.Context, dst directory.Directory) (plan.Job, leftOut, error) {
 	job := s.Job
 	var has map[string]bool
-	if s.Cfg.Attributes.All() {
+	if s.Job.AllWritable {
 		var err error
 		if has, err = s.targetSchema(ctx, dst); err != nil {
 			return job, leftOut{}, err

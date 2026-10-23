@@ -750,7 +750,8 @@ func (r *runner) unwritten(ctx context.Context, name, from, v string) error {
 	}
 	r.mu.Unlock()
 	if first {
-		r.warn("skip %s values naming %s (first of %s): it %s", name, v, from, why)
+		// The DN alone: the binary part of a DN-Binary value may be a credential (msDS-KeyCredentialLink).
+		r.warn("skip %s values naming %s (first of %s): it %s", name, dn.RefDN(v), from, why)
 	}
 	return nil
 }

@@ -53,7 +53,8 @@ func (c Counts) Total() int { return c.RootDSE + c.Schema + c.Config + c.Base + 
 //   - the entries outside the base DNs that a DN-valued attribute of those names, and the entries above them, without
 //     what they name in turn, as clone creates them.
 //
-// The credentials the profile names are never written; the attributes of o.Masked are masked.
+// The credentials the profile names are never written (a profile WithSecrets writes its Secrets); the attributes of
+// o.Masked are masked.
 func Write(ctx context.Context, src directory.Directory, prof profile.Profile, o Options, w io.Writer) (Counts, error) {
 	masker, maskedAttrs, err := newMasker(prof, o)
 	if err != nil {
@@ -290,6 +291,10 @@ func (wr *writer) header(o Options, prof profile.Profile, root string, operation
 	}
 	fmt.Fprintln(w, "# excluded (credentials, never dumped):")
 	list(w, prof.PasswordAttrs)
+	if len(prof.CopiedSecrets) > 0 {
+		fmt.Fprintln(w, "# credentials (dumped with -with-credentials, for [attributes] credentials = \"copy\"):")
+		list(w, prof.CopiedSecrets)
+	}
 	if len(operational) > 0 {
 		fmt.Fprintln(w, "# operational (read by name; \"*\" leaves them out):")
 		list(w, operational)

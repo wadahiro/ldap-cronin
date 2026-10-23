@@ -69,8 +69,6 @@ func TestParseRejectsInvalid(t *testing.T) {
 		"unknown profile":            withProfile("oracle"),
 		"unknown object":             strings.Replace(valid, "[scope]", "[scope]\nobjects = [\"printer\"]", 1),
 		"unknown mode":               valid + "\n[attributes]\nmode = \"everything\"\n",
-		"all with a list":            valid + "\n[attributes]\nmode = \"all\"\nextra_include = [\"proxyAddresses\"]\n",
-		"all with include":           valid + "\n[attributes]\nmode = \"all\"\n[attributes.include]\nuser = [\"mail\"]\n",
 		"unknown configuration_refs": strings.Replace(valid, "[scope]", "[scope]\nconfiguration_refs = \"create\"", 1),
 		"a dump with a server":       strings.Replace(valid, "[source]", "[source]\nldif = \"prod.ldif\"", 1),
 		"a dump as the target":       strings.Replace(valid, "[target]", "[target]\nldif = \"prod.ldif\"", 1),
@@ -138,7 +136,7 @@ func TestTargetLabSaysWhichLabAndHowItIsWritten(t *testing.T) {
 const ec2Lab = "platform = \"ec2\"\nregion = \"ap-northeast-1\"\nsubnet = \"subnet-0123\"\ninstance_profile = \"ldap-cronin-lab\"\n"
 
 func TestAutoProfileDefersAttributeRulesToTheResolvedProfile(t *testing.T) {
-	raw := valid + "\n[attributes]\nextra_include = [\"objectGUID\"]\n"
+	raw := valid + "\n[attributes]\nmode = \"allowlist\"\nextra_include = [\"objectGUID\"]\n"
 	c, err := Parse([]byte(raw))
 	if err != nil {
 		t.Fatalf("with profile = auto the rules depend on the server, so Parse must not judge them: %v", err)
@@ -152,6 +150,49 @@ func TestAutoProfileDefersAttributeRulesToTheResolvedProfile(t *testing.T) {
 	}
 	if _, err := ldapCfg.JobFor(profile.LDAP); err != nil {
 		t.Fatalf("a generic LDAP server has no objectGUID rule: %v", err)
+	}
+}
+
+// AD copies every attribute a client can write unless mode = "allowlist"; a generic server keeps its allow lists.
+// Lists beside an "all" are refused rather than turning it into the lists.
+func TestTheDefaultModeIsTheProfiles(t *testing.T) {
+	c, err := Parse([]byte(valid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.AllFor(profile.AD) || c.AllFor(profile.LDAP) {
+		t.Fatalf("default: AD %v, LDAP %v", c.AllFor(profile.AD), c.AllFor(profile.LDAP))
+	}
+	for name, attrs := range map[string]string{
+		"default with a list":  "extra_include = [\"proxyAddresses\"]\n",
+		"default with include": "[attributes.include]\nuser = [\"mail\"]\n",
+		"all with a list":      "mode = \"all\"\nextra_include = [\"proxyAddresses\"]\n",
+		"all with include":     "mode = \"all\"\n[attributes.include]\nuser = [\"mail\"]\n",
+	} {
+		c, err := Parse([]byte(valid + "\n[attributes]\n" + attrs))
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if _, err := c.JobFor(profile.AD); err == nil || !strings.Contains(err.Error(), `mode = "allowlist"`) {
+			t.Errorf("%s on AD: %v", name, err)
+		}
+	}
+	c, err = Parse([]byte(valid + "\n[attributes]\nextra_include = [\"description\"]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.JobFor(profile.LDAP); err != nil {
+		t.Errorf("a generic server's default is the allow lists, which extra_include adds to: %v", err)
+	}
+	c, err = Parse([]byte(valid + "\n[attributes]\nmode = \"allowlist\"\nextra_include = [\"proxyAddresses\"]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.AllFor(profile.AD) {
+		t.Error("mode = \"allowlist\" keeps the lists on AD")
+	}
+	if _, err := c.JobFor(profile.AD); err != nil {
+		t.Error(err)
 	}
 }
 
@@ -285,5 +326,41 @@ func TestMaskOfAKind(t *testing.T) {
 	m := job.Masker
 	if !m.Masked("mail") || !m.MaskedIn("user", "telephoneNumber") || m.MaskedIn("group", "telephoneNumber") {
 		t.Errorf("%+v", m)
+	}
+}
+
+// credentials = "copy" lets the job copy the profile's Secrets (an allow list may name them, and they are no longer
+// never-cloned), but never what no server returns; a generic server and a native import refuse it.
+func TestCredentialsCopy(t *testing.T) {
+	c, err := Parse([]byte(valid + "\n[attributes]\ncredentials = \"copy\"\nmode = \"allowlist\"\nextra_include = [\"ms-Mcs-AdmPwd\"]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, err := c.JobFor(profile.AD)
+	if err != nil {
+		t.Fatal(err)
+	}
+	never := profile.Set(job.Profile.NeverClone)
+	if never["ms-mcs-admpwd"] || !never["unicodepwd"] || !profile.Set(job.Profile.PasswordAttrs)["msds-managedpassword"] {
+		t.Fatalf("never cloned: %v; credentials: %v", job.Profile.NeverClone, job.Profile.PasswordAttrs)
+	}
+	if !profile.Set(job.Profile.Redacted())["ms-mcs-admpwd"] {
+		t.Fatal("a copied credential is still never printed")
+	}
+	c, _ = Parse([]byte(valid + "\n[attributes]\ncredentials = \"copy\"\nmode = \"allowlist\"\nextra_include = [\"unicodePwd\"]\n"))
+	if _, err := c.JobFor(profile.AD); err == nil {
+		t.Error("unicodePwd, which AD never returns, stays never cloned")
+	}
+	c, _ = Parse([]byte(withProfile("ldap") + "\n[attributes]\ncredentials = \"copy\"\n"))
+	if _, err := c.JobFor(profile.LDAP); err == nil || !strings.Contains(err.Error(), "no credentials a client can copy") {
+		t.Errorf("the generic profile: %v", err)
+	}
+	for name, raw := range map[string]string{
+		"an unknown value": valid + "\n[attributes]\ncredentials = \"all\"\n",
+		"native":           strings.Replace(valid, "[scope]", "[target.lab]\nnative = true\n[scope]", 1) + "\n[attributes]\ncredentials = \"copy\"\n",
+	} {
+		if _, err := Parse([]byte(raw)); err == nil || !strings.Contains(err.Error(), "credentials") {
+			t.Errorf("%s: %v", name, err)
+		}
 	}
 }

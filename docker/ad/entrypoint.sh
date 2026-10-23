@@ -55,8 +55,9 @@ os.removexattr(sys.argv[1], "security.ldapcronin-probe")' /var/lib/samba 2>/dev/
   cp /var/lib/samba/private/krb5.conf /etc/krb5.conf
   # Allow plain-text LDAP simple bind (writing passwords requires LDAPS)
   sed -i '/^\[global\]/a \\tldap server require strong auth = no' /etc/samba/smb.conf
-  # Relax the password policy so that fixed passwords can be loaded
-  samba-tool domain passwordsettings set --complexity=off --min-pwd-length=1 --min-pwd-age=0 --history-length=0
+  # The weakest password policy, so that any fixed password can be loaded (one character even) and never expires in
+  # a lab kept for months, as the EC2 lab's userdata sets it
+  samba-tool domain passwordsettings set --complexity=off --min-pwd-length=1 --min-pwd-age=0 --max-pwd-age=0 --history-length=0
   # Exchange's schema, when the image carries it, written before Samba starts (seconds, where over LDAP it took
   # minutes). A failure stops here, before the domain is marked provisioned: lab reset starts over.
   if compgen -G "/exchange/*.ldf" >/dev/null; then

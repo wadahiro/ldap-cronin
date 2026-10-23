@@ -87,7 +87,7 @@ func TestSchemaCarriesAnExtensionThenCloneCopiesIt(t *testing.T) {
 		"sAMAccountName": {fmt.Sprintf("x%06dann", runID)}, attr: {"E-1"}}}))
 
 	cfg, err := config.Parse([]byte(fmt.Sprintf("[source]\nurl = %q\nbind_dn = %q\ninsecure_skip_verify = true\n"+
-		"[target]\nurl = %q\nbind_dn = %q\ninsecure_skip_verify = true\n[scope]\nbase_dn = %q\n[attributes]\nextra_include = [%q]\n",
+		"[target]\nurl = %q\nbind_dn = %q\ninsecure_skip_verify = true\n[scope]\nbase_dn = %q\n[attributes]\nmode = \"allowlist\"\nextra_include = [%q]\n",
 		srcURL, adminDN, dstURL, adminDN, scope, attr)))
 	must(err)
 	pw := func() (string, error) { return adminPw, nil }
@@ -258,7 +258,7 @@ func TestConfigurationRefsCreateTheAddressListsOnTheLab(t *testing.T) {
 
 	cfg, err := config.Parse([]byte(fmt.Sprintf("[source]\nurl = %q\nbind_dn = %q\ninsecure_skip_verify = true\n"+
 		"[target]\nurl = %q\nbind_dn = %q\ninsecure_skip_verify = true\n[scope]\nbase_dn = %q\nconfiguration_refs = \"clone\"\n"+
-		"[attributes]\nextra_include = [\"showInAddressBook\"]\n", srcURL, adminDN, dstURL, adminDN, scope)))
+		"[attributes]\nmode = \"allowlist\"\nextra_include = [\"showInAddressBook\"]\n", srcURL, adminDN, dstURL, adminDN, scope)))
 	must(err)
 	pw := func() (string, error) { return adminPw, nil }
 	s, err := app.Open(ctx, cfg, app.Secrets{SourceBind: pw, TargetBind: pw, UserPassword: func() (string, error) { return fixedPw, nil }}, app.LDAP, &bytes.Buffer{})

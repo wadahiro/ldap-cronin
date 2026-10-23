@@ -107,6 +107,7 @@ bind_dn = "` + adminDN + `"
 [scope]
 base_dn = "` + base + `"
 [attributes]
+mode = "allowlist"                  # JobFor alone: the default's every attribute is resolved by app.Open
 extra_include = ["carLicense", "seeAlso"]
 [mask]
 attributes = ["mail"]

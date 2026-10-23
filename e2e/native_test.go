@@ -130,7 +130,7 @@ func TestNativeImportKeepsObjectGUIDAndObjectSid(t *testing.T) {
 	cfg, err := config.Parse([]byte(fmt.Sprintf("[source]\nurl = \"ldaps://%s:%d\"\nbind_dn = %q\ninsecure_skip_verify = true\n"+
 		"[target]\nurl = \"ldaps://%s:%d\"\nbind_dn = %q\ninsecure_skip_verify = true\n"+
 		"[target.lab]\nprefix = %q\nimage = %q\nnative = true\nfast_password = true\nacl = \"source\"\n"+
-		"[scope]\nbase_dn = %q\n[attributes]\nextra_include = [\"carLicense\", \"seeAlso\"]\n[mask]\nattributes = [\"mail\"]\n",
+		"[scope]\nbase_dn = %q\n[attributes]\nmode = \"allowlist\"\nextra_include = [\"carLicense\", \"seeAlso\"]\n[mask]\nattributes = [\"mail\"]\n",
 		host, srcLDAPS, admin, host, dstLDAPS, admin, dstLab.Prefix, image, cloneBase)))
 	must(err)
 	pw := func() (string, error) { return password, nil }

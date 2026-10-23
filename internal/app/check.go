@@ -168,18 +168,20 @@ func (s *Session) Check(ctx context.Context, o CheckOptions, out io.Writer) (int
 		type held struct {
 			name  string
 			count int
+			why   string
 		}
 		var notCopied []held
 		managed := 0
 		for key, n := range u.Attrs {
-			if st, _ := s.attrStatus(u.Kind.Name, allowed, key, marker); st != attrNotCopied {
+			st, why := s.attrStatus(u.Kind.Name, allowed, key, marker)
+			if st != attrNotCopied {
 				continue
 			}
 			if w := writable[u.Kind.Class]; writable != nil && !w[key] {
 				managed++
 				continue
 			}
-			notCopied = append(notCopied, held{u.Names[key], n})
+			notCopied = append(notCopied, held{u.Names[key], n, why})
 		}
 		sort.Slice(notCopied, func(i, j int) bool {
 			if notCopied[i].count != notCopied[j].count {
@@ -194,7 +196,7 @@ func (s *Session) Check(ctx context.Context, o CheckOptions, out io.Writer) (int
 		case len(notCopied) == 0:
 			fmt.Fprintln(out, ": clone copies every attribute they hold that a client can write")
 		case s.Job.AllWritable:
-			fmt.Fprintf(out, "; %d attributes they hold are not copied ([attributes] exclude names them):\n", len(notCopied))
+			fmt.Fprintf(out, "; %d attributes they hold are not copied:\n", len(notCopied))
 		default:
 			fmt.Fprintf(out, "; %d attributes they hold are not copied (no allow list names them):\n", len(notCopied))
 		}
@@ -204,6 +206,9 @@ func (s *Session) Check(ctx context.Context, o CheckOptions, out io.Writer) (int
 		}
 		for _, h := range notCopied {
 			line := fmt.Sprintf("  %-*s  %7d", width, h.name, h.count)
+			if h.why != "" {
+				line += "  " + h.why
+			}
 			key := strings.ToLower(h.name)
 			if has != nil && !has[key] {
 				line += "  the target schema lacks it"
@@ -262,7 +267,7 @@ func (s *Session) Check(ctx context.Context, o CheckOptions, out io.Writer) (int
 		fmt.Fprintln(out)
 	}
 	if o.Attrs {
-		if err := s.writeAttrTable(out, usage, has, refused); err != nil {
+		if err := s.writeAttrTable(out, usage, writable, has, refused); err != nil {
 			return 0, err
 		}
 	}

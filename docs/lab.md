@@ -65,6 +65,12 @@ ldap-cronin clone -config config.toml     # the data
    the lab; a real AD's cannot be undone, so there it stays a step of its own). Run again after a new dump, it adds
    what the source's schema has gained.
 
+**An AD lab's password policy is the weakest a domain takes**, so `[accounts] fixed_password` may be any string,
+one character even: complexity off, minimum length 1, no history, no minimum age, and passwords that never expire.
+The Samba lab sets it when its domain is created, the EC2 lab when it is set up; `lab up --realm` and
+`lab up --config` alike. The lab's own Administrator password is set before it, so it must meet Windows' default
+complexity. A test domain of your own keeps its policy: the fixed password must meet that one.
+
 For an EC2 lab (`platform = "ec2"`), `lab up --config` launches a Windows Server instance instead, with the same
 domain name, NetBIOS name and functional levels ([below](#a-windows-server-lab-on-amazon-ec2-targetlab-platform--ec2)):
 Windows lets no one choose a domain SID, so not the source's.
@@ -257,6 +263,8 @@ ldap-cronin clone -config config.toml     # imports into its database
 ldap-cronin diff -config config.toml      # matches objects by objectGUID directly (it is the same on both sides)
 ```
 
+- The dump the import is written from carries no credentials, so `[attributes] credentials = "copy"` is refused
+  with `native = true` (not yet in a test).
 - An `objectSid` is the domain's SID and a number within it, so the lab must have the source's domain SID: a lab
   `lab up --config` made has it. **It is chosen only when the domain is created**; a lab made otherwise
   (`lab up --realm`) is refused before anything is written: `lab reset`, then `lab up --config` again.

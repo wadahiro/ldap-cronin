@@ -68,6 +68,9 @@ func WriteSummary(w io.Writer, job plan.Job, sum Summary, excluded []string) {
 		}
 		fmt.Fprintf(w, "  %-5s: %s\n", k.Name, strings.Join(compared[k.Name], ", "))
 	}
+	if c := job.Profile.CopiedSecrets; len(c) > 0 {
+		fmt.Fprintf(w, "  credentials copied from the source ([attributes] credentials = \"copy\"; a difference shows fingerprints, never the values): %s\n", strings.Join(c, ", "))
+	}
 	fmt.Fprintln(w, "not compared:")
 	writeList(w, "masked (config [mask])", masked)
 	writeList(w, "excluded (config exclude)", excluded)

@@ -29,6 +29,9 @@ type DumpOptions struct {
 	Masked    []string
 	Version   string
 	Progress  *progress.Bar
+	// Credentials dumps the credentials the source returns (the profile's Secrets), for a clone with
+	// [attributes] credentials = "copy".
+	Credentials bool
 }
 
 // Dump reads the source o.Conn names, read only, and writes the dump to o.Out. It writes to a temporary file next to
@@ -47,6 +50,12 @@ func Dump(ctx context.Context, o DumpOptions, password func() (string, error), l
 	prof, err := profile.Detect(ctx, c)
 	if err != nil {
 		return dump.Counts{}, err
+	}
+	if o.Credentials {
+		if len(prof.Secrets) == 0 {
+			return dump.Counts{}, fmt.Errorf("-with-credentials: the %s profile has no credentials a client can copy", prof.Name)
+		}
+		prof = prof.WithSecrets()
 	}
 	src := directory.ReadOnly{Directory: c.With(prof.Ranged)}
 

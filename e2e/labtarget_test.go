@@ -82,7 +82,7 @@ func TestLabUpConfigMakesTheLabLikeTheSourceAndGivesItTheSchema(t *testing.T) {
 	host := env("E2E_LAB_HOST", "localhost")
 	cfg, err := config.Parse([]byte(fmt.Sprintf("[source]\nurl = %q\nbind_dn = %q\ninsecure_skip_verify = true\n"+
 		"[target]\nurl = \"ldaps://%s:%d\"\nbind_dn = %q\ninsecure_skip_verify = true\n[target.lab]\nprefix = %q\nimage = %q\n"+
-		"[scope]\nbase_dn = %q\n[attributes]\nextra_include = [%q]\n",
+		"[scope]\nbase_dn = %q\n[attributes]\nmode = \"allowlist\"\nextra_include = [%q]\n",
 		srcURL, adminDN, host, ldaps, adminDN, l.Prefix, image, scope, attr)))
 	must(err)
 	pw := func() (string, error) { return adminPw, nil }

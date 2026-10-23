@@ -41,6 +41,8 @@ type Meta struct {
 	// Holders is whether the dump carries the groups outside its base DN that hold its entries (a dump taken
 	// before they were carried does not).
 	Holders bool
+	// Credentials are the credentials the dump carries (dump -with-credentials).
+	Credentials []string
 }
 
 // Dir is a dump opened for reading. It is safe for concurrent use: reads of single entries go through ReadAt.
@@ -268,6 +270,8 @@ func (d *Dir) header(l string, end *int) *[]string {
 		d.meta.Holders = true
 	case strings.HasPrefix(key, "excluded"):
 		return &d.meta.Excluded
+	case strings.HasPrefix(key, "credentials"):
+		return &d.meta.Credentials
 	case strings.HasPrefix(key, "operational"):
 		return &d.meta.Operational
 	case key == "end":

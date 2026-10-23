@@ -80,13 +80,13 @@ func TestADNBinaryLinkIsClonedAndCompared(t *testing.T) {
 
 	// Not named: check counts it as an attribute clone leaves behind, not as one only the server writes.
 	var report bytes.Buffer
-	_, err := open("").Check(ctx, app.CheckOptions{Config: "c.toml"}, &report)
+	_, err := open("[attributes]\nmode = \"allowlist\"\n").Check(ctx, app.CheckOptions{Config: "c.toml"}, &report)
 	must(err)
 	if !strings.Contains(report.String(), "extra_include = [") || !strings.Contains(report.String(), `"`+attr+`"`) {
 		t.Fatalf("check does not suggest %s:\n%s", attr, report.String())
 	}
 
-	s := open(fmt.Sprintf("[attributes]\nextra_include = [%q]\n", attr))
+	s := open(fmt.Sprintf("[attributes]\nmode = \"allowlist\"\nextra_include = [%q]\n", attr))
 	must(s.Schema(ctx, true, &bytes.Buffer{}, &bytes.Buffer{}))
 	var log bytes.Buffer
 	report1, err := s.Clone(ctx, false, &log, &log)

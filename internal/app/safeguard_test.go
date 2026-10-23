@@ -109,7 +109,7 @@ func TestUserParametersIsLeftOutForASambaTarget(t *testing.T) {
 				w.dst.Put("", map[string][]string{"vendorName": c.vendor})
 			}
 			w.src.Lookup(alice).Attrs["userParameters"] = []string{"P\x00CtxCfgPresent"}
-			s := w.openWith(t, "[attributes]\nextra_include = [\"userParameters\"]\n")
+			s := w.openWith(t, "[attributes]\nmode = \"allowlist\"\nextra_include = [\"userParameters\"]\n")
 			ctx := context.Background()
 			var log bytes.Buffer
 			if _, err := s.Clone(ctx, false, &bytes.Buffer{}, &log); err != nil {

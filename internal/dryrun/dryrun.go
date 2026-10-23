@@ -34,9 +34,9 @@ type Dir struct {
 	written map[string]map[string][]string // normalized DN -> required attribute -> values written at Add
 }
 
-// New writes to out for a target of profile p. The values of its password attributes are never printed.
+// New writes to out for a target of profile p. The values of its credentials, copied or not, are never printed.
 func New(out io.Writer, p profile.Profile) *Dir {
-	d := &Dir{w: ldif.Writer{W: out, Secret: p.PasswordAttrs}, written: map[string]map[string][]string{}}
+	d := &Dir{w: ldif.Writer{W: out, Secret: p.Redacted()}, written: map[string]map[string][]string{}}
 	if p.Account != nil {
 		d.deferred = p.Account.Owned()
 	}
@@ -44,7 +44,9 @@ func New(out io.Writer, p profile.Profile) *Dir {
 }
 
 // WithPassword writes to out for a target of profile p, printing the users' fixed password clone gives in the
-// attribute the profile writes it to, and the writes that follow it. Every other password attribute stays redacted.
+// attribute the profile writes it to, and the writes that follow it, and the credentials copied from the source
+// ([attributes] credentials = "copy"), so the LDIF alone gives what clone would. Every other password attribute
+// stays redacted.
 func WithPassword(out io.Writer, p profile.Profile) *Dir {
 	d := New(out, p)
 	d.deferred = nil

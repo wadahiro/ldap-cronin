@@ -167,11 +167,14 @@ type Accounts struct {
 }
 
 type Attributes struct {
-	// Mode is AttributesListed (the default: the allow lists) or AttributesAll.
+	// Mode is AttributesAll, AttributesListed, or "" for the profile's default (AllFor).
 	Mode    string              `toml:"mode"`
 	Include map[string][]string `toml:"include"`
 	Extra   []string            `toml:"extra_include"`
 	Exclude []string            `toml:"exclude"`
+	// Credentials is CredentialsCopy to copy the credentials the source returns (the profile's Secrets), or
+	// CredentialsSkip ("" too, the default).
+	Credentials string `toml:"credentials"`
 }
 
 type Mask struct {
@@ -299,18 +302,36 @@ const (
 	AttributesAll = "all"
 )
 
-// All reports whether [attributes] mode is "all".
-func (a Attributes) All() bool { return a.Mode == AttributesAll }
+// The values of [attributes] credentials.
+const (
+	CredentialsSkip = "skip"
+	CredentialsCopy = "copy"
+)
+
+// AllFor reports whether the attributes of p's kinds are every attribute a client can write. That is the default
+// wherever the profile can read it from the schema (AD): the clone is there to look like production, and an allow
+// list leaves out silently what production holds and no list names (extensionAttributeN, an extension of one's own).
+// A profile that cannot (a generic server's subschema says nothing of who writes what) keeps its allow lists.
+func (c *Config) AllFor(p profile.Profile) bool {
+	switch c.Attributes.Mode {
+	case AttributesAll:
+		return true
+	case AttributesListed:
+		return false
+	}
+	return p.Writable != nil
+}
 
 func (c *Config) validate() error {
 	switch c.Attributes.Mode {
-	case "", AttributesListed:
-	case AttributesAll:
-		if len(c.Attributes.Include) > 0 || len(c.Attributes.Extra) > 0 {
-			return fmt.Errorf("[attributes] mode = %q copies every attribute a client can write; include and extra_include are for mode = %q (exclude still applies)", AttributesAll, AttributesListed)
-		}
+	case "", AttributesListed, AttributesAll:
 	default:
 		return fmt.Errorf("[attributes] mode must be %q or %q, got %q", AttributesListed, AttributesAll, c.Attributes.Mode)
+	}
+	switch c.Attributes.Credentials {
+	case "", CredentialsSkip, CredentialsCopy:
+	default:
+		return fmt.Errorf("[attributes] credentials must be %q or %q, got %q", CredentialsSkip, CredentialsCopy, c.Attributes.Credentials)
 	}
 	switch c.Scope.References {
 	case "", plan.RefsClone, plan.RefsExisting, plan.RefsSkip:
@@ -407,6 +428,9 @@ func (c *Config) validate() error {
 		}
 		if l.ServerAttributes != "" && !l.Native {
 			return errors.New("[target.lab] server_attributes is for native = true: over LDAP only the server sets them")
+		}
+		if l.Native && c.Attributes.Credentials == CredentialsCopy {
+			return fmt.Errorf("[target.lab] native = true writes the lab's database from the dump of the source, which carries no credentials; [attributes] credentials = %q needs a clone over LDAP", CredentialsCopy)
 		}
 		if l.Native && c.Scope.ConfigurationRefs == plan.ConfigurationRefsClone {
 			return fmt.Errorf("[target.lab] native = true writes the domain partition only; [scope] configuration_refs = %q needs a clone over LDAP", plan.ConfigurationRefsClone)
@@ -569,6 +593,15 @@ func (c *Config) checkMarker(p profile.Profile, attr string) error {
 }
 
 func (c *Config) checkAttributes(p profile.Profile) error {
+	// Checked once the profile is known, as the default mode is the profile's. Turning a mode = "all" into allow
+	// lists because include is set was rejected: it would drop hundreds of attributes without a word.
+	if c.AllFor(p) && (len(c.Attributes.Include) > 0 || len(c.Attributes.Extra) > 0) {
+		mode := "the default on " + p.Name
+		if c.Attributes.Mode == AttributesAll {
+			mode = fmt.Sprintf("mode = %q", AttributesAll)
+		}
+		return fmt.Errorf("[attributes] %s copies every attribute a client can write, so include and extra_include have nothing to add; remove them, or set mode = %q to copy only the lists (exclude applies in both)", mode, AttributesListed)
+	}
 	for _, a := range c.Mask.allMasked() {
 		if !p.Maskable(a) {
 			return fmt.Errorf("[mask] attribute %q cannot be masked with a fixed string (identity, unique, DN-reference or non-string attribute)", a)
@@ -619,8 +652,15 @@ func (c *Config) override() profile.Override {
 	return profile.Override{Include: c.Attributes.Include, Extra: c.Attributes.Extra, Exclude: c.Attributes.Exclude}
 }
 
-// JobFor assembles what clone and diff work on, once the server type is known.
+// JobFor assembles what clone and diff work on, once the server type is known. Its kinds carry the allow lists:
+// where AllFor holds (the default on AD) app.Open replaces them with what the source schema lets a client write.
 func (c *Config) JobFor(p profile.Profile) (plan.Job, error) {
+	if c.Attributes.Credentials == CredentialsCopy {
+		if len(p.Secrets) == 0 {
+			return plan.Job{}, fmt.Errorf("[attributes] credentials = %q: the %s profile has no credentials a client can copy (its password is the account's, which the fixed password replaces)", CredentialsCopy, p.Name)
+		}
+		p = p.WithSecrets()
+	}
 	if err := c.checkAttributes(p); err != nil {
 		return plan.Job{}, err
 	}

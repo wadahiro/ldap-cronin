@@ -33,7 +33,10 @@ alone. `-ca-file`, `-insecure-skip-verify`, `-start-tls` and `-timeout` are thos
 - The operational attributes the tool reads by name (on a generic server `entryUUID` and the creation metadata).
 
 Never in it: the credentials the profile names (password hashes, LAPS passwords, BitLocker and gMSA secrets, ...),
-whatever the bind account may read. The header lists them.
+whatever the bind account may read. The header lists them. `-with-credentials` (AD) dumps those the server returns
+and a client may write, for a clone with `[attributes] credentials = "copy"`
+([active-directory.md](active-directory.md#how-it-behaves)); the header lists them under `# credentials`, and the file
+then holds secrets: keep it as such. The password hashes and the gMSA password stay out, as no server returns them.
 
 `[scope] base_dn` of a clone from a dump must be its `-base-dn` or below it. `-base-dn` may be given several times
 (several OUs, none below another, in one domain): the dump holds each, its header lists them (`# base-dn:` once

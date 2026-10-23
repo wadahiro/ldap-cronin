@@ -14,7 +14,7 @@ ldap-cronin (LDAP cRONIN): a Go CLI that clones OUs, groups and users between LD
 - Commits follow Conventional Commits (`feat:`, `fix:`, `docs:` ...); the body says why.
 - Comments explain why, and why an alternative was rejected. Do not narrate what the code does.
 - No hard-coded values that belong in config. Do not add dependencies without a reason.
-- Bind passwords (the source's, the target's) never go into config files, command-line arguments, LDIF or logs; pass them through the environment (`-e NAME`) or prompt for them. The one exception is the fixed password clone gives the cloned users, a value of the test environment: it may be in `[accounts] fixed_password`, and in a dry-run's LDIF with `-with-password` only. It never goes into logs either.
+- Bind passwords (the source's, the target's) never go into config files, command-line arguments, LDIF or logs; pass them through the environment (`-e NAME`) or prompt for them. The one exception is the fixed password clone gives the cloned users, a value of the test environment: it may be in `[accounts] fixed_password`, and in a dry-run's LDIF with `-with-password` only. It never goes into logs either. The credentials `[attributes] credentials = "copy"` copies from the source (LAPS, shadow credentials, ...) are the same: in a dry-run's LDIF with `-with-password` only, in a dump with `-with-credentials` only, never in logs, `check` or `diff` output (a fingerprint there).
 - Server-type differences belong in `internal/profile`, not in `if` branches on a server name.
 
 ## Gotchas

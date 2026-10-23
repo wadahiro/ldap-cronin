@@ -44,7 +44,7 @@ Commands, in the order they are used:
                 writes them to the target instead
   clone         Add or update the source directory's OUs, groups, users, computers and contacts in the target (AD or generic LDAP)
   diff          Compare the source and the target (exit code 1 if there are differences)
-  list-attrs    Show the kinds and their default allow lists (-profile ad|ldap), without reading anything
+  list-attrs    Show the kinds and their allow lists (-profile ad|ldap), without reading anything
   version       Show the version
 
 Flags (clone/diff):
@@ -350,6 +350,7 @@ func runDump(ctx context.Context, args []string, log io.Writer) error {
 	out := fs.String("o", "", "the dump file (.gz: compressed)")
 	maskAttrs := fs.String("mask", "", "attributes masked in the dump, comma separated; kind:attribute masks it on that kind's entries only (user:mail)")
 	maskValue := fs.String("mask-value", config.DefaultMaskValue, "the value masked attributes get")
+	withCredentials := fs.Bool("with-credentials", false, "also dump the credentials the server returns (LAPS, shadow credentials, ...), for [attributes] credentials = \"copy\"")
 	caFile := fs.String("ca-file", "", "CA certificate (PEM) for the server's")
 	insecure := fs.Bool("insecure-skip-verify", false, "do not verify the server's certificate (tests only)")
 	startTLS := fs.Bool("start-tls", false, "StartTLS on an ldap:// URL")
@@ -375,7 +376,7 @@ func runDump(ctx context.Context, args []string, log io.Writer) error {
 	defer display.Stop()
 	_, err = app.Dump(ctx, app.DumpOptions{
 		Conn:    ldapdir.ConnConfig{URL: *url, BindDN: *bindDN, CAFile: *caFile, InsecureSkipVerify: *insecure, StartTLS: *startTLS, Timeout: *timeout},
-		BaseDNs: baseDNs, Out: *out, MaskValue: *maskValue, Masked: masked, Version: version, Progress: bar,
+		BaseDNs: baseDNs, Out: *out, MaskValue: *maskValue, Masked: masked, Version: version, Progress: bar, Credentials: *withCredentials,
 	}, secrets.SourceBind, display.Writer(log))
 	return err
 }
@@ -437,7 +438,11 @@ func listAttrs(_ context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	writeKinds(out, p)
-	fmt.Fprintln(out, "\nThe default allow lists, per kind ([attributes]; the profile's required attributes come with them):")
+	if p.Writable != nil {
+		fmt.Fprintf(out, "\nThe allow lists of [attributes] mode = %q, per kind (by default %s copies every attribute a client can write;\nthe profile's required attributes come with them):\n", config.AttributesListed, p.Name)
+	} else {
+		fmt.Fprintln(out, "\nThe default allow lists, per kind ([attributes]; the profile's required attributes come with them):")
+	}
 	for _, k := range p.Kinds {
 		fmt.Fprintf(out, "[%s]\n", k.Name)
 		for _, name := range k.Default {

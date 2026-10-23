@@ -83,13 +83,17 @@ workers = 8                          # parallel connections to the target, for c
 # file = "mapping"                   # file: a local file of identifier pairs, for servers that allow neither
 
 [attributes]
-# By default (AD) the attributes Active Directory Users and Computers shows on its property sheets are copied, and a
-# few more production uses (see `ldap-cronin list-attrs`, and docs/active-directory.md; -profile ldap for generic servers; `ldap-cronin check` says which attributes the entries hold that no list names, with the line to put here).
-# mode = "all"   # AD: every attribute a client can write on each kind's class, your schema extensions included
-#                # (no include/extra_include then; exclude still applies). `ldap-cronin schema` carries the extensions.
-# extra_include = ["extensionAttribute1", "mailNickname"]   # add to all kinds
-# exclude = ["telephoneNumber"]                             # remove from all kinds
-# [attributes.include]                                      # replace the default per kind
+# By default on AD every attribute a client can write on each kind's class is copied and compared, your schema
+# extensions included (`ldap-cronin schema` carries their definitions), but gPLink and gPOptions (GPOs are not cloned).
+# exclude = ["telephoneNumber"]   # remove from all kinds (any mode)
+# credentials = "copy"   # AD: also the credentials the source returns (LAPS, msDS-KeyCredentialLink, userPassword, ...),
+#                        # for a clone with the source's structure; never the password hashes. A dump needs
+#                        # -with-credentials. Values are never printed (diff shows a fingerprint).
+# mode = "allowlist"   # copy only the allow lists instead (always so on a generic LDAP server): on AD what Active
+#                      # Directory Users and Computers shows, and a few more production uses (`ldap-cronin list-attrs`,
+#                      # docs/active-directory.md; `ldap-cronin check` says what the entries hold that no list names)
+# extra_include = ["extensionAttribute1", "mailNickname"]   # allowlist: add to all kinds
+# [attributes.include]                                      # allowlist: replace the list of a kind
 # user = ["sAMAccountName", "givenName", "sn"]
 
 [mask]

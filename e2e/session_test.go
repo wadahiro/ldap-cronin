@@ -75,9 +75,8 @@ func TestTheCommandsSessionAgainstSamba(t *testing.T) {
 		t.Errorf("nothing stops clone here, so check exits %d", code)
 	}
 	for _, want := range []string{
-		`(?m)^       extra_include = \[.*"carLicense".*\]$`,
 		`(?m)^\[user\] 1 entries under ` + regexp.QuoteMeta(scope) + `$`,
-		`(?m)^  not copied\s+carLicense\s+1$`, // the base schema: the target has it too, so no note
+		`(?m)^  copied\s+carLicense\s+1$`, // no allow list names it: the default copies what a client can write
 		`(?m)^  copied\s+sAMAccountName\s+1$`,
 		`(?m)^  never\s+objectSid\s+1  managed by the server$`,
 		`(?m)^\[group\] 40 entries`,
@@ -86,5 +85,8 @@ func TestTheCommandsSessionAgainstSamba(t *testing.T) {
 		if !regexp.MustCompile(want).MatchString(list.String()) {
 			t.Errorf("missing %s in\n%s", want, list.String())
 		}
+	}
+	if regexp.MustCompile(`extra_include = `).MatchString(list.String()) {
+		t.Errorf("the default copies what a client can write, so check suggests no list:\n%s", list.String())
 	}
 }

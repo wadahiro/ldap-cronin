@@ -215,6 +215,13 @@ type Profile struct {
 	// PasswordAttrs are the credentials (passwords, and on AD the computers' LAPS passwords, shadow credentials and
 	// delegation): never copied, never compared and never printed. diff's summary names them.
 	PasswordAttrs []string
+	// Secrets are the PasswordAttrs a server returns to a reader with the rights and a client may write back, which
+	// WithSecrets lets clone copy ([attributes] credentials = "copy"). The others are out of reach over LDAP (AD
+	// never returns a password hash; a gMSA password is constructed). nil: the profile copies none.
+	Secrets []string
+	// CopiedSecrets are the Secrets WithSecrets moved out of PasswordAttrs: copied and compared, but their values are
+	// still never printed (a dry-run's LDIF carries them with -with-password only, diff prints a fingerprint).
+	CopiedSecrets []string
 	// SystemFilter excludes built-in objects (AD: isCriticalSystemObject). Empty means no exclusion.
 	SystemFilter string
 	// SystemAttr is the attribute whose value TRUE marks a built-in object, as SystemFilter does (empty: none).
@@ -260,6 +267,9 @@ type Profile struct {
 	SchemaCopy SchemaCopier
 	// Writable is nil when the profile cannot tell which attributes a client can write ([attributes] mode = "all").
 	Writable WritableLister
+	// NotAll are attributes a client can write that mode = "all" leaves out, by lowercase name, with why: their
+	// values would be wrong on the clone. Unlike NeverClone an allow list may still name them.
+	NotAll map[string]string
 	// Refusals is nil when every target of the type takes every attribute its schema has.
 	Refusals RefusalReader
 	Root     RootResolver
@@ -344,6 +354,28 @@ func (p Profile) Attrs(kind string, o Override) ([]string, error) {
 }
 
 // Maskable reports whether name can be replaced by a fixed string.
+// WithSecrets is p copying its Secrets: they are no longer NeverClone nor PasswordAttrs but CopiedSecrets.
+func (p Profile) WithSecrets() Profile {
+	copied := Set(p.Secrets)
+	keep := func(names []string) []string {
+		var out []string
+		for _, n := range names {
+			if !copied[strings.ToLower(n)] {
+				out = append(out, n)
+			}
+		}
+		return out
+	}
+	p.NeverClone, p.PasswordAttrs = keep(p.NeverClone), keep(p.PasswordAttrs)
+	p.CopiedSecrets = append([]string(nil), p.Secrets...)
+	return p
+}
+
+// Redacted are the attributes whose values are never printed: the credentials, copied or not.
+func (p Profile) Redacted() []string {
+	return append(append([]string(nil), p.PasswordAttrs...), p.CopiedSecrets...)
+}
+
 func (p Profile) Maskable(name string) bool { return !Set(p.NoMask)[strings.ToLower(name)] }
 
 // ByName returns the profile for an explicit name (ad or ldap).

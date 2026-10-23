@@ -19,8 +19,8 @@ It is read-only.
 
 `diff` reads the same configuration file as clone and compares **only the attributes that are copied**.
 
-- What is compared is the final allow list (per [kind](../README.md#kinds)) after applying `include` / `extra_include` / `exclude` in `[attributes]`.
-  An attribute that is `exclude`d or not in the allow list does not produce a difference even if its values differ (`ldap-cronin list-attrs` shows the default allow list).
+- What is compared is what clone copies per [kind](../README.md#kinds): on AD by default every attribute a client can write, without what `[attributes] exclude` names; with allow lists (`mode = "allowlist"`, and on a generic server) the lists after `include` / `extra_include` / `exclude`.
+  An attribute that is `exclude`d or not copied does not produce a difference even if its values differ (`ldap-cronin check -attrs` says what is copied).
 - **Masked attributes are not compared** (the target holds a fixed string, so the values are expected to differ). Password-related attributes (`unicodePwd`, `dBCSPwd`, `ntPwdHistory`, `lmPwdHistory`, `supplementalCredentials`) are not compared either (they cannot be read over LDAP).
 - Values are compared by **exact match** (case-sensitive). The following are normalized before comparing: attributes whose values are DNs (case and escaping),
   `objectClass` (case), `userAccountControl` (excluding server-managed bits) and `accountExpires` (`0` and `9223372036854775807` both mean "never expires" and are treated as equal).
@@ -229,7 +229,7 @@ Markers of another source and mapping pairs of another target (a recreated lab) 
 | Moved, and an object with the same name was created at the original DN | `RENAMED` for the original and `ONLY_TARGET` for the new one (*) |
 | A password was changed | Not detected (not compared) |
 | A masked attribute was changed | Not detected (because it is masked) |
-| An attribute not in the allow list was changed | Not detected (add it with `extra_include` to detect it) |
+| An attribute that is not copied was changed | Not detected (`exclude`d, `gPLink`, or with allow lists not named: add it with `extra_include`) |
 
 (*) Requires object matching (on by default). With `[mapping] mode = "off"`, a rename or move looks like two entries, `ONLY_SOURCE` + `ONLY_TARGET`, and a recreated object is only compared by its attributes.
 
@@ -289,7 +289,7 @@ not compared:
 
 - `compared objects`: objects compared, per kind.
 - `RENAMED` / `REPLACED` / `UNMARKED` appear only when objects are matched (`rename/move check: on`; `REPLACED` and `UNMARKED` only when there are any). `not listed` is the number of entries left out because they merely moved along with their parent OU. A line saying objects were found more than once means a marker (or, on OpenLDAP, an `entryUUID`) was copied onto another object; the first one found was used.
-- `compared attributes`: the attributes that were compared (excluding masked ones); with `[attributes] mode = "all"`, how many per kind (`check -attrs` names them), and the attributes left out because the target's schema lacks them are listed on standard error before the differences. `not compared`: what was not compared (masked, `exclude`d, the credentials, and attributes not in the allow list).
+- `compared attributes`: the attributes that were compared (excluding masked ones); when every attribute a client can write is compared (the default on AD), how many per kind (`check -attrs` names them), and the attributes left out because the target's schema lacks them are listed on standard error before the differences. `not compared`: what was not compared (masked, `exclude`d, the credentials, and with allow lists the attributes not in them).
 
 ## JSON output (`-format json`)
 

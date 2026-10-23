@@ -101,6 +101,7 @@ var AD = Profile{
 		"countryCode", "c", "uidNumber", "gidNumber", "logonHours",
 	},
 	PasswordAttrs: append(append([]string{"unicodePwd", "dBCSPwd", "ntPwdHistory", "lmPwdHistory", "supplementalCredentials"}, accountSecrets...), computerCredentials...),
+	Secrets:       readableSecrets(),
 	// A safeguard so that Administrator, krbtgt and the like are not overwritten even if base_dn is CN=Users.
 	SystemFilter: "(!(isCriticalSystemObject=TRUE))",
 	SystemAttr:   "isCriticalSystemObject",
@@ -150,8 +151,14 @@ var AD = Profile{
 	SchemaAttrs: adSchema{},
 	SchemaCopy:  adSchema{},
 	Writable:    adSchema{},
-	Refusals:    sambaRefusals{},
-	Root:        adRoot{},
+	NotAll: map[string]string{
+		// gPLink is a string ("[LDAP://cn={GUID},cn=policies,...;0]"), not a DN, so it is no reference clone could
+		// follow, and GPOs are no kind: copied, it links the target's OUs to policies it lacks.
+		"gplink":    "it links GPOs, which clone does not copy",
+		"gpoptions": "it goes with gPLink (blocks inheritance of GPOs, which clone does not copy)",
+	},
+	Refusals: sambaRefusals{},
+	Root:     adRoot{},
 	ConfigurationNC: func(ctx context.Context, d directory.Directory) (string, error) {
 		root, err := d.Get(ctx, "", []string{"configurationNamingContext"})
 		if err != nil || root == nil {
@@ -183,6 +190,22 @@ var computerCredentials = []string{
 	"msLAPS-EncryptedPasswordHistory", "msLAPS-EncryptedDSRMPassword", "msLAPS-EncryptedDSRMPasswordHistory",
 	"msLAPS-PasswordExpirationTime", "msDS-KeyCredentialLink", "msDS-AllowedToActOnBehalfOfOtherIdentity",
 	"msDS-ManagedPassword",
+}
+
+// readableSecrets are the credentials AD may return to a reader with the rights (a confidential attribute to one
+// granted control access, LAPS to its readers) and a client may write: the other secrets and the computers'
+// credentials but the gMSA password, which the DC constructs for each read. They are copied for a clone that is to
+// hold the structure the source has (one test domain cloned from another); a LAPS password encrypted to the source
+// domain's key, or a delegation naming its SIDs, means something on the target only when it has the source's domain
+// SID ([target.lab] native = true).
+func readableSecrets() []string {
+	var out []string
+	for _, n := range append(append([]string(nil), accountSecrets...), computerCredentials...) {
+		if n != "msDS-ManagedPassword" {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 const (
