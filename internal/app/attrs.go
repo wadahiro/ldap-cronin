@@ -40,7 +40,7 @@ func (s *Session) writeAttrTable(out io.Writer, usage []plan.Usage, targetHas ma
 		allowed := profile.Set(u.Kind.Attrs)
 		var lines []attrLine
 		noted := func(key string) (string, string) {
-			st, note := s.attrStatus(allowed, key, marker)
+			st, note := s.attrStatus(u.Kind.Name, allowed, key, marker)
 			if targetHas != nil && !targetHas[key] && st != attrNever {
 				note = strings.TrimPrefix(note+"; not in the target schema", "; ")
 			}
@@ -98,8 +98,8 @@ func (s *Session) writeAttrTable(out io.Writer, usage []plan.Usage, targetHas ma
 	return nil
 }
 
-// attrStatus is what clone does with the attribute key (lowercase) of a kind whose allow list is allowed, and why.
-func (s *Session) attrStatus(allowed map[string]bool, key, marker string) (string, string) {
+// attrStatus is what clone does with the attribute key (lowercase) of kind, whose allow list is allowed, and why.
+func (s *Session) attrStatus(kind string, allowed map[string]bool, key, marker string) (string, string) {
 	prof := s.Job.Profile
 	switch {
 	case profile.Set(prof.PasswordAttrs)[key]:
@@ -108,7 +108,7 @@ func (s *Session) attrStatus(allowed map[string]bool, key, marker string) (strin
 		return attrNever, "managed by the server"
 	case marker != "" && strings.EqualFold(key, marker):
 		return attrMarker, "clone writes the marker here"
-	case allowed[key] && s.Job.Masker.Masked(key):
+	case allowed[key] && s.Job.Masker.MaskedIn(kind, key):
 		return attrMasked, ""
 	case allowed[key]:
 		return attrCopied, ""

@@ -70,3 +70,33 @@ func TestUnreadableEntriesAreListed(t *testing.T) {
 	}
 	d.Close()
 }
+
+// -mask kind:attribute masks on the entries of that kind only, by their object classes: a computer is no user.
+func TestMaskOfAKind(t *testing.T) {
+	src := fakedir.New(domain)
+	src.Put(domain, map[string][]string{"objectClass": {"domainDNS"}})
+	src.Put(base, map[string][]string{"objectClass": {"top", "organizationalUnit"}, "ou": {"IDM"}})
+	src.Put("CN=U,"+base, map[string][]string{"objectClass": {"top", "person", "organizationalPerson", "user"}, "cn": {"U"}, "mail": {"u@x"}, "telephoneNumber": {"1"}})
+	src.Put("CN=G,"+base, map[string][]string{"objectClass": {"top", "group"}, "cn": {"G"}, "mail": {"g@x"}, "telephoneNumber": {"2"}})
+	src.Put("CN=PC,"+base, map[string][]string{"objectClass": {"top", "person", "organizationalPerson", "user", "computer"}, "cn": {"PC"}, "mail": {"pc@x"}})
+	var out bytes.Buffer
+	if _, err := Write(context.Background(), src, profile.AD, Options{BaseDNs: []string{base}, MaskValue: "x", Masked: []string{"telephoneNumber", "user:mail"}}, &out); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	for _, want := range []string{"#   user:mail\n", "mail: g@x\n", "mail: pc@x\n"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("lacks %q", want)
+		}
+	}
+	for _, not := range []string{"u@x", "telephoneNumber: 1", "telephoneNumber: 2"} {
+		if strings.Contains(text, not) {
+			t.Errorf("holds %q", not)
+		}
+	}
+	for _, bad := range []string{"person:mail", "user:member"} {
+		if _, err := Write(context.Background(), src, profile.AD, Options{BaseDNs: []string{base}, Masked: []string{bad}}, &bytes.Buffer{}); err == nil {
+			t.Errorf("%s taken", bad)
+		}
+	}
+}

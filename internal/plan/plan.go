@@ -284,7 +284,7 @@ func Build(ctx context.Context, src directory.Directory, job Job, read Read) (*P
 		k := &p.job.Kinds[i]
 		if k.Role == profile.RoleContainer {
 			err = WalkBases(ctx, src, job.BaseDNs, k.Filter, p.withRead(k.Attrs), func(e directory.Entry) error {
-				p.Containers = append(p.Containers, Node{Entry: job.Masker.Apply(e), Kind: k})
+				p.Containers = append(p.Containers, Node{Entry: job.Masker.ApplyIn(k.Name, e), Kind: k})
 				p.Scope.Add(e.DN)
 				selected[dn.Normalize(e.DN)] = true
 				noteAncestors(e.DN)
@@ -362,7 +362,7 @@ func (p *Plan) Ancestor(ctx context.Context, a string) (Node, error) {
 	if e == nil {
 		return Node{}, fmt.Errorf("ancestor %s: %w", a, ErrMissing)
 	}
-	return Node{Entry: p.job.Masker.Apply(*e), CreateOnly: true}, nil
+	return Node{Entry: p.job.Masker.ApplyIn(p.job.Profile.KindOf(e.Values("objectClass")), *e), CreateOnly: true}, nil
 }
 
 // CheckTargetSchema refuses a job whose allow lists name an attribute the source schema defines and the target's
@@ -553,7 +553,7 @@ func (p *Plan) discoverRefs(ctx context.Context) error {
 			switch {
 			case schema.BackLinks[key]:
 				return fmt.Errorf("attribute %q is a back link computed by the server and cannot be cloned (clone the forward link instead)", name)
-			case p.IsRef(name) && p.job.Masker.Masked(name):
+			case p.IsRef(name) && p.job.Masker.MaskedIn(k.Name, name):
 				return fmt.Errorf("attribute %q holds DNs and cannot be masked", name)
 			}
 		}
@@ -631,7 +631,7 @@ func refsFilter(k *Kind, names []string) string {
 // Walk streams the entries of k page by page with masking applied and what Read asks for added to names.
 func (p *Plan) Walk(ctx context.Context, k *Kind, names []string, fn func(directory.Entry) error) error {
 	return WalkBases(ctx, p.src, p.job.BaseDNs, k.Filter, p.withRead(names), func(e directory.Entry) error {
-		return fn(p.job.Masker.Apply(e))
+		return fn(p.job.Masker.ApplyIn(k.Name, e))
 	})
 }
 

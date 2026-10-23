@@ -95,4 +95,6 @@ workers = 8                          # parallel connections to the target, for c
 [mask]
 # The listed attributes are replaced with a fixed string on the target. diff does not compare masked attributes.
 value = "********"
-attributes = ["mail", "telephoneNumber"]
+attributes = ["telephoneNumber"]     # on every entry
+[mask.kinds]                         # on the entries of a kind only, besides the above (a kind's list never unmasks)
+user = ["mail"]                      # a user's mail masked, a group's or a contact's copied

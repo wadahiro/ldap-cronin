@@ -176,7 +176,18 @@ type Attributes struct {
 
 type Mask struct {
 	Value      string   `toml:"value"`
-	Attributes []string `toml:"attributes"`
+	Attributes []string `toml:"attributes"` // masked on every entry
+	// Kinds are attributes masked on the entries of a kind only ([mask.kinds] user = ["mail"]), besides Attributes.
+	Kinds map[string][]string `toml:"kinds"`
+}
+
+// allMasked is every attribute [mask] names, on every entry or on a kind's.
+func (m Mask) allMasked() []string {
+	out := append([]string(nil), m.Attributes...)
+	for _, attrs := range m.Kinds {
+		out = append(out, attrs...)
+	}
+	return out
 }
 
 // Modes of [mapping]: how a target object tells which source object it was cloned from, so diff can report
@@ -538,7 +549,7 @@ func (c *Config) checkMarker(p profile.Profile, attr string) error {
 	if profile.Set(p.NeverClone)[strings.ToLower(attr)] || strings.EqualFold(attr, p.Identity.Attr()) {
 		return fmt.Errorf("[mapping] attribute %q is managed by the server or a credential and cannot hold a marker", attr)
 	}
-	for _, a := range c.Mask.Attributes {
+	for _, a := range c.Mask.allMasked() {
 		if strings.EqualFold(a, attr) {
 			return fmt.Errorf("[mapping] attribute %q is masked; a masked attribute cannot hold a marker", attr)
 		}
@@ -558,9 +569,14 @@ func (c *Config) checkMarker(p profile.Profile, attr string) error {
 }
 
 func (c *Config) checkAttributes(p profile.Profile) error {
-	for _, a := range c.Mask.Attributes {
+	for _, a := range c.Mask.allMasked() {
 		if !p.Maskable(a) {
 			return fmt.Errorf("[mask] attribute %q cannot be masked with a fixed string (identity, unique, DN-reference or non-string attribute)", a)
+		}
+	}
+	for kind := range c.Mask.Kinds {
+		if _, ok := p.Kind(kind); !ok {
+			return fmt.Errorf("[mask.kinds] unknown kind %q (available: %s)", kind, strings.Join(p.KindNames(), ", "))
 		}
 	}
 	for _, kind := range c.objects(p) {
@@ -611,7 +627,7 @@ func (c *Config) JobFor(p profile.Profile) (plan.Job, error) {
 	if _, _, err := c.MappingFor(p); err != nil {
 		return plan.Job{}, err
 	}
-	job := plan.Job{Profile: p, RootDN: c.Scope.RootDN, BaseDNs: c.Scope.BaseDNs, Masker: mask.New(c.Mask.Value, c.Mask.Attributes),
+	job := plan.Job{Profile: p, RootDN: c.Scope.RootDN, BaseDNs: c.Scope.BaseDNs, Masker: mask.New(c.Mask.Value, c.Mask.Attributes).WithKinds(c.Mask.Kinds),
 		References: c.Scope.References, ConfigurationRefs: c.Scope.ConfigurationRefs, UnreadableRefs: c.Scope.UnreadableRefs,
 		OutsideGroups: c.Scope.OutsideGroups, BuiltinGroups: c.Scope.BuiltinGroups,
 		ACL: c.Target.Lab != nil && c.Target.Lab.Native && c.Target.Lab.ACL == ServerAttributesSource}

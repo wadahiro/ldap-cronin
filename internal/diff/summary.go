@@ -79,14 +79,19 @@ func WriteSummary(w io.Writer, job plan.Job, sum Summary, excluded []string) {
 	}
 }
 
-// comparedAttributes returns the attributes compared per kind, and the masked ones left out of them.
+// comparedAttributes returns the attributes compared per kind, and the masked ones left out of them (one masked on a
+// kind's entries only with the kind: "mail (user)").
 func comparedAttributes(job plan.Job) (compared map[string][]string, masked []string) {
 	compared = map[string][]string{}
 	for _, k := range job.Kinds {
 		names := []string{}
 		for _, n := range k.Attrs {
-			if job.Masker.Masked(n) {
-				masked = appendUnique(masked, n)
+			if job.Masker.MaskedIn(k.Name, n) {
+				if job.Masker.Masked(n) {
+					masked = appendUnique(masked, n)
+				} else {
+					masked = appendUnique(masked, n+" ("+k.Name+")") // masked on this kind's entries only
+				}
 				continue
 			}
 			names = append(names, n)

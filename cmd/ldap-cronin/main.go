@@ -347,7 +347,7 @@ func runDump(ctx context.Context, args []string, log io.Writer) error {
 	var baseDNs listFlag
 	fs.Var(&baseDNs, "base-dn", "what to dump (repeat it for several)")
 	out := fs.String("o", "", "the dump file (.gz: compressed)")
-	maskAttrs := fs.String("mask", "", "attributes masked in the dump, comma separated")
+	maskAttrs := fs.String("mask", "", "attributes masked in the dump, comma separated; kind:attribute masks it on that kind's entries only (user:mail)")
 	maskValue := fs.String("mask-value", config.DefaultMaskValue, "the value masked attributes get")
 	caFile := fs.String("ca-file", "", "CA certificate (PEM) for the server's")
 	insecure := fs.Bool("insecure-skip-verify", false, "do not verify the server's certificate (tests only)")

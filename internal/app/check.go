@@ -172,7 +172,7 @@ func (s *Session) Check(ctx context.Context, o CheckOptions, out io.Writer) (int
 		var notCopied []held
 		managed := 0
 		for key, n := range u.Attrs {
-			if st, _ := s.attrStatus(allowed, key, marker); st != attrNotCopied {
+			if st, _ := s.attrStatus(u.Kind.Name, allowed, key, marker); st != attrNotCopied {
 				continue
 			}
 			if w := writable[u.Kind.Class]; writable != nil && !w[key] {

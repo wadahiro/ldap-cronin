@@ -9,13 +9,14 @@ import (
 	"github.com/wadahiro/ldap-cronin/internal/plan"
 )
 
-// compareEntry reports the attribute differences of one matched entry. Masked attributes are not compared, since
-// their values are expected to differ, nor is skip (an RDN attribute that a rename explains).
-func (r *runner) compareEntry(want, got directory.Entry, names []string, skip string) {
+// compareEntry reports the attribute differences of one matched entry of kind. Masked attributes (on every entry,
+// or on the kind's) are not compared, since their values are expected to differ, nor is skip (an RDN attribute that
+// a rename explains).
+func (r *runner) compareEntry(kind string, want, got directory.Entry, names []string, skip string) {
 	want, got = r.primaryDNs(want, got)
 	want, got = aclTexts(want), aclTexts(got)
 	plain, refs := r.p.Changes(want, got, names, func(name string) bool {
-		return r.job.Masker.Masked(name) || (skip != "" && strings.EqualFold(name, skip))
+		return r.job.Masker.MaskedIn(kind, name) || (skip != "" && strings.EqualFold(name, skip))
 	})
 	for _, c := range plain {
 		r.report(makeDifference(want.DN, c.Name, c.Want, c.Got, r.p.Normalizer(c.Name), false))

@@ -281,6 +281,17 @@ func (p Profile) Kind(name string) (KindSpec, bool) {
 	return KindSpec{}, false
 }
 
+// KindOf returns the name of the kind an entry of these object classes is of, by the kinds' Is (without a
+// filter's narrowing); "" for none.
+func (p Profile) KindOf(objectClasses []string) string {
+	for _, k := range p.Kinds {
+		if k.Is != nil && k.Is(objectClasses) {
+			return k.Name
+		}
+	}
+	return ""
+}
+
 // KindNames lists the kinds in the order they are listed and reported.
 func (p Profile) KindNames() []string {
 	out := make([]string, 0, len(p.Kinds))

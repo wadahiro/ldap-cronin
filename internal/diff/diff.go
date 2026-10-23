@@ -335,7 +335,7 @@ func (r *runner) check(ctx context.Context, want directory.Entry, names []string
 			r.report(Difference{Kind: Replaced, DN: want.DN})
 			// Even for a different object we want to know how it differs from the source values, so compare the attributes.
 			if kind != nil {
-				r.compareEntry(want, *res.replacement, names, "")
+				r.compareEntry(kind.Name, want, *res.replacement, names, "")
 			}
 			return nil
 		}
@@ -370,7 +370,7 @@ func (r *runner) check(ctx context.Context, want directory.Entry, names []string
 		r.loc.noteTarget(want.DN, got.DN)
 	}
 	if kind != nil {
-		r.compareEntry(shown, *got, names, skip)
+		r.compareEntry(kind.Name, shown, *got, names, skip)
 	}
 	return nil
 }

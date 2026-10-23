@@ -55,10 +55,9 @@ func (c Counts) Total() int { return c.RootDSE + c.Schema + c.Config + c.Base + 
 //
 // The credentials the profile names are never written; the attributes of o.Masked are masked.
 func Write(ctx context.Context, src directory.Directory, prof profile.Profile, o Options, w io.Writer) (Counts, error) {
-	for _, a := range o.Masked {
-		if !prof.Maskable(a) {
-			return Counts{}, fmt.Errorf("%s cannot be masked: it names entries or identifies the object", a)
-		}
+	masker, maskedAttrs, err := newMasker(prof, o)
+	if err != nil {
+		return Counts{}, err
 	}
 	bases, err := plan.ExpandBases(ctx, src, prof.SystemAttr, o.BaseDNs)
 	if err != nil {
@@ -103,7 +102,7 @@ func Write(ctx context.Context, src directory.Directory, prof profile.Profile, o
 			backs = append(backs, back)
 		}
 	}
-	for _, a := range o.Masked {
+	for _, a := range maskedAttrs {
 		if refs[strings.ToLower(a)] {
 			return Counts{}, fmt.Errorf("%s holds DNs and cannot be masked", a)
 		}
@@ -113,8 +112,7 @@ func Write(ctx context.Context, src directory.Directory, prof profile.Profile, o
 	if subschema != "" {
 		operational = append(operational, "attributeTypes", "objectClasses")
 	}
-	wr := &writer{w: ldif.Writer{W: w}, excluded: profile.Set(prof.PasswordAttrs), written: map[string]bool{}, unreadAt: map[string]bool{}}
-	masker := mask.New(o.MaskValue, o.Masked)
+	wr := &writer{w: ldif.Writer{W: w}, excluded: profile.Set(prof.PasswordAttrs), written: map[string]bool{}, unreadAt: map[string]bool{}, prof: prof}
 	read := append(append([]string{directory.AllAttrs}, prof.Operational...), backs...)
 	holds := profile.Set(backs)
 	now := time.Now
@@ -200,7 +198,7 @@ func Write(ctx context.Context, src directory.Directory, prof profile.Profile, o
 				}
 			}
 		}
-		if wr.put(masker.Apply(e)) {
+		if wr.put(maskEntry(prof, masker, e)) {
 			c.Base++
 		}
 		bar.Add(1)
@@ -271,6 +269,7 @@ type writer struct {
 	written  map[string]bool // normalized DNs
 	unread   []string        // the DNs read and not returned, or returned without their object classes
 	unreadAt map[string]bool // normalized DNs
+	prof     profile.Profile // the kinds, for the attributes masked on a kind's entries
 	err      error
 }
 
@@ -328,10 +327,44 @@ func (wr *writer) read(ctx context.Context, src directory.Directory, entryDN str
 		}
 		return 0, nil
 	}
-	if wr.put(m.Apply(*e)) {
+	if wr.put(maskEntry(wr.prof, m, *e)) {
 		return 1, nil
 	}
 	return 0, nil
+}
+
+// newMasker is the masker of o.Masked, whose names are attributes, masked on every entry, or kind:attribute, masked
+// on the entries of that kind only; it returns the attributes named too, to be checked against the references.
+func newMasker(prof profile.Profile, o Options) (mask.Masker, []string, error) {
+	var global, attrs []string
+	kinds := map[string][]string{}
+	for _, m := range o.Masked {
+		kind, a, scoped := strings.Cut(m, ":")
+		if !scoped {
+			kind, a = "", m
+		}
+		kind, a = strings.TrimSpace(kind), strings.TrimSpace(a)
+		if scoped {
+			if _, ok := prof.Kind(kind); !ok {
+				return mask.Masker{}, nil, fmt.Errorf("-mask %s: unknown kind %q (available: %s)", m, kind, strings.Join(prof.KindNames(), ", "))
+			}
+		}
+		if !prof.Maskable(a) {
+			return mask.Masker{}, nil, fmt.Errorf("%s cannot be masked: it names entries or identifies the object", a)
+		}
+		if scoped {
+			kinds[kind] = append(kinds[kind], a)
+		} else {
+			global = append(global, a)
+		}
+		attrs = append(attrs, a)
+	}
+	return mask.New(o.MaskValue, global).WithKinds(kinds), attrs, nil
+}
+
+// maskEntry masks e as an entry of the kind its object classes make it (as clone tells a referenced entry's).
+func maskEntry(prof profile.Profile, m mask.Masker, e directory.Entry) directory.Entry {
+	return m.ApplyIn(prof.KindOf(e.Values("objectClass")), e)
 }
 
 // put writes e once.

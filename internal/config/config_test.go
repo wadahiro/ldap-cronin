@@ -60,6 +60,8 @@ func TestParseRejectsInvalid(t *testing.T) {
 		"base_dn in two domains":     strings.Replace(valid, `base_dn = "OU=IDM,DC=ad,DC=example,DC=com"`, `base_dn = ["OU=IDM,DC=ad,DC=example,DC=com", "OU=X,DC=other,DC=example,DC=com"]`, 1),
 		"base_dn not a DN":           strings.Replace(valid, `base_dn = "OU=IDM,DC=ad,DC=example,DC=com"`, `base_dn = 3`, 1),
 		"unmaskable attribute":       strings.Replace(withProfile("ad"), `["mail"]`, `["sAMAccountName"]`, 1),
+		"unknown kind to mask":       withProfile("ad") + "\n[mask.kinds]\nprinter = [\"mail\"]\n",
+		"unmaskable of a kind":       withProfile("ad") + "\n[mask.kinds]\nuser = [\"sAMAccountName\"]\n",
 		"unknown field":              valid + "\n[bogus]\nx = 1\n",
 		"same server":                strings.Replace(valid, "ldap://dst:389", "ldaps://src:636", 1),
 		"bad scheme":                 strings.Replace(valid, "ldap://dst:389", "http://dst", 1),
@@ -267,5 +269,21 @@ func TestBaseDNIsADNOrAList(t *testing.T) {
 	job, err := c.JobFor(profile.AD)
 	if err != nil || len(job.BaseDNs) != 2 {
 		t.Fatalf("the job: %v %v", job.BaseDNs, err)
+	}
+}
+
+// [mask.kinds] masks on a kind's entries, besides [mask] attributes on every entry.
+func TestMaskOfAKind(t *testing.T) {
+	c, err := Parse([]byte(withProfile("ad") + "\n[mask.kinds]\nuser = [\"telephoneNumber\"]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, err := c.JobFor(profile.AD)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := job.Masker
+	if !m.Masked("mail") || !m.MaskedIn("user", "telephoneNumber") || m.MaskedIn("group", "telephoneNumber") {
+		t.Errorf("%+v", m)
 	}
 }

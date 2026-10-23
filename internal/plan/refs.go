@@ -348,6 +348,6 @@ func (p *Plan) ReadReferenced(ctx context.Context, v string, k *Kind) (*director
 	if err != nil || e == nil {
 		return e, err
 	}
-	m := p.job.Masker.Apply(*e)
+	m := p.job.Masker.ApplyIn(k.Name, *e)
 	return &m, nil
 }

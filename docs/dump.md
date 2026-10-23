@@ -10,7 +10,7 @@
 ```sh
 export LDAP_CRONIN_SOURCE_PASSWORD='...'          # or asked
 ldap-cronin dump -url ldaps://dc01.example.com:636 -bind-dn 'CN=svc-read,OU=Svc,DC=example,DC=com' \
-  -base-dn 'OU=IDM,DC=example,DC=com' -o prod.ldif.gz [-mask mail,telephoneNumber]
+  -base-dn 'OU=IDM,DC=example,DC=com' -o prod.ldif.gz [-mask telephoneNumber,user:mail]
 ```
 
 ```toml
@@ -86,7 +86,10 @@ lines say what it is; LDIF tools skip them:
   (LAPS passwords, BitLocker keys), which clone never copies.
 - `clone` and `diff` say which dump they read, of which server and when: diff compares the target with that moment.
 - `-mask` masks attributes in the file itself, so it holds none of their values (they cannot be unmasked later). The
-  same rules as `[mask]` apply: an attribute holding DNs or identifying an object cannot be masked.
+  same rules as `[mask]` apply: an attribute holding DNs or identifying an object cannot be masked. `kind:attribute`
+  (`user:mail`) masks it on the entries of that kind only, as `[mask.kinds]` does: the kind is told from the
+  entry's object classes, as clone tells a referenced entry's (on AD a computer is no `user`), whatever
+  `[scope] filters` narrow; the header lists it as given.
 - The file holds everything else of the entries, personal data included: keep it as you keep production's data
   (it is written readable by its owner only).
 
