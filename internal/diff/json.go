@@ -118,6 +118,10 @@ type jsonSummary struct {
 	Credentials              []string            `json:"credentials"`
 	// CopiedCredentials are compared, their values given as fingerprints ([attributes] credentials = "copy").
 	CopiedCredentials []string `json:"copied_credentials,omitempty"`
+	// ACL is how ACLs were compared ("as-is", "translated"), absent when they were not; ACEsNotCompared counts,
+	// per why, the source's ACEs clone leaves out.
+	ACL             string         `json:"acl,omitempty"`
+	ACEsNotCompared map[string]int `json:"aces_not_compared,omitempty"`
 }
 
 // Summary writes the summary line. excluded is the exclude setting of the config.
@@ -129,7 +133,10 @@ func (j *JSON) Summary(job plan.Job, sum Summary, excluded []string) error {
 		Referenced: sum.Referenced, Holders: sum.Holders, Unheld: orEmpty(sum.Unheld), NotCloned: orEmpty(sum.NotCloned), ReferencesNotCompared: orEmpty(sum.NotCompared),
 		ReferencesNotComparedWhy: orEmpty(sum.NotComparedWhy),
 		ComparedAttributes:       compared, Masked: nonNil(masked), Excluded: nonNil(excluded), Credentials: nonNil(job.Profile.PasswordAttrs),
-		CopiedCredentials: job.Profile.CopiedSecrets,
+		CopiedCredentials: job.Profile.CopiedSecrets, ACL: string(job.ACL),
+	}
+	if len(sum.ACEsNotCompared) > 0 {
+		out.ACEsNotCompared = sum.ACEsNotCompared
 	}
 	for _, k := range job.Kinds {
 		out.Compared[k.Name] = sum.Compared[k.Name]

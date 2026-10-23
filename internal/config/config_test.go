@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wadahiro/ldap-cronin/internal/plan"
 	"github.com/wadahiro/ldap-cronin/internal/profile"
 )
 
@@ -360,6 +361,40 @@ func TestCredentialsCopy(t *testing.T) {
 		"native":           strings.Replace(valid, "[scope]", "[target.lab]\nnative = true\n[scope]", 1) + "\n[attributes]\ncredentials = \"copy\"\n",
 	} {
 		if _, err := Parse([]byte(raw)); err == nil || !strings.Contains(err.Error(), "credentials") {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+// [attributes] acl = "copy" is the clone over LDAP; a native import has [target.lab] acl, and a generic server keeps
+// no ACLs on its entries.
+func TestACLCopy(t *testing.T) {
+	c, err := Parse([]byte(valid + "\n[attributes]\nacl = \"copy\"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job, err := c.JobFor(profile.AD); err != nil || job.ACL != plan.ACLTranslated {
+		t.Fatalf("%q %v", job.ACL, err)
+	}
+	c, _ = Parse([]byte(valid))
+	if job, _ := c.JobFor(profile.AD); job.ACL != plan.ACLNone {
+		t.Fatalf("by default: %q", job.ACL)
+	}
+	native := strings.Replace(valid, "[scope]", "[target.lab]\nnative = true\nacl = \"source\"\n[scope]", 1)
+	c, _ = Parse([]byte(native))
+	if job, _ := c.JobFor(profile.AD); job.ACL != plan.ACLAsIs {
+		t.Fatalf("native: %q", job.ACL)
+	}
+	c, _ = Parse([]byte(withProfile("ldap") + "\n[attributes]\nacl = \"copy\"\n"))
+	if _, err := c.JobFor(profile.LDAP); err == nil || !strings.Contains(err.Error(), "no ACLs on its entries") {
+		t.Errorf("the generic profile: %v", err)
+	}
+	for name, raw := range map[string]string{
+		"an unknown value":   valid + "\n[attributes]\nacl = \"source\"\n",
+		"native":             native + "\n[attributes]\nacl = \"copy\"\n",
+		"lab acl over LDAP:": strings.Replace(valid, "[scope]", "[target.lab]\nacl = \"source\"\n[scope]", 1),
+	} {
+		if _, err := Parse([]byte(raw)); err == nil || !strings.Contains(err.Error(), "acl") {
 			t.Errorf("%s: %v", name, err)
 		}
 	}

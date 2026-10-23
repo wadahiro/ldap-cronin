@@ -250,3 +250,15 @@ func TestACompressedDumpIsReadThroughATemporaryCopy(t *testing.T) {
 		t.Fatalf("removed by Close: %v", err)
 	}
 }
+
+// A binary value holding the byte '=' is matched byte for byte, not as a DN.
+func TestBinaryEqualityIsNotADN(t *testing.T) {
+	m := &matcher{}
+	sid := "\x01\x05\x00\x00\x00\x00\x00\x05\x15\x00\x00\x00=\x00\x00\x00\xff"
+	if m.equal("objectSid", sid, sid[:len(sid)-1]+"\xfe") {
+		t.Fatal("two SIDs differing in their last byte matched")
+	}
+	if !m.equal("objectSid", sid, sid) {
+		t.Fatal("a SID did not match itself")
+	}
+}

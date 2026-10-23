@@ -89,6 +89,9 @@ workers = 8                          # parallel connections to the target, for c
 # credentials = "copy"   # AD: also the credentials the source returns (LAPS, msDS-KeyCredentialLink, userPassword, ...),
 #                        # for a clone with the source's structure; never the password hashes. A dump needs
 #                        # -with-credentials. Values are never printed (diff shows a fingerprint).
+# acl = "copy"   # AD: also each object's ACL (owner, group and explicit ACEs, nTSecurityDescriptor), each SID the target's
+#                # principal at the same DN; an ACE naming one the target lacks is left out with a warning. With
+#                # [target.lab] native = true, [target.lab] acl does it instead.
 # mode = "allowlist"   # copy only the allow lists instead (always so on a generic LDAP server): on AD what Active
 #                      # Directory Users and Computers shows, and a few more production uses (`ldap-cronin list-attrs`,
 #                      # docs/active-directory.md; `ldap-cronin check` says what the entries hold that no list names)

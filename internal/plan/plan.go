@@ -48,13 +48,27 @@ type Job struct {
 	// OutsideGroupsSkip. BuiltinGroups says it for a built-in group (Domain Admins): BuiltinGroupsAdd (the default,
 	// also for "") or BuiltinGroupsSkip.
 	OutsideGroups, BuiltinGroups string
-	// ACL is set when the clone gives the target the source's ACLs (a native import, [target.lab] acl): diff then
-	// compares each object's owner, group, protected flag and explicit ACEs (ad.ExplicitSD).
-	ACL bool
+	// ACL says whether the clone gives the target the source's ACLs, and how: ACLNone, ACLAsIs or ACLTranslated.
+	// diff then compares each object's owner, group, protected flag and explicit ACEs (profile.Descriptors.Parts).
+	ACL ACLMode
 	// AllWritable is set when the allow lists are every attribute a client can write on the class of each kind
 	// ([attributes] mode = "all"), so the summaries count them instead of naming hundreds.
 	AllWritable bool
 }
+
+// ACLMode is how the clone gives the target the source's ACLs.
+type ACLMode string
+
+const (
+	// ACLNone leaves each object the ACL the target gives it.
+	ACLNone ACLMode = ""
+	// ACLAsIs writes the source's descriptors as they are ([target.lab] acl = "source" with a native import, which
+	// keeps the SIDs).
+	ACLAsIs ACLMode = "as-is"
+	// ACLTranslated writes the source's owner, group and explicit ACEs with each SID the target's
+	// ([attributes] acl = "copy" over LDAP, where an object created gets the target's own SID): see Principals.
+	ACLTranslated ACLMode = "translated"
+)
 
 // The [scope] references settings.
 const (

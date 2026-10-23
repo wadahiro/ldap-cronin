@@ -14,7 +14,13 @@ import (
 // a rename explains).
 func (r *runner) compareEntry(kind string, want, got directory.Entry, names []string, skip string) {
 	want, got = r.primaryDNs(want, got)
-	want, got = aclTexts(want), aclTexts(got)
+	// Only where the SD is compared (not a holder's): the ACEs left out would be counted for nothing otherwise.
+	for _, n := range names {
+		if strings.EqualFold(n, sdAttr) {
+			want, got = r.aclTexts(want, got)
+			break
+		}
+	}
 	plain, refs := r.p.Changes(want, got, names, func(name string) bool {
 		return r.job.Masker.MaskedIn(kind, name) || (skip != "" && strings.EqualFold(name, skip))
 	})

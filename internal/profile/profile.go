@@ -279,6 +279,9 @@ type Profile struct {
 	Account         Account
 	// PrimaryGroup is nil where an account has no primary group outside member (generic LDAP).
 	PrimaryGroup PrimaryGrouper
+	// Descriptors is nil where clone cannot give an object the source's ACL over LDAP (generic LDAP: each server keeps
+	// its ACLs in its own configuration, not on the entries).
+	Descriptors Descriptors
 	// Native is nil when clone -native is not possible for this server type.
 	Native NativeSupport
 }

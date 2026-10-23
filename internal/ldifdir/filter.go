@@ -186,10 +186,12 @@ func (m *matcher) equal(attr, have, want string) bool {
 		_, rdn, _ := dn.FirstRDN(have)
 		return strings.EqualFold(strings.ReplaceAll(rdn, "-", ""), want)
 	}
-	if strings.Contains(want, "=") && strings.Contains(have, "=") {
+	text := utf8.ValidString(have) && utf8.ValidString(want)
+	// A binary value (an objectSid) may hold the byte '=' without being a DN.
+	if text && strings.Contains(want, "=") && strings.Contains(have, "=") {
 		return dn.Equal(have, want)
 	}
-	return utf8.ValidString(have) && utf8.ValidString(want) && strings.EqualFold(have, want)
+	return text && strings.EqualFold(have, want)
 }
 
 // substrings matches the initial, any and final parts in order, ignoring case.

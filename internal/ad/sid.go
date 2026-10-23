@@ -88,3 +88,31 @@ func SplitRID(sid string) (domain string, rid int, err error) {
 	}
 	return sid[:i], rid, nil
 }
+
+// SIDRaw is the inverse of SIDText (text to the binary form used over LDAP).
+func SIDRaw(text string) ([]byte, error) {
+	parts := strings.Split(text, "-")
+	if len(parts) < 3 || parts[0] != "S" || len(parts) > 3+15 {
+		return nil, fmt.Errorf("invalid SID format: %q", text)
+	}
+	rev, err := strconv.ParseUint(parts[1], 10, 8)
+	if err != nil {
+		return nil, fmt.Errorf("invalid SID format: %q", text)
+	}
+	authority, err := strconv.ParseUint(parts[2], 10, 48)
+	if err != nil {
+		return nil, fmt.Errorf("invalid SID format: %q", text)
+	}
+	out := []byte{byte(rev), byte(len(parts) - 3)}
+	for i := 5; i >= 0; i-- {
+		out = append(out, byte(authority>>(8*i)))
+	}
+	for _, p := range parts[3:] {
+		n, err := strconv.ParseUint(p, 10, 32)
+		if err != nil {
+			return nil, fmt.Errorf("invalid SID format: %q", text)
+		}
+		out = binary.LittleEndian.AppendUint32(out, uint32(n))
+	}
+	return out, nil
+}

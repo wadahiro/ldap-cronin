@@ -171,6 +171,7 @@ var AD = Profile{
 	Operational:  []string{"nTSecurityDescriptor"},
 	Account:      adAccount{},
 	PrimaryGroup: adPrimaryGroup{},
+	Descriptors:  adDescriptors{},
 	Native:       adNative{},
 }
 

@@ -110,6 +110,14 @@ func (s *Session) attrStatus(kind string, allowed map[string]bool, key, marker s
 		return attrNever, `credential; [attributes] credentials = "copy" copies it`
 	case profile.Set(prof.PasswordAttrs)[key]:
 		return attrNever, "credential"
+	case prof.Descriptors != nil && strings.EqualFold(key, prof.Descriptors.Attr()):
+		switch s.Job.ACL {
+		case plan.ACLTranslated:
+			return attrCopied, "the owner, group and explicit ACEs, each SID the target's"
+		case plan.ACLAsIs:
+			return attrCopied, "as it is, by the native import"
+		}
+		return attrNotCopied, `ACL; [attributes] acl = "copy" copies it`
 	case profile.Set(prof.NeverClone)[key] || strings.EqualFold(key, prof.Identity.Attr()):
 		return attrNever, "managed by the server"
 	case marker != "" && strings.EqualFold(key, marker):

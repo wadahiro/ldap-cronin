@@ -56,8 +56,14 @@ func WriteSummary(w io.Writer, job plan.Job, sum Summary, excluded []string) {
 	if len(sum.NotComparedWhy) > 0 {
 		plan.WriteCounts(w, "references not compared (clone cannot write them: the target lacks what they name)", sum.NotComparedWhy)
 	}
-	if job.ACL {
+	switch job.ACL {
+	case plan.ACLAsIs:
 		fmt.Fprintln(w, "ACLs compared: each object's owner, group, protected flag and explicit ACEs (nTSecurityDescriptor; the inherited ACEs are each server's)")
+	case plan.ACLTranslated:
+		fmt.Fprintln(w, "ACLs compared: each object's owner, group, protected flag and explicit ACEs (nTSecurityDescriptor), each SID of the source's as the target's object at the same DN (the inherited ACEs are each server's)")
+	}
+	if len(sum.ACEsNotCompared) > 0 {
+		plan.WriteCounts(w, "ACEs not compared (clone leaves them out: their trustee has no principal on the target)", sum.ACEsNotCompared)
 	}
 	fmt.Fprintln(w, "compared attributes:")
 	compared, masked := comparedAttributes(job)

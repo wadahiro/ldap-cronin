@@ -32,7 +32,7 @@ func (r *runner) withPrimary(k *plan.Kind, names []string) []string {
 	if pg := r.job.Profile.PrimaryGroup; pg != nil && k != nil && k.Account {
 		out = append(append([]string(nil), out...), pg.Attr())
 	}
-	if r.job.ACL && k != nil {
+	if r.job.ACL != plan.ACLNone && k != nil {
 		out = append(append([]string(nil), out...), sdAttr)
 	}
 	return out

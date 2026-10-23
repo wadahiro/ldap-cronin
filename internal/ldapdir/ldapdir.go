@@ -183,7 +183,8 @@ func (c *Client) Walk(ctx context.Context, base, filter string, attrs []string, 
 const sdFlagsOwnerGroupDACL = 0x1 | 0x2 | 0x4
 
 // readControls are the controls a search for attrs needs: the SD flags when nTSecurityDescriptor is asked for (not
-// critical, so a server without it answers as it would).
+// critical, so a server without it answers as it would). A write of it takes the same: the owner, the group and the
+// DACL are written, and the SACL, which needs a privilege and clone never reads, is left as it is.
 func readControls(attrs []string) []ldap.Control {
 	for _, a := range attrs {
 		if strings.EqualFold(a, "nTSecurityDescriptor") {
@@ -255,7 +256,7 @@ func (c *Client) Replace(ctx context.Context, dn string, attrs map[string][]stri
 		return err
 	}
 	defer c.release(conn)
-	req := ldap.NewModifyRequest(dn, nil)
+	req := ldap.NewModifyRequest(dn, readControls(sortedKeys(attrs)))
 	for _, name := range sortedKeys(attrs) {
 		req.Replace(name, attrs[name])
 	}

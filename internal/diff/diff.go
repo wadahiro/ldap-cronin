@@ -80,6 +80,9 @@ type Summary struct {
 	NotCompared map[string]int
 	// NotComparedWhy is NotCompared per "attribute: why" (plan.Classifier.Why), for the text summary.
 	NotComparedWhy map[string]int
+	// ACEsNotCompared counts, per why (plan.WhyNoSourcePrincipal ...), the source's ACEs clone leaves out because
+	// the target has no principal for their trustee (ACLTranslated).
+	ACEsNotCompared map[string]int
 	// Referenced is the number of entries outside the scope compared because a reference names them.
 	Referenced int
 	// Holders is the number of groups outside the scope whose values naming entries of it were compared
@@ -111,7 +114,7 @@ type Options struct {
 // With a Lookup, objects whose source DN is missing on the target are looked up by identifier, and reported as
 // RENAMED if found at a different DN. This verifies changes made by another program that renamed or moved objects on the target.
 func Run(ctx context.Context, src, dst directory.Directory, job plan.Job, o Options, emit func(Difference)) (Summary, error) {
-	r := &runner{job: job, emit: emit, outside: map[string]string{}, sum: Summary{Compared: map[string]int{}, Differences: map[Kind]int{}, NotCompared: map[string]int{}, NotComparedWhy: map[string]int{}, Unheld: map[string]int{}},
+	r := &runner{job: job, emit: emit, outside: map[string]string{}, sum: Summary{Compared: map[string]int{}, Differences: map[Kind]int{}, NotCompared: map[string]int{}, NotComparedWhy: map[string]int{}, Unheld: map[string]int{}, ACEsNotCompared: map[string]int{}},
 		primaryOutside: map[string]string{}, held: map[string]bool{}}
 	if o.Resolver != nil {
 		r.sum.Matching = o.Resolver.Describe()
@@ -122,14 +125,19 @@ func Run(ctx context.Context, src, dst directory.Directory, job plan.Job, o Opti
 	if pg := job.Profile.PrimaryGroup; pg != nil {
 		read.Extra = []string{pg.Attr()}
 	}
-	if job.ACL {
+	if job.ACL != plan.ACLNone {
 		read.Extra = append(read.Extra, sdAttr)
 	}
 	p, err := plan.Build(ctx, src, job, read)
 	if err != nil {
 		return r.sum, err
 	}
-	r.p = p
+	r.p, r.ctx = p, ctx
+	if job.ACL == plan.ACLTranslated {
+		if r.principals, err = p.Principals(ctx, dst); err != nil {
+			return r.sum, err
+		}
+	}
 	if err := r.readGroups(ctx, dst); err != nil {
 		return r.sum, err
 	}
@@ -196,6 +204,9 @@ func Run(ctx context.Context, src, dst directory.Directory, job plan.Job, o Opti
 	if err := r.checkPrimaryGroups(ctx, o.Workers); err != nil {
 		return r.sum, err
 	}
+	if r.aclErr != nil {
+		return r.sum, r.aclErr
+	}
 	r.sum.Duplicates = r.loc.duplicates
 
 	for _, k := range job.Kinds {
@@ -231,9 +242,12 @@ type runner struct {
 	primaryOutside map[string]string
 	held           map[string]bool
 	primaryErr     error
-	p              *plan.Plan
-	loc            *locator
-	emit           func(Difference)
+	// principals gives the source's SIDs the target's (ACLTranslated); aclErr is the first error doing it (aclFailed).
+	principals *plan.Principals
+	aclErr     error
+	p          *plan.Plan
+	loc        *locator
+	emit       func(Difference)
 
 	mu  sync.Mutex // guards sum and serializes emit
 	sum Summary

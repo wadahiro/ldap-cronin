@@ -68,6 +68,10 @@ type Report struct {
 	// (plan.Holder); Unheld counts those left as they are, per why.
 	OutsideGroups, BuiltinGroups int
 	Unheld                       map[string]int
+	// ACLs counts the objects given the source's ACL ([attributes] acl = "copy"); ACEsLeftOut counts, per why
+	// (plan.WhyNoSourcePrincipal ...), the source's ACEs left out because the target has no principal for their trustee.
+	ACLs        int
+	ACEsLeftOut map[string]int
 	// Placeholders counts the placeholders created for entries the source did not return (plan.RefPlaceholder),
 	// with the parents created for them.
 	Placeholders int
@@ -90,6 +94,12 @@ func (rep *Report) WriteSummary(w io.Writer) {
 	}
 	if len(rep.Unheld) > 0 {
 		plan.WriteCounts(w, "groups outside the scope holding its entries, left as they are", rep.Unheld)
+	}
+	if rep.ACLs > 0 {
+		fmt.Fprintf(w, "objects given the source's ACL (owner, group and explicit ACEs, each SID the target's): %d\n", rep.ACLs)
+	}
+	if len(rep.ACEsLeftOut) > 0 {
+		plan.WriteCounts(w, "ACEs left out of the ACLs (their trustee has no principal on the target; see the warnings)", rep.ACEsLeftOut)
 	}
 	if rep.Placeholders > 0 {
 		fmt.Fprintf(w, "placeholders created for entries the source did not return (unreadable to the account reading it; see the warnings): %d\n", rep.Placeholders)
@@ -121,6 +131,9 @@ type runner struct {
 	skipped map[string]bool // normalized DNs not created (see upsert); the reference pass leaves them alone
 	unwrote map[string]bool // attribute and normalized DN of each value warned about as not written
 	primary []primaryOf     // the accounts whose primary group is not their type's default (guarded by mu)
+	acls    []string        // the DNs of the objects to give the source's ACL (ACLTranslated; guarded by mu)
+	aclOn   bool
+	leftOut map[string]bool // the SIDs warned about as left out of the ACLs
 	refs    *plan.Classifier
 	done    map[string]*onceErr // see once
 }
@@ -150,7 +163,8 @@ func Run(ctx context.Context, src, dst directory.Directory, job plan.Job, opt Op
 		return nil, err
 	}
 	r := &runner{dst: dst, opt: opt, out: out, prof: job.Profile, skipped: map[string]bool{}, done: map[string]*onceErr{},
-		unwrote: map[string]bool{}, report: Report{ReferencedKinds: map[string]int{}, Unwritten: map[string]int{}, Unheld: map[string]int{}}}
+		unwrote: map[string]bool{}, report: Report{ReferencedKinds: map[string]int{}, Unwritten: map[string]int{}, Unheld: map[string]int{}, ACEsLeftOut: map[string]int{}},
+		aclOn: job.ACL == plan.ACLTranslated && !opt.Native, leftOut: map[string]bool{}}
 	opt.Progress.Stats(func() string {
 		r.mu.Lock()
 		defer r.mu.Unlock()
@@ -174,6 +188,9 @@ func (r *runner) run(ctx context.Context, p *plan.Plan) error {
 	phases := len(p.Leaves()) + 2 // the parents, each leaf kind, the references
 	if len(hs) > 0 {
 		phases++ // the groups outside the scope holding its entries
+	}
+	if r.aclOn {
+		phases++
 	}
 	bar.Phases(phases)
 	bar.Phase("OUs and parents", len(p.Containers))
@@ -200,7 +217,12 @@ func (r *runner) run(ctx context.Context, p *plan.Plan) error {
 	if err := r.primaryGroups(ctx, p); err != nil {
 		return err
 	}
-	return r.holders(ctx, p, hs)
+	if err := r.holders(ctx, p, hs); err != nil {
+		return err
+	}
+	// Last: an ACE names its trustee by SID, which an object has on the target only once created, and any object
+	// clone creates (a group outside the scope included) may be one.
+	return r.descriptors(ctx, p)
 }
 
 // holders gives the groups outside the scope that hold entries of it (a group of another OU, Domain Admins) the
@@ -387,6 +409,7 @@ func (r *runner) leaf(ctx context.Context, k *plan.Kind, e directory.Entry) erro
 	if err := r.track(ctx, e, created, cur); err != nil {
 		return err
 	}
+	r.withACL(e.DN)
 	if account == nil {
 		return nil
 	}
@@ -426,6 +449,7 @@ func (r *runner) ensure(ctx context.Context, n plan.Node) error {
 		if err != nil {
 			return err
 		}
+		r.withACL(n.Entry.DN)
 		return r.track(ctx, n.Entry, created, cur)
 	}
 	cur, err := r.dst.Get(ctx, n.Entry.DN, append([]string{"objectClass"}, r.guidAttr()...))

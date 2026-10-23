@@ -175,6 +175,9 @@ type Attributes struct {
 	// Credentials is CredentialsCopy to copy the credentials the source returns (the profile's Secrets), or
 	// CredentialsSkip ("" too, the default).
 	Credentials string `toml:"credentials"`
+	// ACL is ACLCopy to give each object the source's owner, group and explicit ACEs over LDAP (the profile's
+	// Descriptors), or ACLSkip ("" too, the default). A native import has [target.lab] acl instead.
+	ACL string `toml:"acl"`
 }
 
 type Mask struct {
@@ -308,6 +311,12 @@ const (
 	CredentialsCopy = "copy"
 )
 
+// The values of [attributes] acl.
+const (
+	ACLSkip = "skip"
+	ACLCopy = "copy"
+)
+
 // AllFor reports whether the attributes of p's kinds are every attribute a client can write. That is the default
 // wherever the profile can read it from the schema (AD): the clone is there to look like production, and an allow
 // list leaves out silently what production holds and no list names (extensionAttributeN, an extension of one's own).
@@ -332,6 +341,11 @@ func (c *Config) validate() error {
 	case "", CredentialsSkip, CredentialsCopy:
 	default:
 		return fmt.Errorf("[attributes] credentials must be %q or %q, got %q", CredentialsSkip, CredentialsCopy, c.Attributes.Credentials)
+	}
+	switch c.Attributes.ACL {
+	case "", ACLSkip, ACLCopy:
+	default:
+		return fmt.Errorf("[attributes] acl must be %q or %q, got %q", ACLSkip, ACLCopy, c.Attributes.ACL)
 	}
 	switch c.Scope.References {
 	case "", plan.RefsClone, plan.RefsExisting, plan.RefsSkip:
@@ -424,10 +438,15 @@ func (c *Config) validate() error {
 			return fmt.Errorf("[target.lab] acl must be %q or %q, got %q", ServerAttributesSource, ServerAttributesLab, l.ACL)
 		}
 		if l.ACL != "" && !l.Native {
-			return errors.New("[target.lab] acl is for native = true (copying ACLs over LDAP is not there yet)")
+			return fmt.Errorf("[target.lab] acl is for native = true; over LDAP, [attributes] acl = %q copies the ACLs", ACLCopy)
 		}
 		if l.ServerAttributes != "" && !l.Native {
 			return errors.New("[target.lab] server_attributes is for native = true: over LDAP only the server sets them")
+		}
+		// A native import keeps the SIDs, so it writes the source's descriptors as they are, and the domain root's
+		// and those above base_dn as well, which [target.lab] acl says; two settings for one would contradict.
+		if l.Native && c.Attributes.ACL == ACLCopy {
+			return fmt.Errorf("[attributes] acl = %q is for a clone over LDAP; with native = true, [target.lab] acl = %q gives the lab the source's ACLs", ACLCopy, ServerAttributesSource)
 		}
 		if l.Native && c.Attributes.Credentials == CredentialsCopy {
 			return fmt.Errorf("[target.lab] native = true writes the lab's database from the dump of the source, which carries no credentials; [attributes] credentials = %q needs a clone over LDAP", CredentialsCopy)
@@ -661,6 +680,16 @@ func (c *Config) JobFor(p profile.Profile) (plan.Job, error) {
 		}
 		p = p.WithSecrets()
 	}
+	acl := plan.ACLNone
+	switch {
+	case c.Target.Lab != nil && c.Target.Lab.Native && c.Target.Lab.ACL == ServerAttributesSource:
+		acl = plan.ACLAsIs
+	case c.Attributes.ACL == ACLCopy:
+		if p.Descriptors == nil {
+			return plan.Job{}, fmt.Errorf("[attributes] acl = %q: the %s profile has no ACLs on its entries (a generic server keeps them in its configuration)", ACLCopy, p.Name)
+		}
+		acl = plan.ACLTranslated
+	}
 	if err := c.checkAttributes(p); err != nil {
 		return plan.Job{}, err
 	}
@@ -670,7 +699,7 @@ func (c *Config) JobFor(p profile.Profile) (plan.Job, error) {
 	job := plan.Job{Profile: p, RootDN: c.Scope.RootDN, BaseDNs: c.Scope.BaseDNs, Masker: mask.New(c.Mask.Value, c.Mask.Attributes).WithKinds(c.Mask.Kinds),
 		References: c.Scope.References, ConfigurationRefs: c.Scope.ConfigurationRefs, UnreadableRefs: c.Scope.UnreadableRefs,
 		OutsideGroups: c.Scope.OutsideGroups, BuiltinGroups: c.Scope.BuiltinGroups,
-		ACL: c.Target.Lab != nil && c.Target.Lab.Native && c.Target.Lab.ACL == ServerAttributesSource}
+		ACL: acl}
 	for _, spec := range p.Kinds { // the profile's order, whatever order the config lists them in
 		if !contains(c.objects(p), spec.Name) {
 			continue
