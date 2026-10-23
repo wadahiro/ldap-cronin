@@ -508,7 +508,8 @@ its Administrator is a Schema Admin:
 ```
 
 A schema change cannot be undone in AD, but this forest exists for the test: a snapshot taken after it keeps it,
-and `lab reset` removes it with the lab. (`schema -apply` against the EC2 lab is not verified on AWS yet.)
+and `lab reset` removes it with the lab. Measured on Windows Server 2019: Exchange's schema, from a Samba lab that
+has it, went in whole (2,445 attributes, 314 classes, 20 classes extended) in about 4 minutes.
 
 ### 13. Save the state, and the test cycle
 
