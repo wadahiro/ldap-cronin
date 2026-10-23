@@ -55,6 +55,9 @@ base_dn = "OU=IDM,DC=ad,DC=example,DC=com"
 #                                    # Exchange address list): skip (default) leaves the value out, counted with why;
 #                                    # clone creates what it names and the parents it lacks from the source, for a
 #                                    # lab (run ldap-cronin schema first: the lab has none of Exchange's classes)
+# unreadable_refs = "placeholder"    # AD: a reference naming an entry the source does not return (one the reading
+#                                    # account may not read): placeholder (default) creates a contact there (description
+#                                    # "ldap-cronin placeholder ..."), and the parents it lacks, so the member is kept; skip
 # outside_groups = "clone"           # a group outside base_dn holding entries of it (a user's group of another OU,
 #                                    # found through memberOf): clone (default) creates it and gives it those members;
 #                                    # existing gives them only to a group the target holds; skip

@@ -11,6 +11,7 @@ import (
 	"github.com/wadahiro/ldap-cronin/internal/directory"
 	"github.com/wadahiro/ldap-cronin/internal/dn"
 	"github.com/wadahiro/ldap-cronin/internal/fakedir"
+	"github.com/wadahiro/ldap-cronin/internal/plan"
 )
 
 // groupWith returns a source holding one group whose member values are n in-scope users plus the given extra DNs.
@@ -70,7 +71,7 @@ func (g *getCounter) Get(ctx context.Context, d string, a []string) (*directory.
 }
 
 // A reference outside the scope is checked on the target once, however many objects point at it, and each entry a
-// skipped value names is one warning (every gone DN here is another entry). Beyond maxWarnings the warnings are only
+// skipped value names is one warning (every gone DN here is another entry, with [scope] unreadable_refs = "skip"). Beyond maxWarnings the warnings are only
 // counted, so a flood of them cannot exhaust memory.
 func TestOutsideReferencesAreCheckedOnceAndWarningsAreCapped(t *testing.T) {
 	const outside = "CN=Domain Admins,CN=Users," + domain
@@ -85,7 +86,9 @@ func TestOutsideReferencesAreCheckedOnceAndWarningsAreCapped(t *testing.T) {
 	}
 	dst := &getCounter{Directory: fakedir.New(domain), gets: map[string]int{}}
 	var log bytes.Buffer
-	rep, err := Run(context.Background(), src, dst, options(t, allKinds()...), Options{UserPassword: "Fixed1!", Workers: 4}, &log)
+	job := options(t, allKinds()...)
+	job.UnreadableRefs = plan.UnreadableRefsSkip // the gone entries are skipped, not given placeholders
+	rep, err := Run(context.Background(), src, dst, job, Options{UserPassword: "Fixed1!", Workers: 4}, &log)
 	if err != nil {
 		t.Fatal(err)
 	}

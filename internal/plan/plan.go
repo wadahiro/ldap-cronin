@@ -6,6 +6,7 @@ package plan
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"hash/maphash"
 	"io"
@@ -39,6 +40,9 @@ type Job struct {
 	// ConfigurationRefs says what is done with a reference naming the configuration partition (AD):
 	// ConfigurationRefsSkip or ConfigurationRefsClone.
 	ConfigurationRefs string
+	// UnreadableRefs says what is done with a reference naming an entry of the naming context the source does not
+	// return (AD): UnreadableRefsPlaceholder (the default, also for "") or UnreadableRefsSkip.
+	UnreadableRefs string
 	// OutsideGroups says what is done with a group outside the scope that holds entries of it (in member, found
 	// through their memberOf): OutsideGroupsClone (the default, also for ""), OutsideGroupsExisting or
 	// OutsideGroupsSkip. BuiltinGroups says it for a built-in group (Domain Admins): BuiltinGroupsAdd (the default,
@@ -67,6 +71,12 @@ const (
 	// ConfigurationRefsClone creates the entries of the configuration partition such values name, and their parents,
 	// on the target, so the values can be written: for a lab, which has none of production's Exchange objects.
 	ConfigurationRefsClone = "clone"
+
+	// UnreadableRefsPlaceholder creates a placeholder (Placeholder) where a reference names an entry the source
+	// does not return, which on AD is one the reading account may not read: the reference is kept, as a contact.
+	UnreadableRefsPlaceholder = "placeholder"
+	// UnreadableRefsSkip leaves such values out.
+	UnreadableRefsSkip = "skip"
 
 	// OutsideGroupsClone creates a group outside the scope that holds entries of it, as a referenced entry is, and
 	// gives it those entries.
@@ -320,6 +330,9 @@ func Build(ctx context.Context, src directory.Directory, job Job, read Read) (*P
 	return p, nil
 }
 
+// ErrMissing is the error of Ancestor for an ancestor the source does not return.
+var ErrMissing = errors.New("missing or unreadable on the source")
+
 // Ancestor returns the node of an ancestor a of an entry to clone that is not selected as a container.
 //
 // An entry of a leaf kind is a parent leaf (a user holding Exchange's ActiveSync container, any entry on a server
@@ -338,7 +351,7 @@ func (p *Plan) Ancestor(ctx context.Context, a string) (Node, error) {
 			return Node{}, fmt.Errorf("read ancestor %s: %w", a, err)
 		}
 		if e == nil {
-			return Node{}, fmt.Errorf("ancestor %s does not exist on source", a)
+			return Node{}, fmt.Errorf("ancestor %s: %w", a, ErrMissing)
 		}
 		return Node{Entry: *e, Kind: k, Outside: !p.Scope.Has(a)}, nil
 	}
@@ -347,7 +360,7 @@ func (p *Plan) Ancestor(ctx context.Context, a string) (Node, error) {
 		return Node{}, fmt.Errorf("read ancestor %s: %w", a, err)
 	}
 	if e == nil {
-		return Node{}, fmt.Errorf("ancestor %s does not exist on source", a)
+		return Node{}, fmt.Errorf("ancestor %s: %w", a, ErrMissing)
 	}
 	return Node{Entry: p.job.Masker.Apply(*e), CreateOnly: true}, nil
 }

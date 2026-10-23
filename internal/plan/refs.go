@@ -35,6 +35,11 @@ const (
 	// [scope] configuration_refs = "clone": clone creates it and its parents (plan.ReadConfiguration), and diff
 	// compares the value.
 	RefConfiguration
+	// RefPlaceholder names an entry of the naming context the source does not return (AD removes a link to a deleted
+	// object, so it is one the reading account may not read) and the target lacks, with [scope] unreadable_refs =
+	// "placeholder": clone creates a placeholder there (plan.Placeholder), so the value can be written, and diff
+	// compares the value, not the placeholder.
+	RefPlaceholder
 )
 
 // Reproducible reports whether clone writes values of this class, and diff compares them.
@@ -74,13 +79,14 @@ type refCheck struct {
 const (
 	WhyConfiguration = "names an entry of the configuration partition (an Exchange address list, say), which clone does not create"
 	WhyOtherNC       = "names an entry of another naming context (another domain of the forest)"
-	WhyMissing       = "names an entry missing on the source"
+	WhyMissing       = "names an entry missing or unreadable on the source"
 	WhyBuiltin       = "names a built-in object the target lacks"
 	WhySkipped       = "names an entry outside the scope ([scope] references = \"skip\")"
 	WhyNotOnTarget   = "names an entry outside the scope the target lacks ([scope] references = \"existing\")"
 	WhyFenced        = "names a schema definition or a partition of the forest, which clone never creates"
 	WhyWellKnown     = "names a well-known principal (Everyone, Authenticated Users), which Windows takes only in a built-in group"
 	WhyWrapped       = "names a well-known principal inside a DN-Binary or DN-String value, which clone does not write"
+	WhyUnplaceable   = "names an entry missing or unreadable on the source whose name no placeholder can take (not CN=)"
 )
 
 // whyClass is the reason for a value naming an entry of an object class no kind copies.
@@ -216,6 +222,13 @@ func (c *Classifier) classify(ctx context.Context, v string, chk *refCheck) erro
 		}
 		if chk.why == WhyConfiguration && job.ConfigurationRefs == ConfigurationRefsClone {
 			return c.configuration(ctx, v, chk)
+		}
+		if chk.why == WhyMissing && job.UnreadableRefs != UnreadableRefsSkip {
+			if _, ok := Placeholder(v); ok {
+				chk.class, chk.why = RefPlaceholder, ""
+				return nil
+			}
+			chk.why = WhyUnplaceable
 		}
 	}
 	chk.class = RefUnreproducible

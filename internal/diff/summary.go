@@ -47,6 +47,9 @@ func WriteSummary(w io.Writer, job plan.Job, sum Summary, excluded []string) {
 	if len(sum.Unheld) > 0 {
 		plan.WriteCounts(w, "groups outside the scope holding its entries, not compared (clone leaves them as they are)", sum.Unheld)
 	}
+	if sum.Placeholders > 0 {
+		fmt.Fprintf(w, "placeholders under base_dn not compared (clone created them for entries the source did not return): %d\n", sum.Placeholders)
+	}
 	if len(sum.NotCloned) > 0 {
 		plan.WriteCounts(w, "not compared (of no kind, or built-in: clone does not copy it)", sum.NotCloned)
 	}

@@ -44,6 +44,9 @@ func seedSource() *fakedir.Dir {
 		"objectClass": {"top", "group"}, "cn": {"Eng"}, "sAMAccountName": {"Eng"},
 		"member": {alice, bob, "CN=Domain Admins,CN=Users," + domain},
 	})
+	// Built-in, as on AD: a source that did not return it would have clone create a placeholder there.
+	d.Put("CN=Users,"+domain, map[string][]string{"objectClass": {"top", "container"}, "cn": {"Users"}, "isCriticalSystemObject": {"TRUE"}})
+	d.Put("CN=Domain Admins,CN=Users,"+domain, map[string][]string{"objectClass": {"top", "group"}, "cn": {"Domain Admins"}, "isCriticalSystemObject": {"TRUE"}})
 	return d
 }
 

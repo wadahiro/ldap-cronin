@@ -63,11 +63,27 @@ lines say what it is; LDIF tools skip them:
 #
 # section: root-dse
 ...
-# end: 5123 entries (root-dse 1, schema 1530, configuration 3, base 3502, referenced 87)
+# section: unreadable (the source did not return them: on AD, the account reading it may not read them)
+# unreadable: CN=Hidden User,OU=Restricted,DC=example,DC=com
+# end: 5123 entries (root-dse 1, schema 1530, configuration 3, base 3502, referenced 87; unreadable 1, not written)
 ```
 
 - It is written to a temporary file next to `-o` and renamed when complete. A file without the `# end:` line, or
   with another number of entries, is refused: a dump cut off would clone some users and members and not others.
+- **Entries the account may not read.** AD returns a group's `member` values whatever the reader may read of the
+  entries they name (it hides a member only by the group's own `member` permission, and removes the value of a
+  deleted entry), so a dump taken with a narrowed account can name entries it is not given: the base search for
+  one finds nothing, or returns no object classes. They are not written; the `# unreadable:` lines list them (and
+  their parents not given either) at the end of the file, where they are known, the end line counts them, and
+  `dump` warns. `clone` creates a placeholder where a reference names one (`[scope] unreadable_refs`, see
+  [Active Directory](active-directory.md)).
+- **The account to dump with**: an ordinary domain user (Domain Users only) reads what clone needs where the
+  domain keeps AD's default permissions. Where they are narrowed (Authenticated Users taken out of Pre-Windows
+  2000 Compatible Access, deny entries on OUs, List Object mode), give it List contents, Read all properties and
+  Read permissions on the domain root, for it and every descendant. Nothing else: never a built-in operators group
+  (Account, Server, Backup Operators can change or back up the domain), Read-only Domain Controllers, Replicating
+  Directory Changes (the right of a DCSync, every password hash), or the right to read confidential attributes
+  (LAPS passwords, BitLocker keys), which clone never copies.
 - `clone` and `diff` say which dump they read, of which server and when: diff compares the target with that moment.
 - `-mask` masks attributes in the file itself, so it holds none of their values (they cannot be unmasked later). The
   same rules as `[mask]` apply: an attribute holding DNs or identifying an object cannot be masked.

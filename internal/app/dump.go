@@ -93,5 +93,8 @@ func Dump(ctx context.Context, o DumpOptions, password func() (string, error), l
 	done = true
 	fmt.Fprintf(log, "dumped %d entries to %s (%s; under the base DN %d, referenced outside it %d, schema %d)\n",
 		counts.Total(), o.Out, prof.Name, counts.Base, counts.Referenced, counts.Schema)
+	if counts.Unreadable > 0 {
+		fmt.Fprintf(log, "warning: %d entries a clone needs were not returned by the source (the account may not read them); they are listed at the end of the dump (# unreadable:), and clone creates placeholders where references name them\n", counts.Unreadable)
+	}
 	return counts, nil
 }

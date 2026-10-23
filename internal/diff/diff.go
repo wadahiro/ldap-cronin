@@ -87,6 +87,9 @@ type Summary struct {
 	// NotCloned counts the entries under base_dn of no enabled kind, per structural object class: clone does not
 	// copy them, so diff does not compare them either (plan.Unselected).
 	NotCloned map[string]int
+	// Placeholders counts the placeholders clone created under base_dn (plan.Placeholder), which are not
+	// ONLY_TARGET: the source did not return what they stand for.
+	Placeholders int
 }
 
 // Options are the run-time settings of a comparison.
@@ -194,9 +197,15 @@ func Run(ctx context.Context, src, dst directory.Directory, job plan.Job, o Opti
 	r.sum.Duplicates = r.loc.duplicates
 
 	for _, k := range job.Kinds {
-		err := plan.WalkBases(ctx, dst, job.BaseDNs, k.Filter, []string{directory.NoAttrs}, func(e directory.Entry) error {
+		err := plan.WalkBases(ctx, dst, job.BaseDNs, k.Filter, []string{"description"}, func(e directory.Entry) error {
 			// Entries matched by identifier are RENAMED (or already explained by a parent move), so they are not target-only.
 			if !p.Scope.Has(e.DN) && !r.loc.found.Has(e.DN) {
+				if plan.IsPlaceholder(e) { // where a reference names an entry the source did not return
+					r.mu.Lock()
+					r.sum.Placeholders++
+					r.mu.Unlock()
+					return nil
+				}
 				r.report(Difference{Kind: OnlyTarget, DN: e.DN})
 			}
 			return nil

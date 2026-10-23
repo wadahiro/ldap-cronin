@@ -68,8 +68,11 @@ type Report struct {
 	// (plan.Holder); Unheld counts those left as they are, per why.
 	OutsideGroups, BuiltinGroups int
 	Unheld                       map[string]int
-	WarningCount                 int
-	Warnings                     []string // first maxWarnings only
+	// Placeholders counts the placeholders created for entries the source did not return (plan.RefPlaceholder),
+	// with the parents created for them.
+	Placeholders int
+	WarningCount int
+	Warnings     []string // first maxWarnings only
 }
 
 // WriteSummary prints the counts of a run: what was written, and what was cloned from outside the scope or not
@@ -87,6 +90,9 @@ func (rep *Report) WriteSummary(w io.Writer) {
 	}
 	if len(rep.Unheld) > 0 {
 		plan.WriteCounts(w, "groups outside the scope holding its entries, left as they are", rep.Unheld)
+	}
+	if rep.Placeholders > 0 {
+		fmt.Fprintf(w, "placeholders created for entries the source did not return (unreadable to the account reading it; see the warnings): %d\n", rep.Placeholders)
 	}
 	if len(rep.NotCloned) > 0 {
 		plan.WriteCounts(w, "not cloned (of no kind, or built-in)", rep.NotCloned)
@@ -700,6 +706,10 @@ func (r *runner) references(ctx context.Context, p *plan.Plan) error {
 						if err := r.referenced(ctx, dn.RefDN(v)); err != nil {
 							return err
 						}
+					case plan.RefPlaceholder:
+						if err := r.placeholder(ctx, dn.RefDN(v)); err != nil {
+							return err
+						}
 					case plan.RefConfiguration:
 						if err := r.configuration(ctx, dn.RefDN(v)); err != nil {
 							if ctx.Err() != nil {
@@ -828,14 +838,7 @@ func (r *runner) outside(ctx context.Context, v string, kind func() (*plan.Kind,
 			if r.plan.Scope.Has(a) {
 				continue
 			}
-			// The key of a referenced entry: an ancestor that a reference also names is created once.
-			if err := r.once(ctx, "ref:"+dn.Normalize(a), func() error {
-				n, err := r.plan.Ancestor(ctx, a)
-				if err != nil {
-					return err
-				}
-				return r.ensure(ctx, n)
-			}); err != nil {
+			if err := r.ancestor(ctx, a); err != nil {
 				return err
 			}
 		}
@@ -853,6 +856,62 @@ func (r *runner) outside(ctx context.Context, v string, kind func() (*plan.Kind,
 		}
 		return err
 	})
+}
+
+// ancestor creates, once, an ancestor outside the scope of an entry clone creates there; one the source does not
+// return is a placeholder ([scope] unreadable_refs).
+func (r *runner) ancestor(ctx context.Context, a string) error {
+	// The key of a referenced entry: an ancestor that a reference also names is created once.
+	return r.once(ctx, "ref:"+dn.Normalize(a), func() error {
+		n, err := r.plan.Ancestor(ctx, a)
+		if errors.Is(err, plan.ErrMissing) && r.plan.Job().UnreadableRefs != plan.UnreadableRefsSkip {
+			e, ok := plan.PlaceholderParent(a)
+			if !ok {
+				return err
+			}
+			return r.addPlaceholder(ctx, e)
+		}
+		if err != nil {
+			return err
+		}
+		return r.ensure(ctx, n)
+	})
+}
+
+// placeholder creates, once, the placeholder of a reference naming an entry the source does not return
+// (plan.RefPlaceholder), and the parents it lacks.
+func (r *runner) placeholder(ctx context.Context, v string) error {
+	return r.once(ctx, "ref:"+dn.Normalize(v), func() error {
+		ancestors := dn.Ancestors(v, r.plan.Root)
+		for i := len(ancestors) - 1; i >= 0; i-- {
+			if a := ancestors[i]; !r.plan.Scope.Has(a) {
+				if err := r.ancestor(ctx, a); err != nil {
+					return err
+				}
+			}
+		}
+		e, _ := plan.Placeholder(v)
+		return r.addPlaceholder(ctx, e)
+	})
+}
+
+// addPlaceholder adds e, a placeholder, unless the target holds its DN; it warns once per placeholder.
+func (r *runner) addPlaceholder(ctx context.Context, e directory.Entry) error {
+	cur, err := r.dst.Get(ctx, e.DN, []string{"objectClass"})
+	if err != nil || cur != nil {
+		return err
+	}
+	if err := r.dst.Add(ctx, e); err != nil {
+		return fmt.Errorf("add placeholder %s: %w", e.DN, err)
+	}
+	r.logf("add    %s (placeholder)\n", e.DN)
+	r.count(func(rep *Report) {
+		rep.Added++
+		rep.Placeholders++
+	})
+	oc := e.Values("objectClass")
+	r.warn("a placeholder %s at %s: the source did not return it (the account reading it may not read it)", oc[len(oc)-1], e.DN)
+	return nil
 }
 
 // configuration creates the entry of the configuration partition a reference names, and the parents it lacks, top

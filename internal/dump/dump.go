@@ -38,8 +38,9 @@ type Options struct {
 	Progress        *progress.Bar
 }
 
-// Counts are the entries written, per section.
-type Counts struct{ RootDSE, Schema, Config, Base, Referenced int }
+// Counts are the entries written, per section, and the entries a clone needs that the source did not return
+// (Unreadable, not written: on AD, entries the reading account may not read).
+type Counts struct{ RootDSE, Schema, Config, Base, Referenced, Unreadable int }
 
 // Total is the number of entries.
 func (c Counts) Total() int { return c.RootDSE + c.Schema + c.Config + c.Base + c.Referenced }
@@ -112,7 +113,7 @@ func Write(ctx context.Context, src directory.Directory, prof profile.Profile, o
 	if subschema != "" {
 		operational = append(operational, "attributeTypes", "objectClasses")
 	}
-	wr := &writer{w: ldif.Writer{W: w}, excluded: profile.Set(prof.PasswordAttrs), written: map[string]bool{}}
+	wr := &writer{w: ldif.Writer{W: w}, excluded: profile.Set(prof.PasswordAttrs), written: map[string]bool{}, unreadAt: map[string]bool{}}
 	masker := mask.New(o.MaskValue, o.Masked)
 	read := append(append([]string{directory.AllAttrs}, prof.Operational...), backs...)
 	holds := profile.Set(backs)
@@ -247,11 +248,20 @@ func Write(ctx context.Context, src directory.Directory, prof profile.Profile, o
 		}
 		bar.Add(1)
 	}
+	if len(wr.unread) > 0 {
+		// Listed at the end, as the header is written before they are known. clone creates a placeholder where a
+		// reference names one ([scope] unreadable_refs).
+		wr.section("unreadable (the source did not return them: on AD, the account reading it may not read them)")
+		for _, d := range wr.unread {
+			fmt.Fprintf(w, "# unreadable: %s\n", d)
+		}
+		c.Unreadable = len(wr.unread)
+	}
 	if wr.err != nil {
 		return c, wr.err // no end line: the file is not taken for a dump
 	}
-	fmt.Fprintf(w, "\n# end: %d entries (root-dse %d, schema %d, configuration %d, base %d, referenced %d)\n",
-		c.Total(), c.RootDSE, c.Schema, c.Config, c.Base, c.Referenced)
+	fmt.Fprintf(w, "\n# end: %d entries (root-dse %d, schema %d, configuration %d, base %d, referenced %d; unreadable %d, not written)\n",
+		c.Total(), c.RootDSE, c.Schema, c.Config, c.Base, c.Referenced, c.Unreadable)
 	return c, nil
 }
 
@@ -259,6 +269,8 @@ type writer struct {
 	w        ldif.Writer
 	excluded map[string]bool
 	written  map[string]bool // normalized DNs
+	unread   []string        // the DNs read and not returned, or returned without their object classes
+	unreadAt map[string]bool // normalized DNs
 	err      error
 }
 
@@ -298,7 +310,9 @@ func list(w io.Writer, names []string) {
 
 func (wr *writer) section(name string) { fmt.Fprintf(wr.w.W, "\n# section: %s\n", name) }
 
-// read writes the entry at entryDN unless it is written already or missing; it returns how many it wrote.
+// read writes the entry at entryDN unless it is written already or missing; it returns how many it wrote. One the
+// source does not return, or returns without its object classes (all a reader without rights may get), is noted
+// as unreadable.
 func (wr *writer) read(ctx context.Context, src directory.Directory, entryDN string, attrs []string, m mask.Masker) (int, error) {
 	if wr.written[dn.Normalize(entryDN)] {
 		return 0, nil
@@ -307,7 +321,11 @@ func (wr *writer) read(ctx context.Context, src directory.Directory, entryDN str
 	if err != nil {
 		return 0, fmt.Errorf("read %s: %w", entryDN, err)
 	}
-	if e == nil {
+	if e == nil || len(e.Values("objectClass")) == 0 {
+		if key := dn.Normalize(entryDN); !wr.unreadAt[key] {
+			wr.unreadAt[key] = true
+			wr.unread = append(wr.unread, entryDN)
+		}
 		return 0, nil
 	}
 	if wr.put(m.Apply(*e)) {

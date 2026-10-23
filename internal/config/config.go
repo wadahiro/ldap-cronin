@@ -144,6 +144,9 @@ type Scope struct {
 	// ConfigurationRefs is what is done with a reference naming the configuration partition of AD (an Exchange
 	// address list in showInAddressBook): skip (default) or clone (see plan.ConfigurationRefsClone).
 	ConfigurationRefs string `toml:"configuration_refs"`
+	// UnreadableRefs is what is done with a reference naming an entry of AD the source does not return (one the
+	// reading account may not read): placeholder (default) or skip (see plan.UnreadableRefsPlaceholder).
+	UnreadableRefs string `toml:"unreadable_refs"`
 	// OutsideGroups is what is done with a group outside the scope that holds entries of it (a member): clone
 	// (default), existing or skip (see plan.OutsideGroupsClone). BuiltinGroups is it for a built-in group (Domain
 	// Admins): add (default) or skip.
@@ -311,6 +314,11 @@ func (c *Config) validate() error {
 		}
 	default:
 		return fmt.Errorf("[scope] configuration_refs must be %q or %q, got %q", plan.ConfigurationRefsSkip, plan.ConfigurationRefsClone, c.Scope.ConfigurationRefs)
+	}
+	switch c.Scope.UnreadableRefs {
+	case "", plan.UnreadableRefsPlaceholder, plan.UnreadableRefsSkip:
+	default:
+		return fmt.Errorf("[scope] unreadable_refs must be %q or %q, got %q", plan.UnreadableRefsPlaceholder, plan.UnreadableRefsSkip, c.Scope.UnreadableRefs)
 	}
 	switch c.Scope.OutsideGroups {
 	case "", plan.OutsideGroupsClone, plan.OutsideGroupsExisting, plan.OutsideGroupsSkip:
@@ -604,7 +612,7 @@ func (c *Config) JobFor(p profile.Profile) (plan.Job, error) {
 		return plan.Job{}, err
 	}
 	job := plan.Job{Profile: p, RootDN: c.Scope.RootDN, BaseDNs: c.Scope.BaseDNs, Masker: mask.New(c.Mask.Value, c.Mask.Attributes),
-		References: c.Scope.References, ConfigurationRefs: c.Scope.ConfigurationRefs,
+		References: c.Scope.References, ConfigurationRefs: c.Scope.ConfigurationRefs, UnreadableRefs: c.Scope.UnreadableRefs,
 		OutsideGroups: c.Scope.OutsideGroups, BuiltinGroups: c.Scope.BuiltinGroups,
 		ACL: c.Target.Lab != nil && c.Target.Lab.Native && c.Target.Lab.ACL == ServerAttributesSource}
 	for _, spec := range p.Kinds { // the profile's order, whatever order the config lists them in
