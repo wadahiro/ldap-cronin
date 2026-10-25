@@ -102,6 +102,13 @@ func TestNativeImportKeepsObjectGUIDAndObjectSid(t *testing.T) {
 		"for name in ('sIDHistory', 'mS-DS-CreatorSID'):\n" +
 		"    m[name] = ldb.MessageElement([ndr_pack(security.dom_sid('S-1-5-21-1111111111-2222222222-3333333333-1234'))], ldb.FLAG_MOD_REPLACE, name)\n" +
 		"db.modify(m)\n" +
+		// Credentials ([attributes] credentials = "copy"): a private key, and a resource-based delegation, which
+		// Samba lets only the system write and the import, writing as the system, carries with the SID it names.
+		"m = ldb.Message(ldb.Dn(db, '" + withServerAttrs + base + "'))\n" +
+		"m['userPKCS12'] = ldb.MessageElement([b'not a real key'], ldb.FLAG_MOD_REPLACE, 'userPKCS12')\n" +
+		"rbcd = security.descriptor.from_sddl('O:BAD:(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;' + str(db.get_domain_sid()) + '-1234)', security.dom_sid(db.get_domain_sid()))\n" +
+		"m['msDS-AllowedToActOnBehalfOfOtherIdentity'] = ldb.MessageElement([ndr_pack(rbcd)], ldb.FLAG_MOD_REPLACE, 'msDS-AllowedToActOnBehalfOfOtherIdentity')\n" +
+		"db.modify(m)\n" +
 		// ACEs of its own, on the user and on the domain root (a delegation every OU inherits), which the lab has
 		// not: only the copy of the ACLs, the root's among them, makes the descriptors equal.
 		"from samba.ndr import ndr_unpack\n" +
@@ -130,7 +137,8 @@ func TestNativeImportKeepsObjectGUIDAndObjectSid(t *testing.T) {
 	cfg, err := config.Parse([]byte(fmt.Sprintf("[source]\nurl = \"ldaps://%s:%d\"\nbind_dn = %q\ninsecure_skip_verify = true\n"+
 		"[target]\nurl = \"ldaps://%s:%d\"\nbind_dn = %q\ninsecure_skip_verify = true\n"+
 		"[target.lab]\nprefix = %q\nimage = %q\nnative = true\nfast_password = true\nacl = \"source\"\n"+
-		"[scope]\nbase_dn = %q\n[attributes]\nmode = \"allowlist\"\nextra_include = [\"carLicense\", \"seeAlso\"]\n[mask]\nattributes = [\"mail\"]\n",
+		"[scope]\nbase_dn = %q\n[attributes]\nmode = \"allowlist\"\ncredentials = \"copy\"\n"+
+		"extra_include = [\"carLicense\", \"seeAlso\", \"userPKCS12\", \"msDS-AllowedToActOnBehalfOfOtherIdentity\"]\n[mask]\nattributes = [\"mail\"]\n",
 		host, srcLDAPS, admin, host, dstLDAPS, admin, dstLab.Prefix, image, cloneBase)))
 	must(err)
 	pw := func() (string, error) { return password, nil }
@@ -159,6 +167,26 @@ func TestNativeImportKeepsObjectGUIDAndObjectSid(t *testing.T) {
 	t.Logf("clone:\n%s", cloned.String())
 	if rep.Added == 0 || !regexp.MustCompile(`fast_password: [1-9]\d* users got the NT hash directly`).MatchString(cloned.String()) {
 		t.Fatalf("the lab is created and imported into, the passwords the fast way: %+v\n%s", rep, cloned.String())
+	}
+	// The credentials are the source's, the delegation naming the same SID (the lab has the source's domain SID).
+	creds := []string{"userPKCS12", "msDS-AllowedToActOnBehalfOfOtherIdentity"}
+	held, err := src.Get(context.Background(), withServerAttrs+base, creds)
+	must(err)
+	imported, err := dialAs(dstLDAPS, admin, password)
+	must(err)
+	got, err := imported.Get(context.Background(), withServerAttrs+base, creds)
+	imported.Close()
+	must(err)
+	for _, a := range creds {
+		if len(held.Values(a)) != 1 || strings.Join(got.Values(a), "") != strings.Join(held.Values(a), "") {
+			t.Fatalf("%s: the source holds %d values, the lab %d, equal %v", a, len(held.Values(a)), len(got.Values(a)),
+				strings.Join(got.Values(a), "") == strings.Join(held.Values(a), ""))
+		}
+	}
+	var compared bytes.Buffer
+	if code, err := s.Diff(context.Background(), app.DiffOutput{}, &compared); err != nil || code != app.ExitSame ||
+		!strings.Contains(compared.String(), "credentials copied from the source") {
+		t.Fatalf("diff after the import (%d, %v):\n%s", code, err, compared.String())
 	}
 	report.Reset()
 	if code, err := s.Check(context.Background(), app.CheckOptions{Config: "c.toml", Lab: dstLab}, &report); err != nil || code != app.CheckReady ||

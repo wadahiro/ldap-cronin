@@ -331,7 +331,8 @@ func TestMaskOfAKind(t *testing.T) {
 }
 
 // credentials = "copy" lets the job copy the profile's Secrets (an allow list may name them, and they are no longer
-// never-cloned), but never what no server returns; a generic server and a native import refuse it.
+// never-cloned), but never what no server returns; a generic server refuses it. A native import takes it: it reads
+// the source as clone does, and keeping the SIDs, it is where the values naming them mean the same.
 func TestCredentialsCopy(t *testing.T) {
 	c, err := Parse([]byte(valid + "\n[attributes]\ncredentials = \"copy\"\nmode = \"allowlist\"\nextra_include = [\"ms-Mcs-AdmPwd\"]\n"))
 	if err != nil {
@@ -358,11 +359,13 @@ func TestCredentialsCopy(t *testing.T) {
 	}
 	for name, raw := range map[string]string{
 		"an unknown value": valid + "\n[attributes]\ncredentials = \"all\"\n",
-		"native":           strings.Replace(valid, "[scope]", "[target.lab]\nnative = true\n[scope]", 1) + "\n[attributes]\ncredentials = \"copy\"\n",
 	} {
 		if _, err := Parse([]byte(raw)); err == nil || !strings.Contains(err.Error(), "credentials") {
 			t.Errorf("%s: %v", name, err)
 		}
+	}
+	if _, err := Parse([]byte(strings.Replace(valid, "[scope]", "[target.lab]\nnative = true\n[scope]", 1) + "\n[attributes]\ncredentials = \"copy\"\n")); err != nil {
+		t.Errorf("native: %v", err)
 	}
 }
 

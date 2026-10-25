@@ -294,7 +294,8 @@ func (s *Session) targetSchema(ctx context.Context, dst directory.Directory) (ma
 // targetRefusals is the attributes the target will not have written over LDAP, by lowercase name, with why.
 func (s *Session) targetRefusals(ctx context.Context, dst directory.Directory) (map[string]string, error) {
 	refused := map[string]string{}
-	if s.Job.Profile.Refusals == nil {
+	// A native import writes the lab's database as the system, which takes them all; diff then compares them too.
+	if s.Job.Profile.Refusals == nil || s.Cfg.NativeLab() != nil {
 		return refused, nil
 	}
 	got, err := s.Job.Profile.Refusals.Refused(ctx, dst)

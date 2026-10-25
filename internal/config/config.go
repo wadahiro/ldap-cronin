@@ -448,9 +448,6 @@ func (c *Config) validate() error {
 		if l.Native && c.Attributes.ACL == ACLCopy {
 			return fmt.Errorf("[attributes] acl = %q is for a clone over LDAP; with native = true, [target.lab] acl = %q gives the lab the source's ACLs", ACLCopy, ServerAttributesSource)
 		}
-		if l.Native && c.Attributes.Credentials == CredentialsCopy {
-			return fmt.Errorf("[target.lab] native = true writes the lab's database from the dump of the source, which carries no credentials; [attributes] credentials = %q needs a clone over LDAP", CredentialsCopy)
-		}
 		if l.Native && c.Scope.ConfigurationRefs == plan.ConfigurationRefsClone {
 			return fmt.Errorf("[target.lab] native = true writes the domain partition only; [scope] configuration_refs = %q needs a clone over LDAP", plan.ConfigurationRefsClone)
 		}

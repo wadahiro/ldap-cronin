@@ -263,8 +263,9 @@ ldap-cronin clone -config config.toml     # imports into its database
 ldap-cronin diff -config config.toml      # matches objects by objectGUID directly (it is the same on both sides)
 ```
 
-- The dump the import is written from carries no credentials, so `[attributes] credentials = "copy"` is refused
-  with `native = true` (not yet in a test).
+- `[attributes] credentials = "copy"` copies the credentials the source returns, as over LDAP; the import writes as
+  the system, so it also carries what Samba lets only the system write (the resource-based delegation), with the
+  SIDs it names meaning the same in the lab.
 - An `objectSid` is the domain's SID and a number within it, so the lab must have the source's domain SID: a lab
   `lab up --config` made has it. **It is chosen only when the domain is created**; a lab made otherwise
   (`lab up --realm`) is refused before anything is written: `lab reset`, then `lab up --config` again.

@@ -157,7 +157,7 @@ var AD = Profile{
 		"gplink":    "it links GPOs, which clone does not copy",
 		"gpoptions": "it goes with gPLink (blocks inheritance of GPOs, which clone does not copy)",
 	},
-	Refusals: sambaRefusals{},
+	Refusals: adRefusals{},
 	Root:     adRoot{},
 	ConfigurationNC: func(ctx context.Context, d directory.Directory) (string, error) {
 		root, err := d.Get(ctx, "", []string{"configurationNamingContext"})
@@ -422,9 +422,11 @@ func wellKnownPrincipal(entryDN string) (string, bool) {
 	return "<SID=" + strings.ToUpper(sid) + ">", true
 }
 
-// sambaRefusals is what a Samba AD DC refuses over LDAP although its schema has it, told from Windows by the
-// vendorName of its root DSE (Windows publishes none).
-type sambaRefusals struct{}
+// adRefusals is what an AD target refuses over LDAP although its schema has it: the attributes its own schema marks
+// systemOnly (the source's may not: Samba 4.19.5 marks msDS-AllowedToActOnBehalfOfOtherIdentity so, which Windows
+// lets a client write, and refuses it "can only be modified as system"), and on Samba the ones it refuses by its
+// code, told from Windows by the vendorName of its root DSE (Windows publishes none).
+type adRefusals struct{}
 
 // sambaRefused are the attributes Samba will not have written over LDAP, with the reason it gives.
 var sambaRefused = map[string]string{
@@ -433,12 +435,33 @@ var sambaRefused = map[string]string{
 	"userParameters": "Samba refuses it over LDAP (https://bugzilla.samba.org/show_bug.cgi?id=8077)",
 }
 
-func (sambaRefusals) Refused(ctx context.Context, dst directory.Directory) (map[string]string, error) {
+func (adRefusals) Refused(ctx context.Context, dst directory.Directory) (map[string]string, error) {
+	out := map[string]string{}
+	root, err := dst.Get(ctx, "", []string{"schemaNamingContext"})
+	if err != nil {
+		return nil, fmt.Errorf("read root DSE: %w", err)
+	}
+	if root != nil && first(root.Values("schemaNamingContext")) != "" {
+		err = dst.Walk(ctx, first(root.Values("schemaNamingContext")), "(objectClass=attributeSchema)", []string{"lDAPDisplayName", "systemOnly"}, func(e directory.Entry) error {
+			if n := first(e.Values("lDAPDisplayName")); n != "" && strings.EqualFold(first(e.Values("systemOnly")), "TRUE") {
+				out[n] = "the target's schema has it systemOnly: only the server writes it"
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, fmt.Errorf("read schema: %w", err)
+		}
+	}
 	samba, err := IsSamba(ctx, dst)
-	if err != nil || !samba {
+	if err != nil {
 		return nil, err
 	}
-	return sambaRefused, nil
+	if samba {
+		for n, why := range sambaRefused {
+			out[n] = why
+		}
+	}
+	return out, nil
 }
 
 // IsSamba reports whether d is a Samba AD DC, by the vendorName of its root DSE (Windows publishes none).

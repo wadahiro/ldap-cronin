@@ -159,3 +159,34 @@ func TestCredentialsFromADump(t *testing.T) {
 		}
 	}
 }
+
+// An attribute the target's schema marks systemOnly is left out with the reason, though the source's lets a client
+// write it: Samba 4.19.5 marks msDS-AllowedToActOnBehalfOfOtherIdentity so, which a Windows source holds and its
+// clients write; Samba refuses it over LDAP, which would stop clone at the first object holding one.
+func TestWhatTheTargetsSchemaHasSystemOnlyIsLeftOut(t *testing.T) {
+	ctx := context.Background()
+	const rbcd = "msDS-AllowedToActOnBehalfOfOtherIdentity"
+	w := credentialsWorld()
+	may := []string{"title", "userPassword", rbcd}
+	withClasses(w.src, may)
+	withClasses(w.dst, may)
+	e := map[string][]string{"objectClass": {"attributeSchema"}, "cn": {rbcd}, "lDAPDisplayName": {rbcd}, "attributeID": {"1.9.rbcd"},
+		"attributeSyntax": {"2.5.5.15"}}
+	w.src.Put("CN="+rbcd+","+schemaNC, e)
+	w.dst.Put("CN="+rbcd+","+schemaNC, e)
+	w.dst.Lookup("CN=" + rbcd + "," + schemaNC).Attrs["systemOnly"] = []string{"TRUE"}
+	w.src.Lookup(alice).Attrs[rbcd] = []string{"\x01\x00\x04\x80"}
+	s := w.openWith(t, "[mapping]\nmode = \"off\"\n[attributes]\ncredentials = \"copy\"\n")
+	var log bytes.Buffer
+	if _, err := s.Clone(ctx, false, &log, &log); err != nil {
+		t.Fatalf("%v\n%s", err, log.String())
+	}
+	got := w.dst.Lookup(alice)
+	if got.Values(rbcd) != nil || strings.Join(got.Values("userPassword"), "") != prodSecret ||
+		!strings.Contains(log.String(), rbcd+": the target's schema has it systemOnly") {
+		t.Fatalf("%v\n%s", got.Attrs, log.String())
+	}
+	if code, err := s.Diff(ctx, DiffOutput{}, &bytes.Buffer{}); err != nil || code != ExitSame {
+		t.Fatalf("diff: %d %v", code, err)
+	}
+}
