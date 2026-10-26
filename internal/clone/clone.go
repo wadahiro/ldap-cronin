@@ -70,7 +70,10 @@ type Report struct {
 	Unheld                       map[string]int
 	// ACLs counts the objects given the source's ACL ([attributes] acl = "copy"); ACEsLeftOut counts, per why
 	// (plan.WhyNoSourcePrincipal ...), the source's ACEs left out because the target has no principal for their trustee.
-	ACLs        int
+	ACLs int
+	// SDValues counts, per attribute, the values written with each SID the target's (plan.Job.SDValues: the
+	// resource-based delegation).
+	SDValues    map[string]int
 	ACEsLeftOut map[string]int
 	// Placeholders counts the placeholders created for entries the source did not return (plan.RefPlaceholder),
 	// with the parents created for them.
@@ -98,8 +101,11 @@ func (rep *Report) WriteSummary(w io.Writer) {
 	if rep.ACLs > 0 {
 		fmt.Fprintf(w, "objects given the source's ACL (owner, group and explicit ACEs, each SID the target's): %d\n", rep.ACLs)
 	}
+	if len(rep.SDValues) > 0 {
+		plan.WriteCounts(w, "values naming principals written with each SID the target's", rep.SDValues)
+	}
 	if len(rep.ACEsLeftOut) > 0 {
-		plan.WriteCounts(w, "ACEs left out of the ACLs (their trustee has no principal on the target; see the warnings)", rep.ACEsLeftOut)
+		plan.WriteCounts(w, "ACEs left out (their trustee has no principal on the target; see the warnings)", rep.ACEsLeftOut)
 	}
 	if rep.Placeholders > 0 {
 		fmt.Fprintf(w, "placeholders created for entries the source did not return (unreadable to the account reading it; see the warnings): %d\n", rep.Placeholders)
@@ -133,9 +139,14 @@ type runner struct {
 	primary []primaryOf     // the accounts whose primary group is not their type's default (guarded by mu)
 	acls    []string        // the DNs of the objects to give the source's ACL (ACLTranslated; guarded by mu)
 	aclOn   bool
-	leftOut map[string]bool // the SIDs warned about as left out of the ACLs
-	refs    *plan.Classifier
-	done    map[string]*onceErr // see once
+	leftOut map[string]bool // the SIDs warned about as left out of the ACEs
+	// sdOn are the attributes written last with the target's SIDs (plan.Job.Translated), by lowercase name; sdValues
+	// the values to write (guarded by mu).
+	sdOn       map[string]string
+	sdValues   []sdValue
+	principals *plan.Principals // see principalsFor
+	refs       *plan.Classifier
+	done       map[string]*onceErr // see once
 }
 
 // errSkipped means an entry was not created and a warning says why; the run goes on.
@@ -163,8 +174,11 @@ func Run(ctx context.Context, src, dst directory.Directory, job plan.Job, opt Op
 		return nil, err
 	}
 	r := &runner{dst: dst, opt: opt, out: out, prof: job.Profile, skipped: map[string]bool{}, done: map[string]*onceErr{},
-		unwrote: map[string]bool{}, report: Report{ReferencedKinds: map[string]int{}, Unwritten: map[string]int{}, Unheld: map[string]int{}, ACEsLeftOut: map[string]int{}},
+		unwrote: map[string]bool{}, report: Report{ReferencedKinds: map[string]int{}, Unwritten: map[string]int{}, Unheld: map[string]int{}, ACEsLeftOut: map[string]int{}, SDValues: map[string]int{}},
 		aclOn: job.ACL == plan.ACLTranslated && !opt.Native, leftOut: map[string]bool{}}
+	if !opt.Native {
+		r.sdOn = job.Translated()
+	}
 	opt.Progress.Stats(func() string {
 		r.mu.Lock()
 		defer r.mu.Unlock()
@@ -190,6 +204,9 @@ func (r *runner) run(ctx context.Context, p *plan.Plan) error {
 		phases++ // the groups outside the scope holding its entries
 	}
 	if r.aclOn {
+		phases++
+	}
+	if len(r.sdOn) > 0 {
 		phases++
 	}
 	bar.Phases(phases)
@@ -222,7 +239,10 @@ func (r *runner) run(ctx context.Context, p *plan.Plan) error {
 	}
 	// Last: an ACE names its trustee by SID, which an object has on the target only once created, and any object
 	// clone creates (a group outside the scope included) may be one.
-	return r.descriptors(ctx, p)
+	if err := r.descriptors(ctx, p); err != nil {
+		return err
+	}
+	return r.writeSDValues(ctx, p)
 }
 
 // holders gives the groups outside the scope that hold entries of it (a group of another OU, Domain Admins) the
@@ -410,6 +430,7 @@ func (r *runner) leaf(ctx context.Context, k *plan.Kind, e directory.Entry) erro
 		return err
 	}
 	r.withACL(e.DN)
+	r.withSDValues(e)
 	if account == nil {
 		return nil
 	}
@@ -450,6 +471,7 @@ func (r *runner) ensure(ctx context.Context, n plan.Node) error {
 			return err
 		}
 		r.withACL(n.Entry.DN)
+		r.withSDValues(n.Entry)
 		return r.track(ctx, n.Entry, created, cur)
 	}
 	cur, err := r.dst.Get(ctx, n.Entry.DN, append([]string{"objectClass"}, r.guidAttr()...))
@@ -1070,7 +1092,9 @@ func (r *runner) desired(e directory.Entry) (directory.Entry, error) {
 		// The identifier is assigned by the target, so it is not copied (it is read for the marker or the mapping).
 		// A native import and a preserving Add, however, pass it through so the target object has the source's.
 		// creatorsName and modifiersName hold DNs but are written at creation, not with the references.
-		if (r.plan.IsRef(n) && !r.creationOnly(n)) || len(v) == 0 || (!keep && strings.EqualFold(n, r.prof.Identity.Attr())) || r.sourceExtra(n) {
+		// A value naming principals by SID is written last, translated (writeSDValues).
+		if (r.plan.IsRef(n) && !r.creationOnly(n)) || len(v) == 0 || (!keep && strings.EqualFold(n, r.prof.Identity.Attr())) || r.sourceExtra(n) ||
+			r.sdOn[strings.ToLower(n)] != "" {
 			continue
 		}
 		out.Attrs[n] = v

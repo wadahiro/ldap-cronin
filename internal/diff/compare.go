@@ -16,9 +16,11 @@ func (r *runner) compareEntry(kind string, want, got directory.Entry, names []st
 	want, got = r.primaryDNs(want, got)
 	// Only where the SD is compared (not a holder's): the ACEs left out would be counted for nothing otherwise.
 	for _, n := range names {
-		if strings.EqualFold(n, sdAttr) {
+		switch {
+		case strings.EqualFold(n, sdAttr):
 			want, got = r.aclTexts(want, got)
-			break
+		case r.sdOn[strings.ToLower(n)] != "":
+			want, got = r.descriptorTexts(want, got, n, true)
 		}
 	}
 	plain, refs := r.p.Changes(want, got, names, func(name string) bool {

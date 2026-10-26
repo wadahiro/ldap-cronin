@@ -197,8 +197,8 @@ var computerCredentials = []string{
 // granted control access, LAPS to its readers) and a client may write: the other secrets and the computers'
 // credentials but the gMSA password, which the DC constructs for each read. They are copied for a clone that is to
 // hold the structure the source has (one test domain cloned from another); a LAPS password encrypted to the source
-// domain's key, or a delegation naming its SIDs, means something on the target only when it has the source's domain
-// SID ([target.lab] native = true).
+// domain's key means something on the target only when it has the source's domain SID ([target.lab] native = true).
+// The delegation, naming its SIDs, is written over LDAP with the target's (Descriptors.Valued).
 func readableSecrets() []string {
 	var out []string
 	for _, n := range append(append([]string(nil), accountSecrets...), computerCredentials...) {

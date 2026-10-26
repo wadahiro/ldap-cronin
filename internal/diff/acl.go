@@ -18,17 +18,27 @@ const sdAttr = "nTSecurityDescriptor"
 // compared. With ACLTranslated the source's is first what clone writes (Principals): the target's SIDs, and without
 // the ACEs whose trustee the target lacks, which are counted as not compared, as clone leaves them out.
 func (r *runner) aclTexts(want, got directory.Entry) (directory.Entry, directory.Entry) {
-	d := r.job.Profile.Descriptors
-	if r.job.ACL == plan.ACLNone || d == nil {
+	if r.job.ACL == plan.ACLNone {
 		return want, got
 	}
-	wantName, wantRaw := sdValue(want)
-	gotName, gotRaw := sdValue(got)
-	if r.job.ACL == plan.ACLTranslated && wantRaw != "" {
+	return r.descriptorTexts(want, got, sdAttr, r.job.ACL == plan.ACLTranslated)
+}
+
+// descriptorTexts is aclTexts for any attribute whose value is a descriptor (attr): the ACL, or a value naming
+// principals (plan.Job.SDValues, clone writes them translated). translate gives the source's value the target's SIDs
+// first.
+func (r *runner) descriptorTexts(want, got directory.Entry, attr string, translate bool) (directory.Entry, directory.Entry) {
+	d := r.job.Profile.Descriptors
+	if d == nil {
+		return want, got
+	}
+	wantName, wantRaw := sdValue(want, attr)
+	gotName, gotRaw := sdValue(got, attr)
+	if translate && wantRaw != "" {
 		out, dropped, err := d.Rewrite(wantRaw, gotRaw, r.translate(r.ctx))
 		if err != nil {
 			out = ""
-			r.aclFailed(want.DN, err)
+			r.aclFailed(want.DN, attr, err)
 		}
 		wantRaw = out
 		for _, sid := range dropped {
@@ -59,17 +69,17 @@ func (r *runner) whyDropped(sid string) string {
 }
 
 // aclFailed keeps the first error translating a descriptor, which Run returns: compareEntry has no error to return.
-func (r *runner) aclFailed(dn string, err error) {
+func (r *runner) aclFailed(dn, attr string, err error) {
 	r.primaryMu.Lock()
 	defer r.primaryMu.Unlock()
 	if r.aclErr == nil {
-		r.aclErr = fmt.Errorf("%s: the source's %s: %w", dn, sdAttr, err)
+		r.aclErr = fmt.Errorf("%s: the source's %s: %w", dn, attr, err)
 	}
 }
 
-func sdValue(e directory.Entry) (string, string) {
+func sdValue(e directory.Entry, attr string) (string, string) {
 	for n, v := range e.Attrs {
-		if strings.EqualFold(n, sdAttr) && len(v) > 0 {
+		if strings.EqualFold(n, attr) && len(v) > 0 {
 			return n, v[0]
 		}
 	}

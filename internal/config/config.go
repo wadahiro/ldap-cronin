@@ -521,6 +521,10 @@ func (c *Config) validate() error {
 	}
 	// With profile = auto the attribute rules depend on the server, so they are checked in PlanOptionsFor.
 	if isExplicit {
+		// As JobFor checks them: with credentials = "copy" an allow list may name the credentials it copies.
+		if c.Attributes.Credentials == CredentialsCopy && len(explicit.Secrets) > 0 {
+			explicit = explicit.WithSecrets()
+		}
 		return c.checkAttributes(explicit)
 	}
 	return nil
@@ -697,6 +701,9 @@ func (c *Config) JobFor(p profile.Profile) (plan.Job, error) {
 		References: c.Scope.References, ConfigurationRefs: c.Scope.ConfigurationRefs, UnreadableRefs: c.Scope.UnreadableRefs,
 		OutsideGroups: c.Scope.OutsideGroups, BuiltinGroups: c.Scope.BuiltinGroups,
 		ACL: acl}
+	if p.Descriptors != nil && c.NativeLab() == nil {
+		job.SDValues = p.Descriptors.Valued()
+	}
 	for _, spec := range p.Kinds { // the profile's order, whatever order the config lists them in
 		if !contains(c.objects(p), spec.Name) {
 			continue

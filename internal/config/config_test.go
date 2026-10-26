@@ -367,6 +367,21 @@ func TestCredentialsCopy(t *testing.T) {
 	if _, err := Parse([]byte(strings.Replace(valid, "[scope]", "[target.lab]\nnative = true\n[scope]", 1) + "\n[attributes]\ncredentials = \"copy\"\n")); err != nil {
 		t.Errorf("native: %v", err)
 	}
+	// Over LDAP the delegation is written with the target's SIDs; a native import keeps the source's.
+	for native, want := range map[bool]int{false: 1, true: 0} {
+		raw := valid
+		if native {
+			raw = strings.Replace(valid, "[scope]", "[target.lab]\nnative = true\n[scope]", 1)
+		}
+		c, _ := Parse([]byte(raw))
+		if job, err := c.JobFor(profile.AD); err != nil || len(job.SDValues) != want {
+			t.Errorf("native %v: %v %v", native, job.SDValues, err)
+		}
+	}
+	// With the profile named, Parse checks the lists as JobFor does.
+	if _, err := Parse([]byte(withProfile("ad") + "\n[attributes]\ncredentials = \"copy\"\nmode = \"allowlist\"\nextra_include = [\"ms-Mcs-AdmPwd\"]\n")); err != nil {
+		t.Errorf("profile = \"ad\": %v", err)
+	}
 }
 
 // [attributes] acl = "copy" is the clone over LDAP; a native import has [target.lab] acl, and a generic server keeps

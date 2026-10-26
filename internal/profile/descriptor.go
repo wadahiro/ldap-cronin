@@ -34,6 +34,9 @@ type Descriptors interface {
 	// Parts is what of a descriptor clone gives and diff compares: owner, group and protected flag as one value,
 	// each explicit ACE as another (ad.ExplicitSDParts).
 	Parts(raw string) ([]string, error)
+	// Valued are the attributes besides Attr whose value is a descriptor naming principals, which an object created
+	// over LDAP names nobody with unless each SID is given the same way (the resource-based delegation).
+	Valued() []string
 }
 
 type adDescriptors struct{}
@@ -81,3 +84,8 @@ func (adDescriptors) Rewrite(raw, cur string, to func(string) (string, error)) (
 }
 
 func (adDescriptors) Parts(raw string) ([]string, error) { return ad.ExplicitSDParts([]byte(raw)) }
+
+// Valued is the resource-based delegation only: who may act as the account is a DACL of SIDs. The schema has other
+// attributes of the descriptor syntax (Exchange's msExchMailboxSecurityDescriptor, a gMSA's
+// msDS-GroupMSAMembership), not named here yet: each changes what a clone of a product's objects writes.
+func (adDescriptors) Valued() []string { return []string{"msDS-AllowedToActOnBehalfOfOtherIdentity"} }

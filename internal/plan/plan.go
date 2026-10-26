@@ -51,9 +51,30 @@ type Job struct {
 	// ACL says whether the clone gives the target the source's ACLs, and how: ACLNone, ACLAsIs or ACLTranslated.
 	// diff then compares each object's owner, group, protected flag and explicit ACEs (profile.Descriptors.Parts).
 	ACL ACLMode
+	// SDValues are the attributes whose value is a security descriptor naming principals (profile.Descriptors.Valued)
+	// that clone writes and diff compares with each SID the target's (Principals), as ACLTranslated does the ACL:
+	// over LDAP, where an object created gets the target's own SID. None for a native import, which keeps the SIDs.
+	// Of them, only those the kinds copy count (Translated).
+	SDValues []string
 	// AllWritable is set when the allow lists are every attribute a client can write on the class of each kind
 	// ([attributes] mode = "all"), so the summaries count them instead of naming hundreds.
 	AllWritable bool
+}
+
+// Translated is the SDValues the kinds copy, by lowercase name: the attributes a kind's list takes (credentials =
+// "copy" for the delegation), and the target does not refuse (app's narrowing of the kinds).
+func (j Job) Translated() map[string]string {
+	out := map[string]string{}
+	for _, a := range j.SDValues {
+		for _, k := range j.Kinds {
+			for _, n := range k.Attrs {
+				if strings.EqualFold(n, a) {
+					out[strings.ToLower(a)] = n
+				}
+			}
+		}
+	}
+	return out
 }
 
 // ACLMode is how the clone gives the target the source's ACLs.

@@ -81,7 +81,7 @@ type Summary struct {
 	// NotComparedWhy is NotCompared per "attribute: why" (plan.Classifier.Why), for the text summary.
 	NotComparedWhy map[string]int
 	// ACEsNotCompared counts, per why (plan.WhyNoSourcePrincipal ...), the source's ACEs clone leaves out because
-	// the target has no principal for their trustee (ACLTranslated).
+	// the target has no principal for their trustee (ACLTranslated, plan.Job.SDValues).
 	ACEsNotCompared map[string]int
 	// Referenced is the number of entries outside the scope compared because a reference names them.
 	Referenced int
@@ -133,7 +133,8 @@ func Run(ctx context.Context, src, dst directory.Directory, job plan.Job, o Opti
 		return r.sum, err
 	}
 	r.p, r.ctx = p, ctx
-	if job.ACL == plan.ACLTranslated {
+	r.sdOn = job.Translated()
+	if job.ACL == plan.ACLTranslated || len(r.sdOn) > 0 {
 		if r.principals, err = p.Principals(ctx, dst); err != nil {
 			return r.sum, err
 		}
@@ -242,8 +243,10 @@ type runner struct {
 	primaryOutside map[string]string
 	held           map[string]bool
 	primaryErr     error
-	// principals gives the source's SIDs the target's (ACLTranslated); aclErr is the first error doing it (aclFailed).
+	// principals gives the source's SIDs the target's (ACLTranslated, sdOn); aclErr is the first error doing it
+	// (aclFailed). sdOn are the values naming principals compared translated (plan.Job.Translated).
 	principals *plan.Principals
+	sdOn       map[string]string
 	aclErr     error
 	p          *plan.Plan
 	loc        *locator

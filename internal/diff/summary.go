@@ -3,6 +3,7 @@ package diff
 import (
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 
 	"github.com/wadahiro/ldap-cronin/internal/plan"
@@ -61,6 +62,9 @@ func WriteSummary(w io.Writer, job plan.Job, sum Summary, excluded []string) {
 		fmt.Fprintln(w, "ACLs compared: each object's owner, group, protected flag and explicit ACEs (nTSecurityDescriptor; the inherited ACEs are each server's)")
 	case plan.ACLTranslated:
 		fmt.Fprintln(w, "ACLs compared: each object's owner, group, protected flag and explicit ACEs (nTSecurityDescriptor), each SID of the source's as the target's object at the same DN (the inherited ACEs are each server's)")
+	}
+	if t := translatedNames(job); len(t) > 0 {
+		fmt.Fprintf(w, "values naming principals compared with each SID of the source's as the target's object at the same DN: %s\n", strings.Join(t, ", "))
 	}
 	if len(sum.ACEsNotCompared) > 0 {
 		plan.WriteCounts(w, "ACEs not compared (clone leaves them out: their trustee has no principal on the target)", sum.ACEsNotCompared)
@@ -137,4 +141,14 @@ func appendUnique(list []string, v string) []string {
 		}
 	}
 	return append(list, v)
+}
+
+// translatedNames is plan.Job.Translated as names, in order.
+func translatedNames(job plan.Job) []string {
+	var out []string
+	for _, n := range job.Translated() {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
 }

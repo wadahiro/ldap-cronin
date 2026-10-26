@@ -104,7 +104,7 @@ func TestACLCopyTranslatesTheSIDs(t *testing.T) {
 	}
 	var sum bytes.Buffer
 	rep.WriteSummary(&sum)
-	if !strings.Contains(sum.String(), "objects given the source's ACL") || !strings.Contains(sum.String(), "ACEs left out of the ACLs") {
+	if !strings.Contains(sum.String(), "objects given the source's ACL") || !strings.Contains(sum.String(), "ACEs left out (") {
 		t.Fatalf("summary:\n%s", sum.String())
 	}
 

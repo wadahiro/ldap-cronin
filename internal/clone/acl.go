@@ -28,11 +28,7 @@ func (r *runner) descriptors(ctx context.Context, p *plan.Plan) error {
 		return nil
 	}
 	d := r.prof.Descriptors
-	var dst = r.dst
-	if r.opt.DryRun {
-		dst = nil // its target holds no SIDs: the LDIF carries the source's
-	}
-	t, err := p.Principals(ctx, dst)
+	t, err := r.principalsFor(ctx, p)
 	if err != nil {
 		return err
 	}
@@ -69,7 +65,7 @@ func (r *runner) descriptors(ctx context.Context, p *plan.Plan) error {
 			return fmt.Errorf("%s: the source's %s: %w", dn, d.Attr(), err)
 		}
 		for _, sid := range dropped {
-			r.leftOutACE(dn, sid, reasons[sid])
+			r.leftOutACE(dn, d.Attr(), sid, reasons[sid])
 		}
 		if cur != "" && sameParts(d.Parts, out, cur) {
 			return nil
@@ -90,8 +86,23 @@ func (r *runner) descriptors(ctx context.Context, p *plan.Plan) error {
 	return nil
 }
 
-// leftOutACE counts an ACE left out of dn's ACL, and warns once per trustee.
-func (r *runner) leftOutACE(dn, sid, why string) {
+// principalsFor is the one plan.Principals of the run, which the ACLs and the values naming principals share (and
+// its cache).
+func (r *runner) principalsFor(ctx context.Context, p *plan.Plan) (*plan.Principals, error) {
+	if r.principals != nil {
+		return r.principals, nil
+	}
+	var dst = r.dst
+	if r.opt.DryRun {
+		dst = nil // its target holds no SIDs: the LDIF carries the source's
+	}
+	t, err := p.Principals(ctx, dst)
+	r.principals = t
+	return t, err
+}
+
+// leftOutACE counts an ACE left out of attr of dn, and warns once per trustee.
+func (r *runner) leftOutACE(dn, attr, sid, why string) {
 	if why == "" {
 		why = plan.WhyNoTargetPrincipal
 	}
@@ -103,7 +114,7 @@ func (r *runner) leftOutACE(dn, sid, why string) {
 	}
 	r.mu.Unlock()
 	if first {
-		r.warn("leave the ACEs naming %s out of the ACLs (first on %s): it %s", sid, dn, why)
+		r.warn("leave the ACEs naming %s out (first of %s on %s): it %s", sid, attr, dn, why)
 	}
 }
 
