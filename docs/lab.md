@@ -85,6 +85,7 @@ configuration of a lab only: a real AD target has none.
 
 | Command | Docker lab (Samba4, OpenLDAP) | EC2 lab (with `--config`) |
 |---|---|---|
+| `lab load [--reload] [--skip-verify]` | Verifies the offline package's `SHA256SUMS` and loads its images into docker; starts nothing | |
 | `lab up` | Loads the image (if missing), creates or starts the lab and checks LDAPS | Launches the instance (or starts a stopped one) and waits until it is a domain controller; prints the tunnel commands |
 | `lab down` | Stops it; the data is kept and `up` resumes it | Stops the instance; `up` starts it again |
 | `lab reset [-y] [--snapshots]` | Deletes the domain data and `.env` | Terminates the instance |
@@ -389,18 +390,24 @@ Carry the tar.gz built by `make bundle` into an environment with docker but no i
 `make bundle EXCHANGE_ISO=<Exchange setup .iso>` builds one whose Samba4 AD image has Exchange's schema (its name ends
 in `-exchange`); it holds Microsoft's files, so it goes into your own environment only. In the unpacked directory,
 `lab up --config` with a `[target.lab]` without `image` takes the package's image.
-`setup.sh <command>` in the unpacked directory is the same as `ldap-cronin lab <command>` (with no arguments, or a flag first, it runs `up`).
+`setup.sh <command>` in the unpacked directory is the same as `ldap-cronin lab <command>`. With no arguments it runs
+`lab load` and starts nothing: the lab to clone into is made by `lab up --config`, with the source's domain.
 
 ```sh
 tar xzf ldap-cronin-offline-*.tar.gz && cd ldap-cronin-offline-*
-./setup.sh --realm corp.example.local     # = ldap-cronin lab up --realm ...
-./ldap-cronin clone -config config.toml  # setup.sh places the binary for your architecture here
+./setup.sh                                    # = ldap-cronin lab load; places ./ldap-cronin for your architecture
+./ldap-cronin lab up --config config.toml    # the lab with the source's domain name, NetBIOS name, SID and GUID
+./ldap-cronin clone -config config.toml
 ./setup.sh snapshot baseline
-./setup.sh restore                        # pick from the list
+./setup.sh restore                            # pick from the list
 ```
 
-The package holds both images (Samba4 AD and OpenLDAP) in one `images/lab.tar`, so the base layers they share are stored once; `./setup.sh --profile ldap --suffix dc=example,dc=org` starts the OpenLDAP lab.
-`lab up` verifies the package's `SHA256SUMS` and then runs `docker load` on `images/lab.tar` (`--skip-verify` skips this, `--reload` loads it again).
+`./setup.sh up --realm corp.example.local` (= `lab up --realm ...`) starts a lab with a domain of its own, to try the
+lab without a source. Do not start one before `lab up --config`: its domain is not the source's (with `[target.lab]
+native = true`, `clone` refuses it: "the lab's domain differs from the source's"), and only `lab reset` undoes it.
+
+The package holds both images (Samba4 AD and OpenLDAP) in one `images/lab.tar`, so the base layers they share are stored once; `./setup.sh up --profile ldap --suffix dc=example,dc=org` starts the OpenLDAP lab.
+`lab load` and `lab up` verify the package's `SHA256SUMS` and then run `docker load` on `images/lab.tar` when an image is missing (`--skip-verify` skips the verification, `--reload` loads it again).
 For how the package is built see [DEVELOPMENT.md](DEVELOPMENT.md); for the procedure on the receiving side see [README-OFFLINE.md](../offline/README-OFFLINE.md).
 
 ## Troubleshooting

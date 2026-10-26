@@ -122,6 +122,59 @@ func TestFindBundleDirChecksExplicitThenCwdThenExeDirThenItsParent(t *testing.T)
 	}
 }
 
+// ---- load ----
+
+// load verifies the bundle and loads its images once, starts nothing, and loads again when one of the bundle's
+// images is missing or --reload asks for it.
+func TestLoadLoadsTheImagesAndStartsNothing(t *testing.T) {
+	ctx := context.Background()
+	fx := newLabFixture(t)
+	dir := fx.withBundle()
+	must(t, fx.l.Load(ctx, LoadOptions{}))
+	if len(fx.d.callsMatching("load -i")) != 1 || !strings.Contains(fx.out.String(), "Verifying file integrity") {
+		t.Fatalf("%v\n%s", fx.d.calls, fx.out.String())
+	}
+	for _, c := range fx.d.calls {
+		if strings.HasPrefix(c, "run ") || strings.HasPrefix(c, "create ") || strings.HasPrefix(c, "start ") {
+			t.Fatalf("load must start nothing: %s", c)
+		}
+	}
+	if _, err := os.Stat(fx.l.envPath()); err == nil {
+		t.Fatal("load must not write .env: the domain is decided by up")
+	}
+	must(t, fx.l.Load(ctx, LoadOptions{}))
+	if len(fx.d.callsMatching("load -i")) != 1 || !strings.Contains(fx.out.String(), "Images already present: ldap-cronin/samba-ad:test") {
+		t.Fatalf("an image already there is not loaded again: %v\n%s", fx.d.calls, fx.out.String())
+	}
+	must(t, fx.l.Load(ctx, LoadOptions{Reload: true}))
+	if len(fx.d.callsMatching("load -i")) != 2 {
+		t.Fatalf("--reload loads again: %v", fx.d.calls)
+	}
+
+	// A bundle of both images loads its tar while the OpenLDAP one is missing, though the Samba one is there.
+	must(t, os.WriteFile(filepath.Join(dir, "IMAGE"), []byte("ad=ldap-cronin/samba-ad:test\nldap=ldap-cronin/openldap:test\n"), 0o644))
+	must(t, fx.l.Load(ctx, LoadOptions{SkipVerify: true}))
+	if len(fx.d.callsMatching("load -i")) != 3 {
+		t.Fatalf("a missing image of the bundle is loaded: %v", fx.d.calls)
+	}
+}
+
+func TestLoadRefusesWithoutABundleOrWithACorruptOne(t *testing.T) {
+	ctx := context.Background()
+	fx := newLabFixture(t)
+	if err := fx.l.Load(ctx, LoadOptions{}); err == nil || !strings.Contains(err.Error(), "bundle") {
+		t.Fatalf("without a bundle: %v", err)
+	}
+	dir := fx.withBundle()
+	must(t, os.WriteFile(filepath.Join(dir, "images", "samba-ad.tar"), []byte("corrupted"), 0o644))
+	if err := fx.l.Load(ctx, LoadOptions{}); err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
+		t.Fatalf("a corrupt bundle: %v", err)
+	}
+	if len(fx.d.callsMatching("load -i")) != 0 {
+		t.Fatalf("nothing is loaded: %v", fx.d.calls)
+	}
+}
+
 // ---- up ----
 
 func TestUpLoadsTheImageStartsTheContainerAndHidesThePassword(t *testing.T) {

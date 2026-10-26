@@ -20,13 +20,26 @@ const (
 	sumsFileName  = "SHA256SUMS"
 )
 
-// bundleImage returns the image of a lab profile from the IMAGE file: one "profile=image" line per server. A single
-// line without "=" (earlier bundles) is the Samba image.
+// bundleImage returns the image of a lab profile from the IMAGE file.
 func bundleImage(dir, profile string) (string, error) {
-	b, err := os.ReadFile(filepath.Join(dir, imageFileName))
+	images, err := bundleImages(dir)
 	if err != nil {
 		return "", err
 	}
+	if image, ok := images[profile]; ok {
+		return image, nil
+	}
+	return "", fmt.Errorf("the bundle has no image for a %s lab (%s)", profile, filepath.Join(dir, imageFileName))
+}
+
+// bundleImages reads the IMAGE file: one "profile=image" line per server. A single line without "=" (earlier
+// bundles) is the Samba image.
+func bundleImages(dir string) (map[string]string, error) {
+	b, err := os.ReadFile(filepath.Join(dir, imageFileName))
+	if err != nil {
+		return nil, err
+	}
+	images := map[string]string{}
 	for _, line := range strings.Split(string(b), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -36,11 +49,14 @@ func bundleImage(dir, profile string) (string, error) {
 		if !ok {
 			key, image = ProfileAD, line
 		}
-		if strings.TrimSpace(key) == profile {
-			return strings.TrimSpace(image), nil
+		if key = strings.TrimSpace(key); images[key] == "" {
+			images[key] = strings.TrimSpace(image)
 		}
 	}
-	return "", fmt.Errorf("the bundle has no image for a %s lab (%s)", profile, filepath.Join(dir, imageFileName))
+	if len(images) == 0 {
+		return nil, fmt.Errorf("%s names no image", filepath.Join(dir, imageFileName))
+	}
+	return images, nil
 }
 
 // bundleTar is the image tar of the bundle, or "" when it has none.

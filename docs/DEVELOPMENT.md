@@ -113,7 +113,7 @@ The `lab` E2E does not use docker compose and picks its own prefix and ports. It
 
 `docker-compose.yml` is excluded because the receiving side may not have docker compose.
 
-`offline/setup.sh` is a thin entry point that runs `ldap-cronin lab <arguments>` with the bundled binary for its architecture (`lab up` when there are no arguments or the first is a flag). The logic (`SHA256SUMS` check, `docker load`, start, snapshots) is in `internal/lab`, so shell quirks affect only this script, which must work with bash 3.x (macOS) and 4.2 (old RHEL).
+`offline/setup.sh` is a thin entry point that runs `ldap-cronin lab <arguments>` with the bundled binary for its architecture (`lab load` when there are no arguments: the lab to clone into is made by `lab up --config` with the source's domain, so loading the images must not start one of another domain). The logic (`SHA256SUMS` check, `docker load`, start, snapshots) is in `internal/lab`, so shell quirks affect only this script, which must work with bash 3.x (macOS) and 4.2 (old RHEL).
 
 ## Design decisions (including alternatives we rejected)
 

@@ -6,7 +6,7 @@ A package for using `ldap-cronin` with a local AD-compatible Samba4, or OpenLDAP
 
 | Path | Description |
 |---|---|
-| `setup.sh` | Entry point. Picks the `ldap-cronin` binary for your architecture and passes the arguments to the `lab` subcommand |
+| `setup.sh` | Entry point. Picks the `ldap-cronin` binary for your architecture and passes the arguments to the `lab` subcommand; with none, it loads the images (`lab load`) |
 | `bin/ldap-cronin-linux-{amd64,arm64}` | The tool binaries (statically linked; nothing else is needed) |
 | `images/lab.tar` | The Samba4 AD and OpenLDAP docker images (one `docker save`, so their shared layers are stored once). In a package whose name ends in `-exchange`, the Samba4 AD image writes Exchange's schema to every lab it creates; it holds Microsoft's files: keep the package in your own environment |
 | `IMAGE` / `SHA256SUMS` | The image names (`ad=` / `ldap=`) / checksums to verify that nothing was corrupted in transit |
@@ -23,40 +23,52 @@ A package for using `ldap-cronin` with a local AD-compatible Samba4, or OpenLDAP
 ```sh
 tar xzf ldap-cronin-offline-*.tar.gz
 cd ldap-cronin-offline-*
-./setup.sh                              # asks for the domain name and the administrator password
-./setup.sh --realm corp.example.local   # to specify the domain name
-./setup.sh --profile ldap --suffix dc=example,dc=org   # an OpenLDAP lab instead (for a generic LDAP source)
+./setup.sh                              # verify the files and load the images; starts nothing
 ```
 
-`setup.sh` runs `ldap-cronin lab up`: it does the following, then prints the connection details and an example `[target]` setting.
+`setup.sh` with no arguments runs `ldap-cronin lab load`:
 
 1. Verifies file integrity with `SHA256SUMS`
-2. Runs `docker load` on `images/lab.tar` (skipped if the image already exists)
-3. Starts the Samba4 AD (or OpenLDAP) and checks that it can be searched over LDAPS
+2. Runs `docker load` on `images/lab.tar` (skipped if the images already exist; `./setup.sh --reload` loads again)
 
-The binary for your architecture is also placed at `./ldap-cronin`.
+It also places the binary for your architecture at `./ldap-cronin`, and starts no lab.
 
-## About the domain name
+## Making the lab to clone into
 
-**The domain name is fixed at the first start, not at image build.** An existing domain cannot be renamed; to change it, delete the data:
-
-```sh
-./setup.sh reset                            # deletes the domain data and the saved settings (.env); snapshots are kept
-./setup.sh --realm new.example.local        # create it again
-```
-
-The Kerberos realm, NetBIOS name (at most 15 characters; use `--netbios` if too long) and base DN are derived from the domain name.
-
-## Using the tool
+The lab gets the domain of the source (its name, NetBIOS name, domain SID and GUID), read from the source or a dump
+of it. Write `[source]`, `[target]` and `[target.lab]` in config.toml (see `config.example.toml` and `README.md`), then:
 
 ```sh
-cp config.example.toml config.toml      # change [target] to the values printed by setup.sh
-./ldap-cronin clone -config config.toml -dry-run
+./ldap-cronin lab up --config config.toml   # makes the lab like the source, then prints the next steps
+./ldap-cronin check -config config.toml
+./ldap-cronin clone -config config.toml -dry-run   # the LDIF clone would write (over LDAP only; refused with native = true)
 ./ldap-cronin clone -config config.toml
 ./ldap-cronin diff  -config config.toml
 ```
 
-Passwords are entered at run time, not written in the configuration file. See `README.md`.
+Passwords are entered at run time, not written in the configuration file.
+
+## Trying the lab without a source
+
+`./setup.sh up` starts a lab with a domain of its own (`ldap-cronin lab up`); it asks for the domain name and the
+administrator password, then prints the connection details and an example `[target]` setting.
+
+```sh
+./setup.sh up                              # asks for the domain name and the administrator password
+./setup.sh up --realm corp.example.local   # to specify the domain name
+./setup.sh up --profile ldap --suffix dc=example,dc=org   # an OpenLDAP lab instead (for a generic LDAP source)
+./setup.sh up --with-sample-source         # also a disposable clone source with sample data: ldaps://localhost:11636
+```
+
+**Do not start this lab when you mean to clone a source.** Its domain is not the source's, and the domain is fixed
+when the lab is created: an existing domain cannot be renamed. To change it, delete the data:
+
+```sh
+./setup.sh reset                            # deletes the domain data and the saved settings (.env); snapshots are kept
+./ldap-cronin lab up --config config.toml   # create it again like the source
+```
+
+The Kerberos realm, NetBIOS name (at most 15 characters; use `--netbios` if too long) and base DN are derived from the domain name.
 
 ## Snapshots (restore cloned data at any time)
 
@@ -74,19 +86,11 @@ Passwords are entered at run time, not written in the configuration file. See `R
 
 See `docs/lab.md` for details.
 
-## Starting a clone source for testing at the same time
-
-To try the tool out, start one more Samba with sample data (disposable; not saved).
-
-```sh
-./setup.sh --with-sample-source         # clone source: ldaps://localhost:11636 (same administrator password)
-```
-
 ## Operations
 
 ```sh
 ./setup.sh status     # status
-./setup.sh down       # stop (data is kept; running ./setup.sh again resumes with the same settings)
+./setup.sh down       # stop (data is kept; ./setup.sh up, or lab up --config, resumes it with the same settings)
 ./setup.sh reset      # delete data and settings
 ./setup.sh help       # all options
 ```
@@ -109,3 +113,4 @@ Name the lab in config.toml with `native = true`; `lab up --config` builds it wi
     ./ldap-cronin clone -config config.toml
 
 This uses unsupported Samba internals. Read docs/lab.md for the limitations (Samba only, verified on 4.19.5, password hashes do not become identical).
+`clone -dry-run` is refused with `native = true`: it writes the lab's database directly, so there is no LDIF.

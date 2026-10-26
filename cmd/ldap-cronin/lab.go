@@ -26,6 +26,8 @@ Starts a directory server on docker for verification (an AD-compatible Samba4, o
 and takes and restores snapshots. Works with docker alone (docker compose is not required).
 
 Commands:
+  load               Verify the carry-in bundle and load its images into docker; start nothing. To clone, make the lab
+                     afterwards with up --config <file>, which gives it the source's domain
   up                 Load the image and start the server. The domain name (OpenLDAP: the suffix) is decided at this first start
   down               Stop it (the data stays; running up again resumes with the same settings)
   reset              Delete the domain data and settings (.env). Use this to change the domain name
@@ -72,6 +74,10 @@ Flags (up):
   --source-ldaps-port <n>   LDAPS port of that source (default 11636; OpenLDAP 14636)
   --image <name>            Image name to use (default: the bundle's IMAGE file)
   --reload                  Run docker load again even if the image already exists
+  --skip-verify             Skip verifying SHA256SUMS
+
+Flags (load):
+  --reload                  Run docker load again even if the images already exist
   --skip-verify             Skip verifying SHA256SUMS
 
 Flags (reset):
@@ -140,6 +146,7 @@ func runLab(ctx context.Context, args []string, out, errW io.Writer) error {
 
 	var (
 		up        lab.UpOptions
+		load      lab.LoadOptions
 		reset     lab.ResetOptions
 		snap      lab.SnapshotOptions
 		realm     string
@@ -172,6 +179,9 @@ func runLab(ctx context.Context, args []string, out, errW io.Writer) error {
 		fs.BoolVar(&up.Reload, "reload", false, "")
 		fs.BoolVar(&up.SkipVerify, "skip-verify", false, "")
 		fs.BoolVar(&dryRun, "dry-run", false, "")
+	case "load":
+		fs.BoolVar(&load.Reload, "reload", false, "")
+		fs.BoolVar(&load.SkipVerify, "skip-verify", false, "")
 	case "reset":
 		fs.StringVar(&cfgPath, "config", "", "")
 		fs.BoolVar(&reset.Yes, "y", false, "")
@@ -228,13 +238,24 @@ func runLab(ctx context.Context, args []string, out, errW io.Writer) error {
 	if err != nil {
 		return err
 	}
-	// status lists every kind; the rest work on one lab, whose kind is known now.
-	if sub != "status" && sub != "snapshots" && sub != "snapshot-rm" {
+	// status lists every kind and load loads them all; the rest work on one lab, whose kind is known now.
+	if sub != "status" && sub != "snapshots" && sub != "snapshot-rm" && sub != "load" {
 		if err := l.ChooseServer(ctx, c.profile); err != nil {
 			return err
 		}
 	}
 	switch sub {
+	case "load":
+		if name != "" {
+			return fmt.Errorf("extra arguments: %s", name)
+		}
+		if err := l.Load(ctx, load); err != nil {
+			return err
+		}
+		fmt.Fprint(out, "\nNo lab was started. To clone, make the lab with the source's domain from your config:\n"+
+			"  ldap-cronin lab up --config <config>\n"+
+			"To try the lab without a source, start one with a domain of its own: ldap-cronin lab up\n")
+		return nil
 	case "up":
 		domain := realm
 		switch {

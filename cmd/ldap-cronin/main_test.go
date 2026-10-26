@@ -198,6 +198,7 @@ func TestErrorsExitWith2(t *testing.T) {
 		"-lab-instance=":   {context.Background(), []string{"clone", "-lab-instance=x", "-config", cfg}, "moved to the config: [target.lab]"},
 		"--like-source":    {context.Background(), []string{"lab", "up", "--like-source", cfg}, "--like-source is now --config"},
 		"--config + realm": {context.Background(), []string{"lab", "up", "--config", cfg, "--realm", "x.test"}, "takes the domain, the ports"},
+		"lab load + name":  {context.Background(), []string{"lab", "load", "corp.example.local"}, "extra arguments: corp.example.local"},
 		"interrupted":      {cancelled, []string{"clone", "-config", cfg}, "interrupted"},
 	} {
 		t.Run(name, func(t *testing.T) {

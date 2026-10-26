@@ -271,19 +271,84 @@ func (l *Lab) netbios(s Settings) (string, error) {
 	return "", nil
 }
 
+// LoadOptions are the options for load.
+type LoadOptions struct {
+	Reload     bool
+	SkipVerify bool
+}
+
+// Load verifies the bundle's integrity and docker-loads its images, and starts nothing. It is separate from up
+// because the lab to clone into is made by up --config with the source's domain (its SID and GUID too): a lab up
+// ran only to get the image loaded makes a domain of its own, which clone refuses and only reset undoes.
+func (l *Lab) Load(ctx context.Context, o LoadOptions) error {
+	if err := l.checkDocker(ctx); err != nil {
+		return err
+	}
+	if l.Dirs.Bundle == "" {
+		return errors.New("the carry-in bundle (IMAGE file) was not found: run from the bundle directory, or give --bundle-dir")
+	}
+	if err := l.verifyBundle(o.SkipVerify); err != nil {
+		return err
+	}
+	byProfile, err := bundleImages(l.Dirs.Bundle)
+	if err != nil {
+		return err
+	}
+	var images []string
+	for _, name := range byProfile {
+		images = append(images, name)
+	}
+	sort.Strings(images)
+	missing := o.Reload
+	for _, name := range images {
+		missing = missing || !l.imageExists(ctx, name)
+	}
+	if missing {
+		tar := bundleTar(l.Dirs.Bundle)
+		if tar == "" {
+			return fmt.Errorf("%s was not found in %s", imageTarPath, l.Dirs.Bundle)
+		}
+		l.logf("Loading images: %s", tar)
+		if _, err := l.docker(ctx, "load", "-i", tar); err != nil {
+			return err
+		}
+	} else {
+		l.logf("Images already present: %s", strings.Join(images, ", "))
+	}
+	for _, name := range images {
+		l.warnArch(ctx, name)
+	}
+	return nil
+}
+
+// verifyBundle checks the bundle's files against its SHA256SUMS.
+func (l *Lab) verifyBundle(skip bool) error {
+	if l.Dirs.Bundle == "" || skip {
+		return nil
+	}
+	if _, err := os.Stat(filepath.Join(l.Dirs.Bundle, sumsFileName)); err != nil {
+		l.warnf("%s not found; skipping verification", sumsFileName)
+		return nil
+	}
+	l.logf("Verifying file integrity (%s)", sumsFileName)
+	if err := VerifyChecksums(l.Dirs.Bundle); err != nil {
+		return fmt.Errorf("%w (use --skip-verify to skip)", err)
+	}
+	return nil
+}
+
+func (l *Lab) warnArch(ctx context.Context, name string) {
+	if arch, err := l.docker(ctx, "image", "inspect", "--format", "{{.Architecture}}", name); err == nil && l.HostArch != "" && arch != l.HostArch {
+		l.warnf("Image architecture of %s (%s) differs from this host (%s); it may not start", name, arch, l.HostArch)
+	}
+}
+
 // prepareImage verifies the bundle's integrity and docker-loads the image if it is missing. It returns the image name.
 func (l *Lab) prepareImage(ctx context.Context, o UpOptions) (string, error) {
 	name := o.Image
 	hasBundle := l.Dirs.Bundle != ""
-	if hasBundle && !o.SkipVerify {
-		if _, err := os.Stat(filepath.Join(l.Dirs.Bundle, sumsFileName)); err == nil {
-			l.logf("Verifying file integrity (%s)", sumsFileName)
-			if err := VerifyChecksums(l.Dirs.Bundle); err != nil {
-				return "", fmt.Errorf("%w (use --skip-verify to skip)", err)
-			}
-		} else {
-			l.warnf("%s not found; skipping verification", sumsFileName)
-		}
+	if err := l.verifyBundle(o.SkipVerify); err != nil {
+		return "", err
 	}
 	if name == "" && hasBundle {
 		var err error
@@ -315,9 +380,7 @@ func (l *Lab) prepareImage(ctx context.Context, o UpOptions) (string, error) {
 	} else {
 		l.logf("Image already present: %s", name)
 	}
-	if arch, err := l.docker(ctx, "image", "inspect", "--format", "{{.Architecture}}", name); err == nil && l.HostArch != "" && arch != l.HostArch {
-		l.warnf("Image architecture (%s) differs from this host (%s); it may not start", arch, l.HostArch)
-	}
+	l.warnArch(ctx, name)
 	return name, nil
 }
 

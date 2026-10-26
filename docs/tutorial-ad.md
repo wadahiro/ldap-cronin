@@ -66,13 +66,14 @@ At the destination, unpack it and work in its directory; the dump (step 2) goes 
 
 ```sh
 tar xzf ldap-cronin-offline-*.tar.gz && cd ldap-cronin-offline-*
-./setup.sh status          # places ./ldap-cronin for this machine's architecture, and starts nothing
+./setup.sh                 # checks the files, loads the images into docker, places ./ldap-cronin; starts nothing
 cp /path/to/prod.ldif.gz . # the dump, taken where production can be reached
 ```
 
 From there, `./ldap-cronin` takes the place of `./bin/ldap-cronin` in the steps below. Leave `image` out of
-`[target.lab]` (step 3): run from the package's directory, `lab up --config` takes the package's image, checks the files
-against `SHA256SUMS` and loads it into docker the first time. The package's `README-OFFLINE.md` has the rest
+`[target.lab]` (step 3): run from the package's directory, `lab up --config` takes the package's image. Make the lab
+with `lab up --config` only, not with `./setup.sh up`: that one starts a lab with a domain of its own, not the
+source's (with `native = true`, `clone` refuses it), and only `lab reset` undoes it. The package's `README-OFFLINE.md` has the rest
 ([lab.md](lab.md#using-the-offline-package)).
 
 ## 2. Read production once: the dump
