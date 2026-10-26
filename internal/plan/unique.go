@@ -77,7 +77,7 @@ func (w *Withheld) Strip(e directory.Entry) (directory.Entry, []string) {
 
 // unique finds, among the entries of the job's kinds, the values of rules' attributes that more than one holds: those a
 // leftover shares are withheld from it (from all but the first by DN when only leftovers hold it), the rest are
-// clashes. It is one more paged search per kind, reading only those attributes.
+// clashes. It is one more paged search, reading only those attributes.
 func unique(ctx context.Context, src directory.Directory, job Job, rules profile.UniqueRules) (*Withheld, []Clash, error) {
 	u := job.Profile.Unique
 	w := &Withheld{values: map[string]map[string]map[string]bool{}, Why: rules.Why}
@@ -98,39 +98,53 @@ func unique(ctx context.Context, src directory.Directory, job Job, rules profile
 		}
 		g.holders = append(g.holders, h)
 	}
-	// Per kind, as only the attributes its allow list names are written; an entry holds the implied value of one
-	// its kind does not write.
-	for _, k := range job.Kinds {
-		copied := profile.Set(k.Attrs)
-		attrs := append(append([]string(nil), rules.Attrs...), u.Attrs()...)
-		err := WalkBases(ctx, src, job.BaseDNs, k.Filter, attrs, func(e directory.Entry) error {
-			leftover := u.Leftover(e)
-			for _, a := range rules.Attrs {
-				var vs []string
-				if copied[strings.ToLower(a)] {
-					vs = e.Values(a)
-				}
-				if len(vs) == 0 {
-					if implied := rules.Implied[strings.ToLower(a)]; implied != nil {
-						if v := implied(e); v != "" {
-							add(a, v, holder{dn: e.DN, leftover: leftover})
-						}
+	// One walk for every kind (a dump is read through on each), the kind of an entry told by its classes: only the
+	// attributes its allow list names are written, and an entry holds the implied value of one its kind does not.
+	var any strings.Builder
+	copiedBy := make([]map[string]bool, len(job.Kinds))
+	all := map[string]bool{}
+	for i, k := range job.Kinds {
+		any.WriteString(k.Filter)
+		copiedBy[i] = profile.Set(k.Attrs)
+		for a := range copiedBy[i] {
+			all[a] = true
+		}
+	}
+	attrs := append(append([]string{"objectClass"}, rules.Attrs...), u.Attrs()...)
+	err := WalkBases(ctx, src, job.BaseDNs, "(|"+any.String()+")", attrs, func(e directory.Entry) error {
+		copied := all // a kind its classes do not tell (a filter of its own): what any kind writes
+		for i, k := range job.Kinds {
+			if k.Is != nil && k.Is(e.Values("objectClass")) {
+				copied = copiedBy[i]
+				break
+			}
+		}
+		leftover := u.Leftover(e)
+		for _, a := range rules.Attrs {
+			var vs []string
+			if copied[strings.ToLower(a)] {
+				vs = e.Values(a)
+			}
+			if len(vs) == 0 {
+				if implied := rules.Implied[strings.ToLower(a)]; implied != nil {
+					if v := implied(e); v != "" {
+						add(a, v, holder{dn: e.DN, leftover: leftover})
 					}
-					continue
 				}
-				seen := map[string]bool{}
-				for _, v := range vs {
-					if lv := strings.ToLower(v); !seen[lv] {
-						seen[lv] = true
-						add(a, v, holder{dn: e.DN, explicit: true, leftover: leftover})
-					}
+				continue
+			}
+			seen := map[string]bool{}
+			for _, v := range vs {
+				if lv := strings.ToLower(v); !seen[lv] {
+					seen[lv] = true
+					add(a, v, holder{dn: e.DN, explicit: true, leftover: leftover})
 				}
 			}
-			return nil
-		})
-		if err != nil {
-			return nil, nil, fmt.Errorf("read the values the target holds once (%s): %w", k.Name, err)
 		}
+		return nil
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("read the values the target holds once: %w", err)
 	}
 	var clashes []Clash
 	for _, g := range groups {

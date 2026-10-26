@@ -183,8 +183,20 @@ func (d *Dir) records(offset int64, fn func(at int64, lines []string) (bool, err
 	pos := offset
 	start := int64(-1)
 	var lines []string
+	// The line being read, its folded continuations joined in a builder: joining them by concatenation copies a
+	// large value (a photo, a certificate) once per 76 characters.
+	var cur strings.Builder
+	open := false
 	line := 0
+	push := func() {
+		if open {
+			lines = append(lines, cur.String())
+			cur.Reset()
+			open = false
+		}
+	}
 	flush := func() (bool, error) {
+		push()
 		if len(lines) == 0 {
 			return true, nil
 		}
@@ -216,8 +228,8 @@ func (d *Dir) records(offset int64, fn func(at int64, lines []string) (bool, err
 			if more, err := flush(); err != nil || !more {
 				return err
 			}
-		case strings.HasPrefix(l, " ") && len(lines) > 0:
-			lines[len(lines)-1] += l[1:]
+		case strings.HasPrefix(l, " ") && open:
+			cur.WriteString(l[1:])
 		default:
 			if comment != nil && line == 1 {
 				if err := comment(line, l); err != nil {
@@ -227,7 +239,9 @@ func (d *Dir) records(offset int64, fn func(at int64, lines []string) (bool, err
 			if start < 0 {
 				start = at
 			}
-			lines = append(lines, l)
+			push()
+			cur.WriteString(l)
+			open = true
 		}
 	}
 }
@@ -283,9 +297,17 @@ func (d *Dir) header(l string, end *int) *[]string {
 	return nil
 }
 
-func parseEntry(lines []string) (*directory.Entry, error) {
+func parseEntry(lines []string) (*directory.Entry, error) { return parseEntryOf(lines, nil) }
+
+// parseEntryOf parses the attributes named in need (lowercase), every one when need is nil.
+func parseEntryOf(lines []string, need map[string]bool) (*directory.Entry, error) {
 	e := &directory.Entry{Attrs: map[string][]string{}}
 	for i, l := range lines {
+		if i > 0 && need != nil {
+			if name, _, ok := strings.Cut(l, ":"); ok && !need[strings.ToLower(name)] {
+				continue
+			}
+		}
 		name, value, err := field(l)
 		if err != nil {
 			return nil, err
@@ -346,20 +368,37 @@ func (d *Dir) Walk(ctx context.Context, base, filter string, attrs []string, fn 
 	}
 	baseKey := dn.Normalize(base)
 	baseNC := d.contextOf(baseKey)
+	// Only what the filter tests and what is asked for is decoded: a dump of AD holds large binary values (every
+	// object's descriptor), and a clone walks the file many times.
+	need := filterAttrs(f, map[string]bool{})
+	for _, a := range attrs {
+		if a == directory.AllAttrs {
+			need = nil
+			break
+		}
+		need[strings.ToLower(a)] = true
+	}
 	return d.records(0, func(_ int64, lines []string) (bool, error) {
 		if err := ctx.Err(); err != nil {
 			return false, err
 		}
-		e, err := parseEntry(lines)
+		name, entryDN, err := field(lines[0])
 		if err != nil {
 			return false, err
 		}
-		key := dn.Normalize(e.DN)
+		if !strings.EqualFold(name, "dn") {
+			return false, fmt.Errorf("an entry starts with %q, not dn", lines[0])
+		}
+		key := dn.Normalize(entryDN)
 		if (key == "" && baseKey != "") || (key != baseKey && baseKey != "" && !strings.HasSuffix(key, ","+baseKey)) {
 			return true, nil
 		}
 		if baseNC != "" && d.contextOf(key) != baseNC {
 			return true, nil // in another naming context below the base (CN=Configuration under the domain)
+		}
+		e, err := parseEntryOf(lines, need)
+		if err != nil {
+			return false, err
 		}
 		if !d.match.match(f, e) {
 			return true, nil

@@ -220,3 +220,24 @@ func substrings(v string, parts []*ber.Packet) bool {
 	}
 	return true
 }
+
+// filterAttrs adds to into the attributes (lowercase) filter p tests.
+func filterAttrs(p *ber.Packet, into map[string]bool) map[string]bool {
+	switch p.Tag {
+	case ldap.FilterAnd, ldap.FilterOr, ldap.FilterNot:
+		for _, c := range p.Children {
+			filterAttrs(c, into)
+		}
+	case ldap.FilterPresent:
+		into[strings.ToLower(p.Data.String())] = true
+	case ldap.FilterEqualityMatch, ldap.FilterSubstrings, ldap.FilterGreaterOrEqual, ldap.FilterLessOrEqual:
+		if a, ok := p.Children[0].Value.(string); ok {
+			into[strings.ToLower(a)] = true
+		}
+	case ldap.FilterExtensibleMatch:
+		if _, attr, _, _ := extensible(p); attr != "" {
+			into[strings.ToLower(attr)] = true
+		}
+	}
+	return into
+}

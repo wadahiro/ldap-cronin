@@ -216,6 +216,32 @@ func TestEntriesReadAsFromTheServer(t *testing.T) {
 	}
 }
 
+// A walk decodes only what its filter tests and what it asks for, and still filters by attributes it does not
+// return; a folded value comes whole.
+func TestAWalkReadsWhatItTestsAndAsks(t *testing.T) {
+	d := open(t)
+	var got []directory.Entry
+	if err := d.Walk(context.Background(), "OU=IDM,"+root, "(&(department=Sales)(employeeType=external))", []string{"manager"}, func(e directory.Entry) error {
+		got = append(got, e)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || len(got[0].Attrs) != 1 || strings.Join(got[0].Values("manager"), "") != "CN=Alice,OU=IDM,"+root {
+		t.Fatalf("%+v", got)
+	}
+	got = nil
+	if err := d.Walk(context.Background(), "OU=IDM,"+root, "(uSNChanged>=100)", []string{"description"}, func(e directory.Entry) error {
+		got = append(got, e)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || strings.Join(got[0].Values("description"), "") != "a long description that goes on" {
+		t.Fatalf("%+v", got)
+	}
+}
+
 // A dump without its end line, or with another count, is refused: it was cut off.
 func TestACutOffDumpIsRefused(t *testing.T) {
 	if _, err := read(t, dump(10, false), false); err == nil || !strings.Contains(err.Error(), "cut off") {
