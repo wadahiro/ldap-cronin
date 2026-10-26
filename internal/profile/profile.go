@@ -171,6 +171,33 @@ type RootResolver interface {
 	Root(ctx context.Context, src directory.Directory, baseDN string) (string, error)
 }
 
+// Uniqueness tells which values a target refuses to give a second object that a source may hold twice, and which
+// source entries are left over from a replication conflict. AD keeps such a leftover's userPrincipalName and
+// servicePrincipalName as they were (it renames only its RDN and sAMAccountName), so a source can hold a value twice
+// that an originating write, as clone's, may not.
+type Uniqueness interface {
+	// Rules reads what dst enforces; root is the source's naming context, for a value derived from the domain.
+	Rules(ctx context.Context, dst directory.Directory, root string) (UniqueRules, error)
+	// Leftover reports whether e is left over from a replication conflict, and so the one to lose a value it shares.
+	Leftover(e directory.Entry) bool
+	// Attrs are what Rules' Implied and Leftover read, beyond the unique attributes.
+	Attrs() []string
+}
+
+// UniqueRules are the attributes a target holds once across its objects.
+type UniqueRules struct {
+	// Attrs are the attributes each of whose values only one object may hold.
+	Attrs []string
+	// Implied gives, per attribute (lowercase), the value an entry without it is taken to hold: Samba refuses a
+	// userPrincipalName equal to another account's sAMAccountName@realm. Such a value is not written, so it cannot be
+	// withheld; it can only take a value from another.
+	Implied map[string]func(e directory.Entry) string
+	// ImpliedHow says where an implied value comes from ("implied by its sAMAccountName").
+	ImpliedHow string
+	// Why is said of each value withheld (the target's rule, in its words).
+	Why string
+}
+
 // NativeSupport reads what a lab needs to be provisioned as the same domain as the source (clone -native).
 type NativeSupport interface {
 	Domain(ctx context.Context, src directory.Directory, root string) (Domain, error)
@@ -284,6 +311,8 @@ type Profile struct {
 	Descriptors Descriptors
 	// Native is nil when clone -native is not possible for this server type.
 	Native NativeSupport
+	// Unique is nil where a target enforces nothing a source may break (generic LDAP).
+	Unique Uniqueness
 }
 
 // Kind returns the spec of a kind by name.

@@ -321,7 +321,7 @@ object per line, a line per difference as it is found, then one summary line. St
 
 The other `SUMMARY` fields are the [summary](#how-to-read-the-summary) as data: `compared` per kind of
 entries, `differences` per result (every result present, `0` included), `not_cloned` per object class, `references_not_compared` per attribute (`references_not_compared_why` per attribute and reason),
-`compared_attributes` per kind, and `masked` (one masked on a kind's entries only as `mail (user)`), `excluded` and `credentials`; `acl` (`as-is` or `translated`) when ACLs are compared, `translated` (the values naming principals compared with the target's SIDs: the delegation), and `aces_not_compared` per reason. `rename_check` is empty when
+`compared_attributes` per kind, and `masked` (one masked on a kind's entries only as `mail (user)`), `excluded` and `credentials`; `acl` (`as-is` or `translated`) when ACLs are compared, `translated` (the values naming principals compared with the target's SIDs: the delegation), `aces_not_compared` per reason, and `withheld_not_compared` per attribute (the values clone does not write: see [active-directory.md](active-directory.md#replication-conflict-leftovers)). `rename_check` is empty when
 renames are not detected. Fields of a line that do not apply are left out, so read them as optional.
 
 A program reads it line by line, for example with `jq`:

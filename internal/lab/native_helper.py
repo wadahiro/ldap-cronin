@@ -202,11 +202,15 @@ def op_add(req):
         db.add(message(req["dn"], attrs, ldb.FLAG_MOD_ADD), controls=controls)
     except ldb.LdbError as e:
         if e.args[0] == ldb.ERR_CONSTRAINT_VIOLATION and rid:
-            # An object with the same RID already exists. Without knowing which one collided, the cause is hard to trace.
+            # The objectSid is the cause only when another object holds it; samldb refuses a userPrincipalName or
+            # servicePrincipalName in use with the same code, and naming the SID then sends the reader the wrong way.
             sid = ndr_unpack(security.dom_sid, b64d(attrs["objectSid"][0]))
             found = db.search(base=BASE, scope=ldb.SCOPE_SUBTREE, expression="(objectSid=%s)" % sid, attrs=["distinguishedName"])
-            owners = ", ".join(str(r.dn) for r in found)
-            return fail(e.args[0], "objectSid %s collided with an existing object in the lab (%s): %s" % (sid, owners or "unknown", e.args[1]))
+            if len(found):
+                owners = ", ".join(str(r.dn) for r in found)
+                return fail(e.args[0], "objectSid %s collided with an existing object in the lab (%s): %s" % (sid, owners, e.args[1]))
+        if e.args[0] == ldb.ERR_CONSTRAINT_VIOLATION:
+            return fail(e.args[0], "the lab refused %s: %s" % (req["dn"], e.args[1]))
         raise
     max_rid = max(max_rid, rid)
     if SERVER and server:

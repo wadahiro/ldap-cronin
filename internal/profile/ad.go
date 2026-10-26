@@ -173,6 +173,7 @@ var AD = Profile{
 	PrimaryGroup: adPrimaryGroup{},
 	Descriptors:  adDescriptors{},
 	Native:       adNative{},
+	Unique:       adUnique{},
 }
 
 // accountSecrets are the other secrets an account may hold, never cloned, compared or printed: the password a

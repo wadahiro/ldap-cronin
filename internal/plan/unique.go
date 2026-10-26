@@ -1,0 +1,240 @@
+package plan
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"slices"
+	"sort"
+	"strings"
+
+	"github.com/wadahiro/ldap-cronin/internal/directory"
+	"github.com/wadahiro/ldap-cronin/internal/dn"
+	"github.com/wadahiro/ldap-cronin/internal/profile"
+)
+
+// Withheld are the source's values clone does not write because the target would refuse them: a value of a unique
+// attribute (profile.UniqueRules) that a replication-conflict leftover shares with another object. It is decided
+// from the source before anything is written, so the leftover loses the value whichever of the two comes first (the
+// real object, added after the leftover, would otherwise be the one refused).
+type Withheld struct {
+	values map[string]map[string]map[string]bool // normalized DN -> lowercase attribute -> lowercase value
+	// Values lists each value withheld, for the warnings and check.
+	Values []WithheldValue
+	Why    string
+}
+
+// WithheldValue is one value withheld from DN, with the other objects that hold it.
+type WithheldValue struct {
+	DN, Attr, Value string
+	Others          []string
+}
+
+// Clash is a value of a unique attribute that more than one object of the source holds and none of them is a
+// leftover: which one keeps it cannot be decided, and the target refuses it on the second.
+type Clash struct {
+	Attr, Value string
+	DNs         []string
+	// Implied lists those of DNs that hold the value only as one implied (UniqueRules.Implied), and ImpliedHow
+	// says how.
+	Implied    []string
+	ImpliedHow string
+}
+
+// Strip returns e without the values withheld from it, and the attributes it took values from.
+func (w *Withheld) Strip(e directory.Entry) (directory.Entry, []string) {
+	if w == nil || len(w.values) == 0 {
+		return e, nil
+	}
+	held := w.values[dn.Normalize(e.DN)]
+	if held == nil {
+		return e, nil
+	}
+	out := directory.Entry{DN: e.DN, Attrs: make(map[string][]string, len(e.Attrs))}
+	var stripped []string
+	for n, vs := range e.Attrs {
+		drop := held[strings.ToLower(n)]
+		if drop == nil {
+			out.Attrs[n] = vs
+			continue
+		}
+		var keep []string
+		for _, v := range vs {
+			if !drop[strings.ToLower(v)] {
+				keep = append(keep, v)
+			}
+		}
+		if len(keep) < len(vs) {
+			stripped = append(stripped, n)
+		}
+		if len(keep) > 0 {
+			out.Attrs[n] = keep
+		}
+	}
+	sort.Strings(stripped)
+	return out, stripped
+}
+
+// unique finds, among the entries of the job's kinds, the values of rules' attributes that more than one holds: those a
+// leftover shares are withheld from it (from all but the first by DN when only leftovers hold it), the rest are
+// clashes. It is one more paged search per kind, reading only those attributes.
+func unique(ctx context.Context, src directory.Directory, job Job, rules profile.UniqueRules) (*Withheld, []Clash, error) {
+	u := job.Profile.Unique
+	w := &Withheld{values: map[string]map[string]map[string]bool{}, Why: rules.Why}
+	if u == nil || len(rules.Attrs) == 0 {
+		return w, nil, nil
+	}
+	type group struct {
+		attr, value string
+		holders     []holder
+	}
+	groups := map[string]*group{}
+	add := func(attr, value string, h holder) {
+		key := strings.ToLower(attr) + "\x00" + strings.ToLower(value)
+		g := groups[key]
+		if g == nil {
+			g = &group{attr: attr, value: value}
+			groups[key] = g
+		}
+		g.holders = append(g.holders, h)
+	}
+	// Per kind, as only the attributes its allow list names are written; an entry holds the implied value of one
+	// its kind does not write.
+	for _, k := range job.Kinds {
+		copied := profile.Set(k.Attrs)
+		attrs := append(append([]string(nil), rules.Attrs...), u.Attrs()...)
+		err := WalkBases(ctx, src, job.BaseDNs, k.Filter, attrs, func(e directory.Entry) error {
+			leftover := u.Leftover(e)
+			for _, a := range rules.Attrs {
+				var vs []string
+				if copied[strings.ToLower(a)] {
+					vs = e.Values(a)
+				}
+				if len(vs) == 0 {
+					if implied := rules.Implied[strings.ToLower(a)]; implied != nil {
+						if v := implied(e); v != "" {
+							add(a, v, holder{dn: e.DN, leftover: leftover})
+						}
+					}
+					continue
+				}
+				seen := map[string]bool{}
+				for _, v := range vs {
+					if lv := strings.ToLower(v); !seen[lv] {
+						seen[lv] = true
+						add(a, v, holder{dn: e.DN, explicit: true, leftover: leftover})
+					}
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, nil, fmt.Errorf("read the values the target holds once (%s): %w", k.Name, err)
+		}
+	}
+	var clashes []Clash
+	for _, g := range groups {
+		if len(g.holders) < 2 {
+			continue
+		}
+		sort.Slice(g.holders, func(i, j int) bool { return dn.Normalize(g.holders[i].dn) < dn.Normalize(g.holders[j].dn) })
+		real := 0
+		for _, h := range g.holders {
+			if !h.leftover {
+				real++
+			}
+		}
+		var kept []holder
+		for i, h := range g.holders {
+			// A leftover loses the value to a real object; among leftovers alone, the first keeps it. An implied value
+			// is not written, so it cannot be withheld.
+			if h.leftover && h.explicit && (real > 0 || i > 0) {
+				w.withhold(h.dn, g.attr, g.value, g.holders)
+				continue
+			}
+			kept = append(kept, h)
+		}
+		if len(kept) > 1 {
+			c := Clash{Attr: g.attr, Value: g.value, ImpliedHow: rules.ImpliedHow}
+			for _, h := range kept {
+				c.DNs = append(c.DNs, h.dn)
+				if !h.explicit {
+					c.Implied = append(c.Implied, h.dn)
+				}
+			}
+			clashes = append(clashes, c)
+		}
+	}
+	sort.Slice(w.Values, func(i, j int) bool {
+		if w.Values[i].DN != w.Values[j].DN {
+			return w.Values[i].DN < w.Values[j].DN
+		}
+		return w.Values[i].Attr+w.Values[i].Value < w.Values[j].Attr+w.Values[j].Value
+	})
+	sort.Slice(clashes, func(i, j int) bool { return clashes[i].Attr+clashes[i].Value < clashes[j].Attr+clashes[j].Value })
+	return w, clashes, nil
+}
+
+// holder is an entry holding a value of a unique attribute: written (explicit) or implied.
+type holder struct {
+	dn                 string
+	explicit, leftover bool
+}
+
+func (w *Withheld) withhold(entryDN, attr, value string, holders []holder) {
+	key := dn.Normalize(entryDN)
+	if w.values[key] == nil {
+		w.values[key] = map[string]map[string]bool{}
+	}
+	la := strings.ToLower(attr)
+	if w.values[key][la] == nil {
+		w.values[key][la] = map[string]bool{}
+	}
+	w.values[key][la][strings.ToLower(value)] = true
+	v := WithheldValue{DN: entryDN, Attr: attr, Value: value}
+	for _, h := range holders {
+		if h.dn != entryDN {
+			v.Others = append(v.Others, h.dn)
+		}
+	}
+	w.Values = append(w.Values, v)
+}
+
+// ClashError says which values more than one real object of the source holds, and the ways out.
+func ClashError(clashes []Clash) error {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d values the target holds once are held by more than one object of the source, none of them left over from a replication conflict, so which one keeps the value cannot be decided:", len(clashes))
+	for _, c := range clashes {
+		holders := make([]string, len(c.DNs))
+		for i, d := range c.DNs {
+			holders[i] = d
+			if slices.Contains(c.Implied, d) {
+				holders[i] += " (" + c.ImpliedHow + ")"
+			}
+		}
+		fmt.Fprintf(&b, "\n  %s %s: %s", c.Attr, c.Value, strings.Join(holders, "; "))
+	}
+	b.WriteString("\nLeave all but one of each out with [scope.filters], or the attribute with [attributes] exclude")
+	return errors.New(b.String())
+}
+
+// Withholding decides, before anything is written, the values of the source the target would refuse to give a
+// second object (profile.Uniqueness): those a replication-conflict leftover shares are withheld from it. The clashes
+// are values more than one real object holds, which no rule gives to one of them (ClashError).
+// dst nil (check -no-target) takes the strictest rules the profile knows.
+func (p *Plan) Withholding(ctx context.Context, dst directory.Directory) (*Withheld, []Clash, error) {
+	return Withholding(ctx, p.src, dst, p.job, p.Root)
+}
+
+// Withholding is Plan.Withholding without a plan: root is the source's naming context.
+func Withholding(ctx context.Context, src, dst directory.Directory, job Job, root string) (*Withheld, []Clash, error) {
+	u := job.Profile.Unique
+	if u == nil {
+		return &Withheld{}, nil, nil
+	}
+	rules, err := u.Rules(ctx, dst, root)
+	if err != nil {
+		return nil, nil, err
+	}
+	return unique(ctx, src, job, rules)
+}

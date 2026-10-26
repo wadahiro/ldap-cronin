@@ -59,6 +59,36 @@ base_dn = "OU=IDM,DC=ad,DC=example,DC=com"   # or the domain root, for the whole
 - **What the target refuses.** An attribute the target's schema marks `systemOnly` is written by the server alone, though the source's schema may let a client write it. The resource-based delegation (`msDS-AllowedToActOnBehalfOfOtherIdentity`) is the exception: both Windows' schema and Samba's mark it `systemOnly`, yet Windows lets a client write it (measured on Windows Server 2019), so it counts as a client's from either source and is written into Windows; Samba 4.19.5 holds a client to it ("can only be modified as system"), so it is left out there. Samba will also not have `userParameters` written over LDAP ([bug 8077](https://bugzilla.samba.org/show_bug.cgi?id=8077); Windows takes it), told from Windows by the target's root DSE (`vendorName`, which Windows does not publish). `clone` and `diff` leave them out, in any mode, and name each with the reason; `check` notes them. A native import writes as the system and takes them all. A dry-run does not connect to the target, so its LDIF still carries it.
 - **Rename and move detection.** AD refuses a client-set `objectGUID` over LDAP, so `clone` writes a marker of the source object into `adminDisplayName` (`ldap-cronin:<source root>:<source key>`); how `diff` uses it is in [diff.md](diff.md#how-rename-and-move-detection-works-and-its-configuration). `[target.lab] native = true` keeps the `objectGUID` itself, but only into the Samba lab ([lab.md](lab.md#importing-with-the-same-objectguid-and-objectsid-targetlab-native--true-samba-only)).
 
+## Replication-conflict leftovers
+
+When two DCs create the same account before they replicate, AD keeps both and renames the loser: its RDN becomes
+`<name>\0ACNF:<its objectGUID>` when the names collided, its `sAMAccountName` `$DUPLICATE-<n>` when those did. The
+rest of it stays as it was, its `userPrincipalName` and `servicePrincipalName` too, so the source holds those values
+twice. Replication does not check them, but an originating write does: Samba refuses a value another object holds
+(`samldb: userPrincipalName ... is already in use`, `spn[...] would cause a conflict`), even to the system, and so
+does Windows Server 2012 R2 and later (not verified here).
+
+clone copies a leftover as it is, its CNF name and `$DUPLICATE-` `sAMAccountName` included, so a program tested on the
+clone meets it as it meets it in production; only the values it shares with another object are not written. Which
+object loses them is decided from the source before anything is written, so the real object keeps them whichever comes
+first. A leftover is one whose RDN holds `\nCNF:` or whose `sAMAccountName` begins with `$DUPLICATE-`.
+
+- Compared: `userPrincipalName` and every value of `servicePrincipalName`, exactly (ignoring case), among the entries of
+  the kinds, as far as their allow lists copy them. On Samba an account without a `userPrincipalName` holds
+  `sAMAccountName@<realm>` (samldb's "implied by sAMAccountName"), so a leftover's value equal to that is not written
+  either; Windows does not check it. Samba also refuses a `servicePrincipalName` that collides through an alias of
+  `sPNMappings` (`HOST` covers `CIFS`, ...); that is not foreseen, and fails with Samba's message.
+- `check` lists each value clone will not write with the objects that keep it (without the target, `-no-target` or a
+  lab not made yet, by Samba's rules); `clone` warns of each and counts them
+  per attribute in its summary; `diff` does not compare them and counts them; a second `clone` writes nothing.
+- A value two objects hold, neither a leftover (two accounts created on two DCs with the same `userPrincipalName`, or
+  on Samba one's `userPrincipalName` equal to another's `sAMAccountName@<realm>`), cannot be given to one of them by
+  rule: `check` and `clone` refuse to start, before anything is written, naming them. Leave one out with
+  `[scope.filters]`, or the attribute with `[attributes] exclude`.
+- Measured on Samba 4.19.5, over LDAP and natively (`[target.lab] native = true`), with leftovers given to the source
+  by writing its database file around samldb. Not verified yet: that Windows takes a CNF name and a `$DUPLICATE-`
+  `sAMAccountName` from a client, as Samba does.
+
 ## When the target is a real AD
 
 - Setting a user's password (`unicodePwd`) **requires LDAPS**. Over `ldap://` the password change is rejected (Samba does the same).

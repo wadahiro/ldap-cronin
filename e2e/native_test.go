@@ -91,6 +91,7 @@ func TestNativeImportKeepsObjectGUIDAndObjectSid(t *testing.T) {
 	serverAttrs := map[string]string{"lastLogonTimestamp": "133000000000000000", "lastLogon": "133200000000000000", "logonCount": "7",
 		"lockoutTime": "133100000000000000", "badPwdCount": "3", "whenCreated": "20100102030405.0Z"}
 	const withServerAttrs = "CN=Bob Staff,OU=Tokyo,OU=Users,OU=IDM,"
+	const bobLeftover = "CN=Bob Staff\\0ACNF:0f0e0d0c-0b0a-0908-0706-050403020100,OU=Tokyo,OU=Users,OU=IDM,"
 	setScript := "import ldb\nfrom samba.samdb import SamDB\nfrom samba.auth import system_session\nfrom samba.param import LoadParm\n" +
 		"lp = LoadParm(); lp.load('/etc/samba/smb.conf')\ndb = SamDB(url='/var/lib/samba/private/sam.ldb', session_info=system_session(), lp=lp)\n" +
 		"m = ldb.Message(ldb.Dn(db, '" + withServerAttrs + base + "'))\n"
@@ -120,6 +121,13 @@ func TestNativeImportKeepsObjectGUIDAndObjectSid(t *testing.T) {
 		"    m = ldb.Message(ldb.Dn(db, dn))\n" +
 		"    m['nTSecurityDescriptor'] = ldb.MessageElement([ndr_pack(sd)], ldb.FLAG_MOD_REPLACE, 'nTSecurityDescriptor')\n" +
 		"    db.modify(m, controls=['sd_flags:1:7'])\n"
+	// A replication-conflict leftover of Bob, keeping his userPrincipalName as AD keeps it: samldb refuses the value
+	// on a second object even to the system, so it is written to the partition's file without the modules. The
+	// import creates the leftover without it.
+	setScript += "db.add({'dn': r'" + bobLeftover + base + "', 'objectClass': 'user', 'sAMAccountName': '$DUPLICATE-1f4'})\n" + rawDomainPartition +
+		"m = ldb.Message(ldb.Dn(raw, r'" + bobLeftover + base + "'))\n" +
+		"m['userPrincipalName'] = ldb.MessageElement(['bob@" + realm + "'], ldb.FLAG_MOD_REPLACE, 'userPrincipalName')\n" +
+		"raw.modify(m)\n"
 	if out, err := exec.Command("docker", "exec", srcLab.Prefix+"-ad-src", "python3", "-c", setScript).CombinedOutput(); err != nil {
 		t.Fatalf("setting the server attributes on the source: %v\n%s", err, out)
 	}
@@ -168,6 +176,9 @@ func TestNativeImportKeepsObjectGUIDAndObjectSid(t *testing.T) {
 	if rep.Added == 0 || !regexp.MustCompile(`fast_password: [1-9]\d* users got the NT hash directly`).MatchString(cloned.String()) {
 		t.Fatalf("the lab is created and imported into, the passwords the fast way: %+v\n%s", rep, cloned.String())
 	}
+	if rep.Withheld["userPrincipalName"] != 1 {
+		t.Fatalf("the leftover's userPrincipalName is withheld: %+v\n%s", rep.Withheld, cloned.String())
+	}
 	// The credentials are the source's, the delegation naming the same SID (the lab has the source's domain SID).
 	creds := []string{"userPKCS12", "msDS-AllowedToActOnBehalfOfOtherIdentity"}
 	held, err := src.Get(context.Background(), withServerAttrs+base, creds)
@@ -175,8 +186,13 @@ func TestNativeImportKeepsObjectGUIDAndObjectSid(t *testing.T) {
 	imported, err := dialAs(dstLDAPS, admin, password)
 	must(err)
 	got, err := imported.Get(context.Background(), withServerAttrs+base, creds)
+	must(err)
+	left, err := imported.Get(context.Background(), bobLeftover+base, []string{"sAMAccountName", "userPrincipalName"})
 	imported.Close()
 	must(err)
+	if left == nil || strings.Join(left.Values("sAMAccountName"), "") != "$DUPLICATE-1f4" || left.Values("userPrincipalName") != nil {
+		t.Fatalf("the leftover in the lab: %+v", left)
+	}
 	for _, a := range creds {
 		if len(held.Values(a)) != 1 || strings.Join(got.Values(a), "") != strings.Join(held.Values(a), "") {
 			t.Fatalf("%s: the source holds %d values, the lab %d, equal %v", a, len(held.Values(a)), len(got.Values(a)),

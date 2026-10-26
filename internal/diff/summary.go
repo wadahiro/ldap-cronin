@@ -57,6 +57,9 @@ func WriteSummary(w io.Writer, job plan.Job, sum Summary, excluded []string) {
 	if len(sum.NotComparedWhy) > 0 {
 		plan.WriteCounts(w, "references not compared (clone cannot write them: the target lacks what they name)", sum.NotComparedWhy)
 	}
+	if len(sum.Withheld) > 0 {
+		plan.WriteCounts(w, "values not compared (clone does not write them: "+sum.WithheldWhy+")", sum.Withheld)
+	}
 	switch job.ACL {
 	case plan.ACLAsIs:
 		fmt.Fprintln(w, "ACLs compared: each object's owner, group, protected flag and explicit ACEs (nTSecurityDescriptor; the inherited ACEs are each server's)")

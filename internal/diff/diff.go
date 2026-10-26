@@ -80,6 +80,10 @@ type Summary struct {
 	NotCompared map[string]int
 	// NotComparedWhy is NotCompared per "attribute: why" (plan.Classifier.Why), for the text summary.
 	NotComparedWhy map[string]int
+	// Withheld counts, per attribute, the source values clone does not write because the target holds each once and a
+	// replication-conflict leftover shares it (plan.Withheld), so diff does not compare them; WithheldWhy says why.
+	Withheld    map[string]int
+	WithheldWhy string
 	// ACEsNotCompared counts, per why (plan.WhyNoSourcePrincipal ...), the source's ACEs clone leaves out because
 	// the target has no principal for their trustee (ACLTranslated, plan.Job.SDValues).
 	ACEsNotCompared map[string]int
@@ -134,6 +138,10 @@ func Run(ctx context.Context, src, dst directory.Directory, job plan.Job, o Opti
 	}
 	r.p, r.ctx = p, ctx
 	r.sdOn = job.Translated()
+	// The values clone withholds are not compared; a clash stops clone, not diff.
+	if r.withheld, _, err = p.Withholding(ctx, dst); err != nil {
+		return r.sum, err
+	}
 	if job.ACL == plan.ACLTranslated || len(r.sdOn) > 0 {
 		if r.principals, err = p.Principals(ctx, dst); err != nil {
 			return r.sum, err
@@ -247,6 +255,7 @@ type runner struct {
 	// (aclFailed). sdOn are the values naming principals compared translated (plan.Job.Translated).
 	principals *plan.Principals
 	sdOn       map[string]string
+	withheld   *plan.Withheld // the source's values clone does not write (plan.Withholding)
 	aclErr     error
 	p          *plan.Plan
 	loc        *locator
@@ -345,6 +354,19 @@ func (r *runner) implied() {
 // An entry without a kind (a create-only ancestor) is checked only for existence, rename and move.
 // structural entries also record where they live on the target, for the expected parent of their children.
 func (r *runner) check(ctx context.Context, want directory.Entry, names []string, kind *plan.Kind, structural bool) error {
+	if kind != nil {
+		var stripped []string
+		if want, stripped = r.withheld.Strip(want); len(stripped) > 0 {
+			r.mu.Lock()
+			if r.sum.Withheld == nil {
+				r.sum.Withheld, r.sum.WithheldWhy = map[string]int{}, r.withheld.Why
+			}
+			for _, n := range stripped {
+				r.sum.Withheld[n]++
+			}
+			r.mu.Unlock()
+		}
+	}
 	res, err := r.loc.locate(ctx, want, names, kind == nil)
 	if err != nil {
 		return err

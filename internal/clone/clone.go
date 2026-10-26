@@ -78,6 +78,10 @@ type Report struct {
 	// Placeholders counts the placeholders created for entries the source did not return (plan.RefPlaceholder),
 	// with the parents created for them.
 	Placeholders int
+	// Withheld counts, per attribute, the values not written because a replication-conflict leftover shares them
+	// with another object and the target holds each once (plan.Withheld); WithheldWhy says why.
+	Withheld     map[string]int
+	WithheldWhy  string
 	WarningCount int
 	Warnings     []string // first maxWarnings only
 }
@@ -106,6 +110,9 @@ func (rep *Report) WriteSummary(w io.Writer) {
 	}
 	if len(rep.ACEsLeftOut) > 0 {
 		plan.WriteCounts(w, "ACEs left out (their trustee has no principal on the target; see the warnings)", rep.ACEsLeftOut)
+	}
+	if len(rep.Withheld) > 0 {
+		plan.WriteCounts(w, "values not written ("+rep.WithheldWhy+"; see the warnings)", rep.Withheld)
 	}
 	if rep.Placeholders > 0 {
 		fmt.Fprintf(w, "placeholders created for entries the source did not return (unreadable to the account reading it; see the warnings): %d\n", rep.Placeholders)
@@ -145,6 +152,7 @@ type runner struct {
 	sdOn       map[string]string
 	sdValues   []sdValue
 	principals *plan.Principals // see principalsFor
+	withheld   *plan.Withheld   // the values the target would refuse (see Run)
 	refs       *plan.Classifier
 	done       map[string]*onceErr // see once
 }
@@ -173,9 +181,25 @@ func Run(ctx context.Context, src, dst directory.Directory, job plan.Job, opt Op
 	if err != nil {
 		return nil, err
 	}
+	// A value more than one real object holds would be refused at the second, after the run had written everything
+	// before it: refused here instead, before anything is written.
+	withheld, clashes, err := p.Withholding(ctx, dst)
+	if err != nil {
+		return nil, err
+	}
+	if len(clashes) > 0 {
+		return nil, plan.ClashError(clashes)
+	}
 	r := &runner{dst: dst, opt: opt, out: out, prof: job.Profile, skipped: map[string]bool{}, done: map[string]*onceErr{},
 		unwrote: map[string]bool{}, report: Report{ReferencedKinds: map[string]int{}, Unwritten: map[string]int{}, Unheld: map[string]int{}, ACEsLeftOut: map[string]int{}, SDValues: map[string]int{}},
-		aclOn: job.ACL == plan.ACLTranslated && !opt.Native, leftOut: map[string]bool{}}
+		aclOn: job.ACL == plan.ACLTranslated && !opt.Native, leftOut: map[string]bool{}, withheld: withheld}
+	if len(withheld.Values) > 0 {
+		r.report.Withheld, r.report.WithheldWhy = map[string]int{}, withheld.Why
+	}
+	for _, v := range withheld.Values {
+		r.report.Withheld[v.Attr]++
+		r.warn("not written: %s %s of %s: %s (%s)", v.Attr, v.Value, v.DN, withheld.Why, strings.Join(v.Others, "; "))
+	}
 	if !opt.Native {
 		r.sdOn = job.Translated()
 	}
@@ -1086,6 +1110,7 @@ func (r *runner) sourceExtra(name string) bool {
 }
 
 func (r *runner) desired(e directory.Entry) (directory.Entry, error) {
+	e, _ = r.withheld.Strip(e)
 	out := directory.Entry{DN: e.DN, Attrs: map[string][]string{}}
 	keep := r.opt.Native || r.opt.Preserve
 	for n, v := range e.Attrs {

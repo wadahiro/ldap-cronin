@@ -87,6 +87,7 @@ func (s *Session) Check(ctx context.Context, o CheckOptions, out io.Writer) (int
 		changes  profile.SchemaChanges
 		warning  string
 		refusal  string // why else clone would refuse to start
+		target   directory.Directory
 	)
 	// A lab: whether lab up --config has made it (and started it), so it can be read and written.
 	var labNote string
@@ -115,6 +116,7 @@ func (s *Session) Check(ctx context.Context, o CheckOptions, out io.Writer) (int
 			return 0, err
 		}
 		defer closeTarget()
+		target = dst
 		switch {
 		case inLab && native:
 			fmt.Fprintf(out, "target: the lab %s (%s%s), its database written directly\n", o.Lab.Name(), s.Cfg.Target.URL, serverName(ctx, dst))
@@ -237,6 +239,17 @@ func (s *Session) Check(ctx context.Context, o CheckOptions, out io.Writer) (int
 	}
 	fmt.Fprintln(out)
 
+	// The values the target holds once (without one read, the strictest rules: Samba's).
+	root, err := plan.Root(ctx, s.Src, s.Job)
+	if err != nil {
+		return 0, err
+	}
+	withheld, clashes, err := plan.Withholding(ctx, s.Src, target, s.Job, root)
+	if err != nil {
+		return 0, err
+	}
+	writeWithheld(out, withheld)
+
 	if len(blocking) > 0 {
 		fmt.Fprintf(out, "clone refuses to start: the target schema lacks %d attributes the allow lists name:\n", len(blocking))
 		for _, b := range blocking {
@@ -245,6 +258,9 @@ func (s *Session) Check(ctx context.Context, o CheckOptions, out io.Writer) (int
 	}
 	if refusal != "" {
 		fmt.Fprintf(out, "clone refuses to start: %s\n", refusal)
+	}
+	if len(clashes) > 0 {
+		fmt.Fprintf(out, "clone refuses to start: %v\n", plan.ClashError(clashes))
 	}
 	noteLeftOut(out, left)
 	if warning != "" {
@@ -263,7 +279,7 @@ func (s *Session) Check(ctx context.Context, o CheckOptions, out io.Writer) (int
 		}
 	}
 	// One empty line between the parts: after the notes when there were any.
-	if notes := len(blocking) > 0 || refusal != "" || len(left.missing)+len(left.refused) > 0 || warning != "" || (changes != nil && !changes.Empty()); notes {
+	if notes := len(blocking) > 0 || refusal != "" || len(clashes) > 0 || len(left.missing)+len(left.refused) > 0 || warning != "" || (changes != nil && !changes.Empty()); notes {
 		fmt.Fprintln(out)
 	}
 	if o.Attrs {
@@ -319,7 +335,7 @@ func (s *Session) Check(ctx context.Context, o CheckOptions, out io.Writer) (int
 		fmt.Fprintln(out, "     (with the target, so it can say what the target's schema lacks)")
 	}
 	next("clone: ldap-cronin clone %s", cfg)
-	if len(blocking) > 0 || refusal != "" || labNote != "" {
+	if len(blocking) > 0 || refusal != "" || labNote != "" || len(clashes) > 0 {
 		return CheckBlocked, nil
 	}
 	return CheckReady, nil
@@ -375,4 +391,23 @@ func (s *Session) writeHolders(ctx context.Context, out io.Writer) error {
 		plan.WriteCounts(out, "groups holding entries of base_dn that clone leaves as they are", left)
 	}
 	return nil
+}
+
+// maxWithheldShown caps the values check lists; the count is always given.
+const maxWithheldShown = 20
+
+// writeWithheld lists the values clone will not write (plan.Withheld), each with the objects that keep it.
+func writeWithheld(out io.Writer, w *plan.Withheld) {
+	if len(w.Values) == 0 {
+		return
+	}
+	fmt.Fprintf(out, "values clone will not write: %d (%s):\n", len(w.Values), w.Why)
+	for i, v := range w.Values {
+		if i == maxWithheldShown {
+			fmt.Fprintf(out, "  ... and %d more (clone warns of each)\n", len(w.Values)-i)
+			break
+		}
+		fmt.Fprintf(out, "  %s %s of %s (kept by %s)\n", v.Attr, v.Value, v.DN, strings.Join(v.Others, "; "))
+	}
+	fmt.Fprintln(out)
 }

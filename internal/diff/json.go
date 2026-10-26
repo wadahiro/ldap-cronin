@@ -118,6 +118,9 @@ type jsonSummary struct {
 	Credentials              []string            `json:"credentials"`
 	// CopiedCredentials are compared, their values given as fingerprints ([attributes] credentials = "copy").
 	CopiedCredentials []string `json:"copied_credentials,omitempty"`
+	// Withheld counts, per attribute, the source values clone does not write: the target holds each once and a
+	// replication-conflict leftover shares it with another object.
+	Withheld map[string]int `json:"withheld_not_compared,omitempty"`
 	// ACL is how ACLs were compared ("as-is", "translated"), absent when they were not; ACEsNotCompared counts,
 	// per why, the source's ACEs clone leaves out.
 	ACL             string         `json:"acl,omitempty"`
@@ -139,6 +142,9 @@ func (j *JSON) Summary(job plan.Job, sum Summary, excluded []string) error {
 	}
 	if len(sum.ACEsNotCompared) > 0 {
 		out.ACEsNotCompared = sum.ACEsNotCompared
+	}
+	if len(sum.Withheld) > 0 {
+		out.Withheld = sum.Withheld
 	}
 	for _, k := range job.Kinds {
 		out.Compared[k.Name] = sum.Compared[k.Name]

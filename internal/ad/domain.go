@@ -31,7 +31,7 @@ func ReadDomain(ctx context.Context, d directory.Directory, root string) (Domain
 	if rawSID == "" || rawGUID == "" {
 		return Domain{}, fmt.Errorf("cannot read objectSid and objectGUID from domain root %s", root)
 	}
-	out := Domain{Root: root, Realm: realmOf(root), NetBIOS: netbiosOf(ctx, d, root)}
+	out := Domain{Root: root, Realm: RealmOf(root), NetBIOS: netbiosOf(ctx, d, root)}
 	if out.SID, err = SIDText([]byte(rawSID)); err != nil {
 		return Domain{}, err
 	}
@@ -48,8 +48,8 @@ func first(v []string) string {
 	return v[0]
 }
 
-// realmOf builds the domain name (a.b) from the domain root DN (DC=a,DC=b).
-func realmOf(root string) string {
+// RealmOf builds the domain name (a.b) from the domain root DN (DC=a,DC=b).
+func RealmOf(root string) string {
 	var labels []string
 	for _, rdn := range dn.Split(root) {
 		if v, ok := strings.CutPrefix(strings.ToLower(rdn), "dc="); ok {
