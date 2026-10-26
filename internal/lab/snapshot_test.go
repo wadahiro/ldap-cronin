@@ -1,10 +1,13 @@
 package lab
 
 import (
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -64,7 +67,7 @@ func TestSnapshotStopsDumpsBothVolumesThenRestartsAndRecordsMetadata(t *testing.
 			t.Fatalf("snapshot files hold password hashes: mode %v", st.Mode().Perm())
 		}
 	}
-	if got, _ := os.ReadFile(filepath.Join(fx.l.Dirs.Snapshots, "baseline", "private.tar")); string(got) != "private-data-v1" {
+	if got, _ := snapshotData(t, filepath.Join(fx.l.Dirs.Snapshots, "baseline", "private.tar.gz")); string(got) != "private-data-v1" {
 		t.Fatalf("%q", got)
 	}
 }
@@ -114,7 +117,7 @@ func TestSnapshotNameValidationAndOverwrite(t *testing.T) {
 	fx.d.volumeData["t-ad-private"] = "private-data-v2"
 	_, err = fx.l.Snapshot(context.Background(), SnapshotOptions{Name: "a", Force: true})
 	must(t, err)
-	if got, _ := os.ReadFile(filepath.Join(fx.l.Dirs.Snapshots, "a", "private.tar")); string(got) != "private-data-v2" {
+	if got, _ := snapshotData(t, filepath.Join(fx.l.Dirs.Snapshots, "a", "private.tar.gz")); string(got) != "private-data-v2" {
 		t.Fatalf("%q", got)
 	}
 }
@@ -272,7 +275,7 @@ func TestRestoreVerifiesTheSnapshotBeforeTouchingTheLiveData(t *testing.T) {
 	fx := seededLab(t)
 	_, err := fx.l.Snapshot(context.Background(), SnapshotOptions{Name: "baseline"})
 	must(t, err)
-	must(t, os.WriteFile(filepath.Join(fx.l.Dirs.Snapshots, "baseline", "private.tar"), []byte("tampered"), 0o600))
+	must(t, os.WriteFile(filepath.Join(fx.l.Dirs.Snapshots, "baseline", "private.tar.gz"), []byte("tampered"), 0o600))
 
 	fx.d.calls = nil
 	fx.d.volumeData["t-ad-private"] = "live-data"
@@ -530,7 +533,7 @@ func TestSnapshotOfAnInstanceUsesItsOwnVolumes(t *testing.T) {
 	fx.d.volumeData["t-ad-dev2-private"] = "dev2-own-state"
 	_, err = dev.Snapshot(context.Background(), SnapshotOptions{Name: "from-dev2"})
 	must(t, err)
-	if got, _ := os.ReadFile(filepath.Join(fx.l.Dirs.Snapshots, "from-dev2", "private.tar")); string(got) != "dev2-own-state" {
+	if got, _ := snapshotData(t, filepath.Join(fx.l.Dirs.Snapshots, "from-dev2", "private.tar.gz")); string(got) != "dev2-own-state" {
 		t.Fatalf("%q", got)
 	}
 }
@@ -570,5 +573,47 @@ func TestRestoreRecreatesTheMainLabAfterAResetFromASnapshot(t *testing.T) {
 	}
 	if env, _ := ReadEnvFile(fx.l.envPath()); env.Domain != "corp.example.local" || env.LDAPSPort != 12636 {
 		t.Fatalf(".env must be written for the main lab: %+v", env)
+	}
+}
+
+// snapshotData is the tar a snapshot file holds, uncompressed.
+func snapshotData(t *testing.T, path string) ([]byte, error) {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	z, err := gzip.NewReader(f)
+	if err != nil {
+		return nil, err
+	}
+	return io.ReadAll(z)
+}
+
+// A snapshot of an earlier version holds uncompressed files and no compression in its metadata: it restores as it is.
+func TestAnUncompressedSnapshotOfAnEarlierVersionRestores(t *testing.T) {
+	fx := seededLab(t)
+	meta, err := fx.l.Snapshot(context.Background(), SnapshotOptions{Name: "old"})
+	must(t, err)
+	dir := filepath.Join(fx.l.Dirs.Snapshots, "old")
+	for i, f := range meta.Files {
+		raw, err := snapshotData(t, filepath.Join(dir, f.File))
+		must(t, err)
+		plain := strings.TrimSuffix(f.File, ".gz")
+		must(t, os.WriteFile(filepath.Join(dir, plain), raw, 0o600))
+		must(t, os.Remove(filepath.Join(dir, f.File)))
+		sum := sha256.Sum256(raw)
+		meta.Files[i].File, meta.Files[i].Size, meta.Files[i].SHA256 = plain, int64(len(raw)), hex.EncodeToString(sum[:])
+	}
+	meta.Compression = ""
+	raw, err := json.Marshal(meta)
+	must(t, err)
+	must(t, os.WriteFile(filepath.Join(dir, metaFileName), raw, 0o600))
+	fx.d.volumeData["t-ad-private"] = "changed"
+	_, err = fx.l.Restore(context.Background(), "old")
+	must(t, err)
+	if got := fx.d.extracted["t-ad-private"]; got != "private-data-v1" {
+		t.Fatalf("restored %q", got)
 	}
 }

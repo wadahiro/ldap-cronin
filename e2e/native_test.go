@@ -353,12 +353,26 @@ func TestNativeImportKeepsObjectGUIDAndObjectSid(t *testing.T) {
 		t.Fatal("the interrupted import left no journal in the lab")
 	}
 	var resumed bytes.Buffer
+	backupDir := filepath.Join(t.TempDir(), "backup")
+	sliced.Backup = backupDir
 	sliceRep, err := sliced.CloneLab(context.Background(), dstLab, &resumed, &resumed)
 	if err != nil {
 		t.Fatalf("%v\n%s", err, resumed.String())
 	}
 	if sliceRep.Resumed < 1 || sliceRep.Added != 3 || !strings.Contains(resumed.String(), "resuming: the lab's journal holds") || journal() {
 		t.Fatalf("the resumed import: %+v, journal left %v\n%s", sliceRep, journal(), resumed.String())
+	}
+	// A session that lost the lab (its container and volumes; the state directory, as a cloud shell's home, stays):
+	// the same clone restores it from the backup and goes on.
+	for _, args := range [][]string{{"rm", "-f", dstLab.Name()}, {"volume", "rm", dstLab.Name() + "-private", dstLab.Name() + "-etc"}} {
+		if out, err := exec.Command("docker", args...).CombinedOutput(); err != nil {
+			t.Fatalf("docker %v: %v\n%s", args, err, out)
+		}
+	}
+	var again bytes.Buffer
+	againRep, err := sliced.CloneLab(context.Background(), dstLab, &again, &again)
+	if err != nil || againRep.Added != 0 || !strings.Contains(again.String(), "restoring it from the latest backup") {
+		t.Fatalf("after the lab was lost: %v %+v\n%s", err, againRep, again.String())
 	}
 	// The imports stopped and restarted the lab.
 	dst.Close()

@@ -167,7 +167,7 @@ func TestOpenLDAPSnapshotsRecordTheKindAndRestoreIntoTheSameKindOnly(t *testing.
 	meta, err := fx.l.Snapshot(ctx, SnapshotOptions{Name: "base"})
 	must(t, err)
 	if meta.Profile != ProfileLDAP || meta.Domain != "dc=example,dc=org" || len(meta.Files) != 2 ||
-		meta.Files[0].File != "data.tar" || meta.Files[1].File != "config.tar" || meta.Hostname != "ldap1" {
+		meta.Files[0].File != "data.tar.gz" || meta.Files[1].File != "config.tar.gz" || meta.Hostname != "ldap1" {
 		t.Fatalf("%+v", meta)
 	}
 	if !strings.Contains(fx.out.String(), "Stopping OpenLDAP") {

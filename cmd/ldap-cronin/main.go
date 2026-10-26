@@ -58,6 +58,8 @@ Flags (clone/diff):
                    source and asks [y/N] first
   -time-limit <d>  (clone only) Stop before the first object after d (15m), exit 3; running again goes on. A native
                    import from a dump keeps a journal in the lab and skips what is done (a snapshot carries it)
+  -backup <dir>    (clone into a docker lab) Keep the lab's latest snapshot in dir: taken after the clone (also one
+                   stopped at -time-limit), restored from when the lab does not exist (a new cloud shell session)
   -format <f>      (diff only) text (default), or json: JSON Lines, one object per difference, then the summary
   -max-values <n>  (diff only, text) Show at most n values per direction of a multi-valued difference (default: 0, all)
   -progress <m>    auto (default): on a terminal a status kept at the bottom of the screen (phase, count, rate, time
@@ -217,6 +219,7 @@ func runClone(ctx context.Context, args []string, out io.Writer) error {
 	dryRun := fs.Bool("dry-run", false, "print LDIF instead of writing")
 	withPassword := fs.Bool("with-password", false, "with -dry-run: the LDIF carries the users' fixed password and what follows it, so ldapmodify alone completes them")
 	timeLimit := fs.Duration("time-limit", 0, "stop before the first object after this long (exit 3); run again to go on: a native import from a dump skips what is done")
+	backup := fs.String("backup", "", "a directory to keep the docker lab's latest snapshot in: taken after the clone (also one stopped at -time-limit), restored from when the lab does not exist")
 	yes := yesFlag(fs)
 	progressMode := progressFlag(fs)
 	for _, a := range args {
@@ -246,9 +249,13 @@ func runClone(ctx context.Context, args []string, out io.Writer) error {
 	askBeforeWriting(s, *yes)
 	s.WithPassword = *withPassword
 	s.TimeLimit = *timeLimit
+	s.Backup = *backup
 	lt := s.Cfg.Target.Lab
 	if lt.OnEC2() {
 		lt = nil // a Windows Server reached through its tunnel at [target] url: written as any server is
+	}
+	if *backup != "" && (lt == nil || *dryRun) {
+		return errors.New("-backup is for a clone into a docker lab ([target.lab]); an EC2 lab keeps its snapshots in AWS (lab snapshot --config)")
 	}
 	if *dryRun && s.Cfg.NativeLab() != nil {
 		return errors.New("[target.lab] native = true writes the lab's database directly, which produces no LDIF: a dry-run is for a clone over LDAP")

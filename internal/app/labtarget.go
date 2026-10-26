@@ -78,11 +78,17 @@ func (s *Session) LabUp(ctx context.Context, l *lab.Lab, o lab.UpOptions, log io
 }
 
 // CloneLab clones into the lab [target.lab] names, which lab up --config made: over LDAP, or with native = true
-// into its database directly. A lab that does not exist or is stopped is refused, untouched.
+// into its database directly. A lab that does not exist or is stopped is refused, untouched, but with Backup a
+// lab that does not exist is restored from the latest backup first, and the lab is backed up after the clone.
 func (s *Session) CloneLab(ctx context.Context, l *lab.Lab, out, log io.Writer) (*clone.Report, error) {
 	state, err := s.labState(ctx, l)
 	if err != nil {
 		return nil, err
+	}
+	if state == lab.Missing && s.Backup != "" {
+		if state, err = s.restoreBackup(ctx, l, log); err != nil {
+			return nil, err
+		}
 	}
 	if why := labNotReady(state, l, s.ConfigPath); why != "" {
 		return nil, errors.New(why)
@@ -90,11 +96,47 @@ func (s *Session) CloneLab(ctx context.Context, l *lab.Lab, out, log io.Writer) 
 	if err := l.CheckTargetURL(ctx, s.Cfg.Target.URL); err != nil {
 		return nil, err
 	}
+	var report *clone.Report
 	if lt := s.Cfg.Target.Lab; lt.Native {
-		return s.Native(ctx, l, lab.NativeOptions{FastPassword: lt.FastPassword, ServerAttributes: lt.ServerAttributes != config.ServerAttributesLab,
+		report, err = s.Native(ctx, l, lab.NativeOptions{FastPassword: lt.FastPassword, ServerAttributes: lt.ServerAttributes != config.ServerAttributesLab,
 			ACL: lt.ACL == config.ServerAttributesSource}, out)
+	} else {
+		report, err = s.Clone(ctx, false, out, log)
 	}
-	return s.Clone(ctx, false, out, log)
+	// After a slice or a complete clone; not after a failure, which keeps the backup of the last good one.
+	if s.Backup != "" && (err == nil || errors.Is(err, clone.ErrTimeLimit)) {
+		note := "clone complete"
+		if err != nil {
+			note = "clone stopped at -time-limit: run it again to go on"
+		}
+		if _, berr := l.Backup(context.WithoutCancel(ctx), s.Backup, note); berr != nil {
+			return report, fmt.Errorf("the lab was not backed up to %s (the one before is kept): %w", s.Backup, berr)
+		}
+	}
+	return report, err
+}
+
+// restoreBackup makes the missing lab from the latest backup in Backup, at the ports of [target] url and with the
+// target password as its Administrator's (as lab up --config made it); a directory with no backup leaves it
+// missing.
+func (s *Session) restoreBackup(ctx context.Context, l *lab.Lab, log io.Writer) (string, error) {
+	name, err := lab.LatestBackup(s.Backup)
+	if err != nil || name == "" {
+		return lab.Missing, err
+	}
+	fmt.Fprintf(log, "the lab %s does not exist: restoring it from the latest backup in %s (%s)\n", l.Name(), s.Backup, name)
+	var ports lab.Settings
+	if err := portsFromURL(&ports, s.Cfg.Target.URL); err != nil {
+		return "", err
+	}
+	password, err := s.secrets.TargetBind()
+	if err != nil {
+		return "", err
+	}
+	if _, err := l.RestoreBackup(ctx, s.Backup, lab.RestoreOptions{LDAPPort: ports.LDAPPort, LDAPSPort: ports.LDAPSPort, AdminPassword: password}); err != nil {
+		return "", err
+	}
+	return l.State(ctx)
 }
 
 // labNotReady says why a lab in state cannot be written yet, and the command that makes it ready; "" when it can.

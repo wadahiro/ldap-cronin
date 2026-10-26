@@ -162,7 +162,8 @@ ldap-cronin lab snapshot baseline --force         # overwrite the same name (wit
 ```
 
 1. If the lab is running, Samba is **stopped cleanly** (`docker stop`) so the database files are not copied while being written.
-2. The two volumes are written to tar files, and their SHA-256 is recorded.
+2. The two volumes are written to tar files compressed with gzip (at its fastest level: a Samba database shrinks
+   several times), and their SHA-256 is recorded. A snapshot of an earlier version, uncompressed, restores as it is.
 3. If the lab was running, it is **started again** and the command waits until it is healthy. If it was stopped, it stays stopped.
 4. On failure, the original state is restored and no half-written snapshot is left behind.
 
@@ -288,14 +289,26 @@ ldap-cronin diff -config config.toml      # matches objects by objectGUID direct
 
 A large import can outlast the session it runs in (a cloud shell closes an idle session, and its docker data goes
 with it). `clone -time-limit 15m` stops before the first object it would start after 15 minutes, with exit code 3:
-everything it wrote is complete, object by object, and running `clone` again goes on.
+everything it wrote is complete, object by object, and running `clone` again goes on. With `-backup <dir>`, the
+lab is snapshotted into `dir` after each run (one stopped at the limit or complete), and a run that finds no lab
+restores it from the latest backup there first: the same command goes on from any session.
 
 ```sh
-until ldap-cronin clone -config config.toml -y -time-limit 15m; do
+# the same command in every session (a cloud shell: dir in the home directory, which outlives the session)
+until ldap-cronin clone -config config.toml -y -time-limit 15m -backup ~/lab-backup; do
   [ $? -eq 3 ] || break                         # 3: stopped at the limit; anything else is an error
-  ldap-cronin lab snapshot slice --force         # what is done so far, kept outside the session
 done
 ```
+
+- `-backup` keeps the latest snapshot and the one before it; a backup is made the latest (the file `LATEST`)
+  only once it is written, so one cut off leaves the one before it. A failed run takes none, keeping the last good
+  one. The backups are ordinary snapshots (`lab snapshots --snapshot-dir <dir>`, `lab restore --snapshot-dir`).
+- A lab is restored only when it does not exist: an existing lab holds progress at least as recent as the backup.
+  The restore needs the image the backup was taken with (`lab load`, or `./setup.sh` of the offline package, in a
+  new session), the ports of `[target] url` and the target password as the lab's Administrator's, as `lab up
+  --config` made it. A stopped lab is refused as before (`lab up --config` starts it).
+- Taking a backup stops Samba and writes the volumes (compressed): count it in the time a session has. A cloud
+  shell's home holds 1 GB; see how large the lab's volumes are first.
 
 - From a dump (`[source] ldif`), the import keeps a journal in the lab's volume of the objects it finished (and
   of their references), and the next run skips them without reading the lab again: its summary says how many

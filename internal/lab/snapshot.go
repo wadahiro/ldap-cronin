@@ -1,6 +1,7 @@
 package lab
 
 import (
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -62,7 +63,14 @@ type SnapshotMeta struct {
 	Image       string         `json:"image"`
 	ToolVersion string         `json:"tool_version"`
 	Files       []SnapshotFile `json:"files"`
+	// Compression is how the files are compressed: "gzip", or "" for none (snapshots of earlier versions).
+	Compression string `json:"compression,omitempty"`
 }
+
+// compressionGzip compresses the files of a snapshot: a Samba database shrinks several times, which decides whether
+// a large lab's snapshot fits where it is kept (a cloud shell's home holds 1 GB). The fastest level, as the CPU that
+// takes it may be small.
+const compressionGzip = "gzip"
 
 // Size is the total size of the snapshot's files.
 func (m SnapshotMeta) Size() int64 {
@@ -165,12 +173,13 @@ func (l *Lab) Snapshot(ctx context.Context, o SnapshotOptions) (SnapshotMeta, er
 	var files []SnapshotFile
 	var dumpErr error
 	for _, v := range l.srv().Volumes {
-		f, err := l.dumpVolume(ctx, image, v.Kind, v.Mount, filepath.Join(tmp, v.File))
+		file := v.File + ".gz"
+		f, err := l.dumpVolume(ctx, image, v.Kind, v.Mount, filepath.Join(tmp, file))
 		if err != nil {
 			dumpErr = err
 			break
 		}
-		f.Volume, f.File = v.Kind, v.File
+		f.Volume, f.File = v.Kind, file
 		files = append(files, f)
 	}
 	if wasRunning {
@@ -189,7 +198,7 @@ func (l *Lab) Snapshot(ctx context.Context, o SnapshotOptions) (SnapshotMeta, er
 
 	meta = SnapshotMeta{
 		Name: name, Note: o.Note, Created: l.Now().UTC(), Profile: l.srv().Profile, Domain: labels[labelRealm], NetBIOS: labels[labelNB],
-		Hostname: l.srv().Hostname, Image: image, ToolVersion: l.Version, Files: files,
+		Hostname: l.srv().Hostname, Image: image, ToolVersion: l.Version, Files: files, Compression: compressionGzip,
 	}
 	raw, err := json.MarshalIndent(meta, "", "  ")
 	if err != nil {
@@ -218,9 +227,14 @@ func (l *Lab) dumpVolume(ctx context.Context, image, kind, mount, path string) (
 	if err != nil {
 		return sf, err
 	}
+	// The size and checksum are the file's as kept (compressed), which verifySnapshot reads back.
 	h := sha256.New()
 	cw := &countingWriter{w: io.MultiWriter(out, h)}
-	_, derr := l.D.Do(ctx, Cmd{Args: tarCreateArgs(image, l.volume(kind), mount), Stdout: cw, Stderr: l.Err})
+	z, _ := gzip.NewWriterLevel(cw, gzip.BestSpeed)
+	_, derr := l.D.Do(ctx, Cmd{Args: tarCreateArgs(image, l.volume(kind), mount), Stdout: z, Stderr: l.Err})
+	if zerr := z.Close(); derr == nil {
+		derr = zerr
+	}
 	if cerr := out.Close(); derr == nil {
 		derr = cerr
 	}
@@ -464,7 +478,13 @@ func (l *Lab) adoptServer(meta SnapshotMeta) error {
 // writeSnapshot empties the volumes and extracts the snapshot's tars into them.
 func (l *Lab) writeSnapshot(ctx context.Context, image string, meta SnapshotMeta) error {
 	for _, v := range l.srv().Volumes {
-		if err := l.loadVolume(ctx, image, v.Kind, v.Mount, filepath.Join(l.snapshotDir(meta.Name), v.File)); err != nil {
+		file := v.File
+		for _, f := range meta.Files {
+			if f.Volume == v.Kind {
+				file = f.File
+			}
+		}
+		if err := l.loadVolume(ctx, image, v.Kind, v.Mount, filepath.Join(l.snapshotDir(meta.Name), file), meta.Compression); err != nil {
 			return fmt.Errorf("restore failed midway. The volumes are in a partial state, so run lab restore again: %w", err)
 		}
 	}
@@ -477,7 +497,7 @@ func (l *Lab) writeSnapshot(ctx context.Context, image string, meta SnapshotMeta
 func (l *Lab) restoreIntoNew(ctx context.Context, meta SnapshotMeta, o RestoreOptions) error {
 	image := meta.Image
 	if !l.imageExists(ctx, image) {
-		return fmt.Errorf("image %s not found; load it with lab up, then run lab restore again", image)
+		return fmt.Errorf("image %s not found; load it (lab load, or ./setup.sh of the offline package), then run again", image)
 	}
 	file, err := ReadEnvFile(l.envPath())
 	if err != nil {
@@ -622,16 +642,29 @@ func (l *Lab) verifySnapshot(m SnapshotMeta) error {
 }
 
 // loadVolume empties the volume and extracts the tar into it.
-func (l *Lab) loadVolume(ctx context.Context, image, kind, mount, path string) error {
-	if _, err := l.docker(ctx, wipeArgs(image, l.volume(kind), mount)...); err != nil {
-		return err
-	}
+func (l *Lab) loadVolume(ctx context.Context, image, kind, mount, path, compression string) error {
 	in, err := os.Open(path)
 	if err != nil {
 		return err
 	}
 	defer in.Close()
-	_, err = l.D.Do(ctx, Cmd{Args: tarExtractArgs(image, l.volume(kind), mount), Stdin: in, Stderr: l.Err})
+	var r io.Reader = in
+	switch compression {
+	case "":
+	case compressionGzip:
+		z, err := gzip.NewReader(in)
+		if err != nil {
+			return fmt.Errorf("%s: %w", path, err)
+		}
+		defer z.Close()
+		r = z
+	default:
+		return fmt.Errorf("%s: compressed with %q, which this version does not read", path, compression)
+	}
+	if _, err := l.docker(ctx, wipeArgs(image, l.volume(kind), mount)...); err != nil {
+		return err
+	}
+	_, err = l.D.Do(ctx, Cmd{Args: tarExtractArgs(image, l.volume(kind), mount), Stdin: r, Stderr: l.Err})
 	return err
 }
 
