@@ -93,10 +93,26 @@ By hand (2026-10-22, Windows Server 2019, the user data pasted into the console)
   the certificate was also in its trusted roots (`LocalMachine\Root`). The user data does both now.
 - LDAPS through `AWS-StartPortForwardingSession` from another machine works (ldapsearch with `LDAPTLS_REQCERT=never`).
 
+By the lab's commands (2026-10-26, Windows Server 2019, t3.small, the same account):
+
+- `lab up --config` from nothing to READY on t3.small too; `check`, `schema -apply` and `clone` from a Samba
+  source through the tunnel (credentials, ACLs, the resource-based delegation: [active-directory.md](../active-directory.md)).
+- `status` of a running and of a stopped instance (a stopped one has no public address).
+- `snapshot`: the instance stopped, the snapshot started (completed in the background, 50 GiB listed), the
+  instance started and READY again. The tunnels outlived the stop and start that time.
+- `snapshots` listing it `completed`, with its note.
+- `restore`: the root volume replaced and the instance restarted under the same id; an OU added after the snapshot
+  was gone, the data from before it kept. The replacement volume ended with the lab's tags and the account's
+  (`Name`, `Project`, `ldap-cronin.lab`, `ldap-cronin.realm`), which restore gives it after the task. The tunnel
+  processes kept their local ports but forwarded nothing (a client hung): they must be opened again, as restore says.
+- `down`, then `lab up --config` starting the stopped instance (not a new one): a new public address, Systems
+  Manager reached, the data kept.
+- `snapshot-rm`, then `snapshots` listing none; `lab reset --config` terminating the instance after its [y/N], `status` then finding none.
+
 ## 6. Unverified
 
 - `Set-ADObject` on the marker's `searchFlags` (the test left the marker out: `[mapping] mode = "file"`).
 - Windows Server 2016, 2022 and 2025.
-- `lab up` with an instance that is stopped (started) or running (used); `lab reset --config`.
-- Stage 3 on AWS: snapshot, restore (whether the replacement volume keeps the original's tags before lab restore
-  gives it the lab's, for an account whose policy refuses an untagged volume), down, status.
+- `lab up` with an instance already running (used); `lab reset --snapshots`.
+- Whether the replacement volume of a restore has tags before restore gives it the lab's, for an account whose
+  policy refuses an untagged volume (the task succeeded in an account that requires tags on an instance).

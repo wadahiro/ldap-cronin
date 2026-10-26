@@ -528,8 +528,8 @@ has it, went in whole (2,445 attributes, 314 classes, 20 classes extended) in ab
 
 - A snapshot is an EBS snapshot of the instance's root volume, taken with the instance stopped, so the domain's
   database is closed: a few minutes, then the lab is ready again. A restore replaces the root volume by one made from
-  the snapshot; the instance keeps its id, so the tunnel commands are the same, but it restarts, so open them again.
-  (Snapshots of the EC2 lab are not verified on AWS yet.)
+  the snapshot; the instance keeps its id, so the tunnel commands are the same, but it restarts, so open them again
+  (the old tunnels keep their local ports but forward nothing: stop them first).
 - `lab down --config config-ec2.toml` stops the instance while you do not use it (its volume and snapshots are
   still billed); `lab up --config` starts it again.
 - `lab reset --config config-ec2.toml` terminates it; add `--snapshots` to delete its snapshots too.
