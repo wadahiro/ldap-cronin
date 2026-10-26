@@ -372,7 +372,7 @@ func labUpFromConfig(ctx context.Context, fs *flag.FlagSet, c labCommon, cfgPath
 // labResetFromConfig is lab reset --config of an EC2 lab: its instances, by its tag, are terminated after a
 // confirmation (-y skips it). A docker lab is reset as before, by --prefix and --instance.
 func labResetFromConfig(ctx context.Context, cfgPath string, reset lab.ResetOptions, out io.Writer) error {
-	s, err := openSession(ctx, cfgPath)
+	s, err := openLabSession(ctx, cfgPath)
 	if err != nil {
 		return err
 	}
@@ -400,7 +400,7 @@ func labResetFromConfig(ctx context.Context, cfgPath string, reset lab.ResetOpti
 
 // labEC2FromConfig is down, status, snapshot, snapshots, restore and snapshot-rm of an EC2 lab, by its tag.
 func labEC2FromConfig(ctx context.Context, sub, cfgPath, name string, snap lab.SnapshotOptions, out io.Writer) error {
-	s, err := openSession(ctx, cfgPath)
+	s, err := openLabSession(ctx, cfgPath)
 	if err != nil {
 		return err
 	}

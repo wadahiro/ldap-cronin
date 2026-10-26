@@ -165,11 +165,22 @@ var secrets = app.Secrets{
 var dial app.Dialer = app.LDAP
 
 func openSession(ctx context.Context, cfgPath string) (*app.Session, error) {
+	return openSessionTo(ctx, cfgPath, os.Stderr)
+}
+
+// openLabSession is openSession for a lab command that acts on a lab made already (down, status, snapshots, restore,
+// reset, ...): it reads the source for the lab's domain name alone, so what Open says of the source (the dump's
+// server and time) is left out, which read as if the source took part in, say, a restore.
+func openLabSession(ctx context.Context, cfgPath string) (*app.Session, error) {
+	return openSessionTo(ctx, cfgPath, io.Discard)
+}
+
+func openSessionTo(ctx context.Context, cfgPath string, warn io.Writer) (*app.Session, error) {
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		return nil, err
 	}
-	s, err := app.Open(ctx, cfg, secretsFor(cfg), dial, os.Stderr)
+	s, err := app.Open(ctx, cfg, secretsFor(cfg), dial, warn)
 	if err != nil {
 		return nil, err
 	}
