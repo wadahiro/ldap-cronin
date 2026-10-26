@@ -27,6 +27,13 @@ func Format(w io.Writer, d Difference, maxValues int) {
 		fmt.Fprintln(w, "            no marker: recreated, marker removed, or added to the source after the clone")
 		return
 	}
+	if d.Kind == NameTaken {
+		fmt.Fprintf(w, "            the target holds %s under a name it takes as the same (clone did not add this entry)\n", d.TargetDN)
+		if d.Unsure {
+			fmt.Fprintln(w, "            without a marker or identifier, it may be this entry renamed")
+		}
+		return
+	}
 	if d.Kind != Differ {
 		return
 	}

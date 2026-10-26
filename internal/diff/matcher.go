@@ -9,6 +9,7 @@ import (
 	"github.com/wadahiro/ldap-cronin/internal/dn"
 	"github.com/wadahiro/ldap-cronin/internal/identity"
 	"github.com/wadahiro/ldap-cronin/internal/plan"
+	"github.com/wadahiro/ldap-cronin/internal/profile"
 )
 
 // locator finds the target entry that corresponds to one source entry.
@@ -17,6 +18,7 @@ type locator struct {
 	domain string
 	res    identity.Resolver
 	scheme identity.Scheme // the source identifier (objectGUID, entryUUID)
+	prof   profile.Profile // for the DN of an entry read (plan.TargetDN)
 
 	mu       sync.Mutex
 	targetOf map[string]string // normalized source DN -> current DN on the target; only for those whose parent moved or was renamed
@@ -62,6 +64,10 @@ type located struct {
 	replacement *directory.Entry
 	// unmarked means the entry at the source DN carries no marker, so whether it is the cloned object cannot be told.
 	unmarked bool
+	// nameTaken is the DN of the entry the target answered with for the source DN, under another name it takes as the
+	// same, when it is not the cloned object found elsewhere; unsure when nothing tells it is not that one renamed.
+	nameTaken string
+	unsure    bool
 }
 
 // locate finds the target entry that corresponds to one source entry.
@@ -71,11 +77,17 @@ type located struct {
 // DN and reported as unmarked. A create-only ancestor (ancestor) is simply taken at its DN: it may have existed on
 // the target before the clone (CN=Users), so it never got a marker.
 func (l *locator) locate(ctx context.Context, want directory.Entry, names []string, ancestor bool) (located, error) {
+	asked := append(append([]string(nil), names...), plan.TargetDNAttrs(l.prof, want.DN)...)
 	if l.res == nil {
-		got, err := l.dst.Get(ctx, want.DN, names)
+		got, err := l.dst.Get(ctx, want.DN, asked)
+		if err == nil && got != nil {
+			if actual := plan.TargetDN(l.prof, want.DN, *got); !dn.Equal(actual, want.DN) {
+				return located{nameTaken: actual, unsure: true}, nil
+			}
+		}
 		return located{entry: got}, err
 	}
-	lookup := append(append([]string(nil), names...), l.res.Attrs()...)
+	lookup := append(asked, l.res.Attrs()...)
 	got, err := l.dst.Get(ctx, want.DN, lookup)
 	if err != nil {
 		return located{}, err
@@ -83,6 +95,11 @@ func (l *locator) locate(ctx context.Context, want directory.Entry, names []stri
 	source, err := identity.Of(l.scheme, want)
 	if err != nil {
 		return located{}, fmt.Errorf("%s on the source: %w", want.DN, err)
+	}
+	if got != nil {
+		if actual := plan.TargetDN(l.prof, want.DN, *got); !dn.Equal(actual, want.DN) {
+			return l.nameTaken(ctx, source, want.DN, actual, got, lookup)
+		}
 	}
 	if source.IsZero() {
 		return located{entry: got}, nil
@@ -123,6 +140,30 @@ func (l *locator) locate(ctx context.Context, want directory.Entry, names []stri
 		return located{}, err
 	}
 	return located{entry: orig, viaGUID: orig != nil}, nil
+}
+
+// nameTaken says what the target answering for sourceDN with got, an entry under another name it takes as the same
+// (actual), means: the cloned entry renamed to that name, the cloned one elsewhere (got being another), or neither.
+func (l *locator) nameTaken(ctx context.Context, source identity.Key, sourceDN, actual string, got *directory.Entry, lookup []string) (located, error) {
+	if source.IsZero() {
+		return located{nameTaken: actual, unsure: true}, nil
+	}
+	same, known, err := l.res.Same(source, *got)
+	if err != nil {
+		return located{}, err
+	}
+	if same && known {
+		got.DN = actual // a server may answer with the DN asked for (Windows)
+		return located{entry: l.record(got), viaGUID: true}, nil
+	}
+	orig, err := l.find(ctx, source, sourceDN, lookup)
+	if err != nil {
+		return located{}, err
+	}
+	if orig != nil {
+		return located{entry: orig, viaGUID: true}, nil
+	}
+	return located{nameTaken: actual, unsure: !known}, nil
 }
 
 // find looks for the object cloned from source somewhere other than its source DN. It first tries the expected DN:

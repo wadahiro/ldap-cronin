@@ -5,8 +5,11 @@ package e2e
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +17,8 @@ import (
 	"github.com/wadahiro/ldap-cronin/internal/app"
 	"github.com/wadahiro/ldap-cronin/internal/config"
 	"github.com/wadahiro/ldap-cronin/internal/directory"
+	"github.com/wadahiro/ldap-cronin/internal/dump"
+	"github.com/wadahiro/ldap-cronin/internal/profile"
 )
 
 // Replication-conflict leftovers against Samba: a user AD renamed to "<name>\nCNF:<GUID>" and "$DUPLICATE-<n>", and
@@ -120,3 +125,99 @@ const rawDomainPartition = "_parts = [str(p).split(':', 1) for p in ldb.Ldb('/va
 
 // pyStr quotes s as a Python string literal (the DNs hold a backslash).
 func pyStr(s string) string { return "r'" + s + "'" }
+
+// A Windows source can hold siblings whose names differ in consecutive spaces only, which Samba takes as one name.
+// From such a dump (a Samba source's, given the second sibling by hand), clone adds the first and leaves the second
+// out instead of overwriting the first with it, leaving out the member naming it; diff reports NAME_TAKEN.
+func TestNamesSambaTakesAsTheSameAreNotOverwritten(t *testing.T) {
+	runID := time.Now().UnixNano() % 1_000_000
+	ctx := context.Background()
+	src, dst := dial(t, srcURL), dial(t, dstURL)
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	scope := fmt.Sprintf("OU=Spaces%06d,%s", runID, realmDN)
+	one, two := "CN=Lee Ann,"+scope, "CN=Lee  Ann,"+scope
+	team := "CN=Team," + scope
+	must(src.Add(ctx, directory.Entry{DN: scope, Attrs: map[string][]string{"objectClass": {"organizationalUnit"}}}))
+	must(src.Add(ctx, directory.Entry{DN: one, Attrs: map[string][]string{"objectClass": {"user"}, "sAMAccountName": {fmt.Sprintf("s%06da", runID)}}}))
+	must(src.Add(ctx, directory.Entry{DN: team, Attrs: map[string][]string{"objectClass": {"group"}, "sAMAccountName": {fmt.Sprintf("s%06dt", runID)}, "member": {one}}}))
+
+	var out bytes.Buffer
+	_, err := dump.Write(ctx, src, profile.AD, dump.Options{BaseDNs: []string{scope}, Server: srcURL, Version: "e2e"}, &out)
+	must(err)
+	// The second sibling: the first's record under the other name, with an objectGUID and sAMAccountName of its own.
+	text := out.String()
+	start := strings.Index(text, "dn: "+one+"\n")
+	if start < 0 {
+		t.Fatalf("the dump lacks %s", one)
+	}
+	end := start + strings.Index(text[start:], "\n\n") + 2
+	var sibling []string
+	for _, line := range strings.Split(strings.TrimRight(text[start:end], "\n"), "\n") {
+		name, _, _ := strings.Cut(line, ":")
+		switch strings.ToLower(name) {
+		case "dn":
+			line = "dn: " + two
+		case "cn", "name":
+			line = name + ": Lee  Ann"
+		case "distinguishedname":
+			line = name + ": " + two
+		case "samaccountname":
+			line = name + fmt.Sprintf(": s%06db", runID)
+		case "objectguid":
+			line = name + ":: " + base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("guid-%010d!", runID)))
+		case "objectsid":
+			continue
+		}
+		if strings.HasPrefix(line, " ") { // a folded continuation of a line left out
+			continue
+		}
+		sibling = append(sibling, line)
+	}
+	text = text[:end] + strings.Join(sibling, "\n") + "\n\n" + text[end:]
+	text = strings.Replace(text, "dn: "+team+"\n", "dn: "+team+"\nmember: "+two+"\n", 1)
+	var entries int
+	for _, line := range strings.Split(text, "\n") {
+		if strings.HasPrefix(line, "# end: ") {
+			fmt.Sscanf(line, "# end: %d entries", &entries)
+		}
+	}
+	text = strings.Replace(text, fmt.Sprintf("# end: %d entries", entries), fmt.Sprintf("# end: %d entries", entries+1), 1)
+	path := filepath.Join(t.TempDir(), "spaces.ldif")
+	must(os.WriteFile(path, []byte(text), 0o600))
+
+	cfg, err := config.Parse([]byte(fmt.Sprintf("[source]\nldif = %q\n[target]\nurl = %q\nbind_dn = %q\ninsecure_skip_verify = true\n[scope]\nbase_dn = %q\n",
+		path, dstURL, adminDN, scope)))
+	must(err)
+	pw := func() (string, error) { return adminPw, nil }
+	s, err := app.Open(ctx, cfg, app.Secrets{TargetBind: pw, UserPassword: func() (string, error) { return fixedPw, nil }}, app.LDAP, &bytes.Buffer{})
+	must(err)
+	t.Cleanup(s.Close)
+	var log bytes.Buffer
+	rep, err := s.Clone(ctx, false, &log, &log)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, log.String())
+	}
+	if len(rep.NameTaken) != 1 {
+		t.Fatalf("name taken: %+v\n%s", rep.NameTaken, log.String())
+	}
+	held, err := dst.Get(ctx, rep.NameTaken[0].TargetDN, []string{"sAMAccountName"})
+	must(err)
+	wantSAM := map[string]string{one: fmt.Sprintf("s%06da", runID), two: fmt.Sprintf("s%06db", runID)}[held.DN]
+	if held == nil || strings.Join(held.Values("sAMAccountName"), "") != wantSAM {
+		t.Fatalf("the entry added was overwritten: %+v (want %s)", held, wantSAM)
+	}
+	members, err := dst.Get(ctx, team, []string{"member"})
+	must(err)
+	if len(members.Values("member")) != 1 {
+		t.Fatalf("the group's members: %v", members.Values("member"))
+	}
+	var diffOut bytes.Buffer
+	if code, err := s.Diff(ctx, app.DiffOutput{}, &diffOut); err != nil || code != app.ExitDiff || !strings.Contains(diffOut.String(), "NAME_TAKEN  : 1") {
+		t.Fatalf("diff (%d, %v):\n%s", code, err, diffOut.String())
+	}
+}

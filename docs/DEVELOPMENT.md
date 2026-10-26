@@ -190,6 +190,81 @@ Limits:
 
 If it works, `diff` can match by GUID without a marker, and applications keyed on `objectGUID` / `objectSid` (for example an IdM whose AD connector identifies objects by `objectGUID`) see matching identifiers against the lab.
 
+## Research notes: what Samba and Windows take as the same name, and what they refuse (measured)
+
+Measured on Samba 4.19.5 (docker) and Windows Server 2019 (the EC2 lab, 2026-10-27), as the Administrator over
+LDAPS unless said otherwise. A clone between the two meets every row where they differ.
+
+**Names (RDNs) a server takes as the same.** Two entries whose RDNs differ only so cannot be siblings: the second
+add fails with "already exists" (68), and a read of the second DN returns the first entry: Samba under that entry's
+own DN, **Windows under the DN asked for**, the entry's own being in `distinguishedName` (so a client comparing the
+DN it gets back with the one it asked for cannot tell on Windows). Each pair was written as
+siblings with an ASCII prefix without a hyphen (one next to the prefix's hyphen changed the outcome: below).
+
+| Difference | Pairs | Samba | Windows |
+|---|---|---|---|
+| ASCII case | `ab` / `AB` | same | same |
+| Case beyond ASCII | `Ä` / `ä`, `Д` / `д`, `Σ` / `σ` | same | same |
+| Full- and half-width letters, digits and symbols | `ABC` / `ＡＢＣ`, `ABC` / `ａｂｃ`, `abc` / `ＡＢＣ`, `1` / `１`, `(` / `（`, `@` / `＠`, `.` / `．`, `-` / `－` | different | **same** |
+| Full- and half-width space | `山田 太郎` / `山田　太郎` (U+3000) | different | **same** |
+| Full- and half-width kana, voiced and semi-voiced marks included | `サトウ` / `ｻﾄｳ`, `ガ` / `ｶﾞ`, `ヴ` / `ｳﾞ`, `パ` / `ﾊﾟ`, `・` / `･` | different | **same** |
+| Hiragana and katakana | `やまだ` / `ヤマダ`, `ゔ` / `ヴ`, `ぱ` / `ﾊﾟ` | different | **same** |
+| Small and normal kana | `ア` / `ァ`, `ツ` / `ッ` | different | **same** |
+| Composed and decomposed (NFC / NFD) | `が` / `か`+U+3099, `é` / `e`+U+0301 | different | **same** |
+| Accents | `é` / `e` | different | **same** |
+| Compatibility forms | `①` / `1`, `ﬁ` / `fi`, `ß` / `ss` | different | **same** |
+| Compatibility forms, not equal | `Ⅱ` / `II`, `㈱` / `(株)` | different | different |
+| Consecutive spaces | `a b` / `a  b` | **same** (collapsed) | different |
+| Other spaces | `a b` / `a`+U+00A0+`b` (no-break space) | different | different |
+| Long vowel and hyphens | `ー` / `-`, `ー` / `－`, `サー` / `サ-` | different | different |
+| A hyphen or an apostrophe, against none | `a-b` / `ab`, `ab-c` / `abc`, `a'b` / `ab` | different | different |
+| Wave dashes | `〜` (U+301C) / `～` (U+FF5E) | different | different |
+| Variant kanji | `髙` / `高`, `﨑` / `崎` | different | different |
+
+Observed, not explained: Windows took `p09-ー` / `p09--` as the same, though `ー` / `-` alone, and after `サ`, are
+not.
+
+So a Samba source can hold siblings a Windows target cannot (width, kana, accents, ...), and a Windows source
+siblings a Samba target cannot (consecutive spaces).
+
+**Replication-conflict leftovers** (AD renames the loser of a name conflict to `<name>\0ACNF:<GUID>` and of a
+`sAMAccountName` conflict to `$DUPLICATE-<n>`, keeping the rest):
+
+| Write | Samba | Windows |
+|---|---|---|
+| An RDN holding a line feed (`\0A`), whatever follows (`CNF:`, `DEL:`, anything) | taken | **refused**: `NAMING_VIOLATION` (64, 0x200B); `CNF:` without the line feed is taken |
+| A computer's `sAMAccountName` without the trailing `$` (`$DUPLICATE-2a7`) | taken from a member of BUILTIN\Administrators (the Administrator over LDAP, an `admin_session` in Python); **refused** to the system session ("must have a trailing $!", 53), at an add and at a later rename alike | taken |
+| A `userPrincipalName` another object holds | **refused** (19), even to the system session with `relax`, `dSHeuristics` notwithstanding | refused: 8648 (0x21C8) |
+| A `servicePrincipalName` value another object holds | refused (19) | refused: 8647 (0x21C7) |
+| A `userPrincipalName` equal to the `sAMAccountName@<realm>` of an account without one | **refused** ("implied by sAMAccountName") | taken |
+| A `servicePrincipalName` another object holds under an alias of `sPNMappings` (`HOST/` against `HTTP/`, `CIFS/` against `HOST/`) | not measured | taken |
+
+Samba's checks are in samldb, which every write goes through; only writing the partition's database file without
+the modules gives a second object such a value, which leaves its replication metadata without it (dbcheck reports
+it and cannot fix it while two objects hold the value). The e2e tests give their Samba source leftovers that way.
+
+**Windows' `dSHeuristics`, 21st character** (`CN=Directory Service,CN=Windows NT,CN=Services,CN=Configuration,...`;
+the 10th character must be `1` and the 20th `2` when the value is that long):
+
+| 21st character | A duplicate `userPrincipalName` | A duplicate `servicePrincipalName` |
+|---|---|---|
+| not set (the default: no `dSHeuristics`) | refused | refused |
+| `1` | taken | refused |
+| `2` | refused | taken |
+| `3` | taken | taken |
+
+It takes effect at once on the DC written to. Once it is set back, the duplicates written meanwhile stay, and a new
+one is refused again: the state of a production domain whose duplicates came from replication. Samba ignores it
+(`1` measured).
+
+**`gPLink`** (a string, not a DN): both take a value naming GPOs the domain lacks, and `gPOptions` with it.
+
+What clone does with these: [active-directory.md](active-directory.md#replication-conflict-leftovers) for the
+leftovers. For names a target takes as the same: an add refused as existing reads the entry under that DN, and when
+the target answers with another DN, the marker (or identifier, or mapping file) tells the cloned entry renamed from
+another entry; another one, or one nothing tells, is left as it is and the source entry not added, with a warning, a
+list in the summary and the references naming it left out; diff reports it as `NAME_TAKEN`.
+
 ## Implementation notes (quirks of Samba and AD)
 
 - Setting `unicodePwd` requires LDAPS; Samba rejects it over plain LDAP.

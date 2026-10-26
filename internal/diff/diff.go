@@ -40,6 +40,11 @@ const (
 	// marker removed, or been added to the source after the clone; a marker cannot tell these apart. Its attributes
 	// are still compared.
 	Unmarked Kind = "UNMARKED"
+	// NameTaken means the target answers for the source DN with another entry, whose name it takes as the same
+	// (Windows ignores width and kana type, Samba collapses spaces): clone did not add the source entry, as writing
+	// it would have overwritten that one. Unsure is set when no marker or identifier tells it is not this entry
+	// renamed.
+	NameTaken Kind = "NAME_TAKEN"
 )
 
 type Difference struct {
@@ -59,10 +64,12 @@ type Difference struct {
 	SourceCasePair []bool
 	TargetCasePair []bool
 
-	// For Renamed, the current DN on the target and whether it is a rename (RDN change) or a move (parent change).
+	// For Renamed, the current DN on the target and whether it is a rename (RDN change) or a move (parent change);
+	// for NameTaken, the target's entry that holds the name, and Unsure.
 	TargetDN   string
 	RDNRenamed bool
 	Moved      bool
+	Unsure     bool
 }
 
 // Summary is the compared scope and the number of differences.
@@ -164,7 +171,7 @@ func Run(ctx context.Context, src, dst directory.Directory, job plan.Job, o Opti
 	})
 	bar.Phases(len(p.Leaves()) + 2) // the parents, each leaf kind, the references and the target
 	bar.Phase("OUs and parents", len(p.Containers))
-	r.loc = &locator{scheme: job.Profile.Identity, dst: dst, domain: p.Root, res: o.Resolver,
+	r.loc = &locator{scheme: job.Profile.Identity, prof: job.Profile, dst: dst, domain: p.Root, res: o.Resolver,
 		targetOf: map[string]string{}, found: plan.NewScope(), renamedBack: map[string]string{}}
 	// Containers and parent leaves go shallowest first: to know the expected parent DN of a child, where its parent
 	// lives on the target (whether it moved) must already be known.
@@ -370,6 +377,10 @@ func (r *runner) check(ctx context.Context, want directory.Entry, names []string
 	res, err := r.loc.locate(ctx, want, names, kind == nil)
 	if err != nil {
 		return err
+	}
+	if res.nameTaken != "" {
+		r.report(Difference{Kind: NameTaken, DN: want.DN, TargetDN: res.nameTaken, Unsure: res.unsure})
+		return nil
 	}
 	if res.unmarked {
 		r.report(Difference{Kind: Unmarked, DN: want.DN})

@@ -100,6 +100,10 @@ type Report struct {
 	// with another object and the target holds each once (plan.Withheld); WithheldWhy says why.
 	Withheld    map[string]int
 	WithheldWhy string
+	// NameTaken lists the entries not added because the target holds another entry under a name it takes as the
+	// same (Windows ignores width and kana type, Samba collapses spaces), each with the target's entry: writing them
+	// would have overwritten that one.
+	NameTaken []NameTaken
 	// Resumed counts the objects (and the reference passes of objects) an earlier run finished, which the journal
 	// let this one skip.
 	Resumed      int
@@ -108,6 +112,20 @@ type Report struct {
 	// Took is how long each phase took, in order, so a slow run says where its time went.
 	Took []PhaseTime
 }
+
+// NameTaken is a source entry not added, and the target's entry that holds its name.
+type NameTaken struct {
+	DN, TargetDN string
+	// Unknown is set when whether the target's entry is this one renamed cannot be told (no marker, no identifier).
+	Unknown bool
+}
+
+// WhyNameTaken is why a reference value naming such an entry is not written: the target would take it to name the
+// other entry.
+const WhyNameTaken = "names an entry not added: the target holds another under a name it takes as the same"
+
+// maxNameTakenShown caps the entries the summary lists; the count is always given.
+const maxNameTakenShown = 50
 
 // PhaseTime is how long one phase of a run took.
 type PhaseTime struct {
@@ -152,6 +170,20 @@ func (rep *Report) WriteSummary(w io.Writer) {
 	}
 	if len(rep.Withheld) > 0 {
 		plan.WriteCounts(w, "values not written ("+rep.WithheldWhy+"; see the warnings)", rep.Withheld)
+	}
+	if len(rep.NameTaken) > 0 {
+		fmt.Fprintf(w, "not added, the target holds another entry under a name it takes as the same: %d\n", len(rep.NameTaken))
+		for i, n := range rep.NameTaken {
+			if i == maxNameTakenShown {
+				fmt.Fprintf(w, "  ... and %d more (see the warnings)\n", len(rep.NameTaken)-i)
+				break
+			}
+			unknown := ""
+			if n.Unknown {
+				unknown = "; without a marker, it may be this entry renamed"
+			}
+			fmt.Fprintf(w, "  %s  (the target's: %s%s)\n", n.DN, n.TargetDN, unknown)
+		}
 	}
 	if rep.Placeholders > 0 {
 		fmt.Fprintf(w, "placeholders created for entries the source did not return (unreadable to the account reading it; see the warnings): %d\n", rep.Placeholders)
@@ -683,9 +715,30 @@ func (r *runner) upsert(ctx context.Context, e directory.Entry, account profile.
 	for n := range desired.Attrs {
 		names = append(names, n)
 	}
+	if r.opt.Marker != nil {
+		extra = append(extra, r.opt.Marker.Attr)
+	}
+	if r.opt.Native || r.opt.Preserve || r.opt.Mapping != nil {
+		extra = append(extra, r.prof.Identity.Attr())
+	}
+	extra = append(extra, plan.TargetDNAttrs(r.prof, e.DN)...)
 	cur, err = r.dst.Get(ctx, e.DN, append(names, extra...))
 	if err != nil {
 		return false, nil, err
+	}
+	if cur != nil {
+		// The target answered for another name it takes as the same: this entry renamed (by the program under test,
+		// to a name equal to it there), or another entry, which an update would overwrite.
+		if actual := plan.TargetDN(r.prof, e.DN, *cur); !dn.Equal(actual, e.DN) {
+			if same, known := r.sameObject(e, *cur); !same {
+				r.mu.Lock()
+				r.report.NameTaken = append(r.report.NameTaken, NameTaken{DN: e.DN, TargetDN: actual, Unknown: !known})
+				r.skipped[dn.Normalize(e.DN)] = true
+				r.mu.Unlock()
+				r.warn("not added: %s: the target holds %s under a name it takes as the same", e.DN, actual)
+				return false, nil, errSkipped
+			}
+		}
 	}
 	if r.opt.Native || r.opt.Preserve {
 		if err := r.checkIdentity(e.DN, desired, cur); err != nil {
@@ -715,6 +768,38 @@ func (r *runner) upsert(ctx context.Context, e directory.Entry, account profile.
 	r.count(func(rep *Report) { rep.Updated++ })
 	r.logf("update %s\n", e.DN)
 	return false, cur, nil
+}
+
+// sameObject tells whether cur, found on the target under another DN than e's, is the object cloned from e: by the
+// identifier a native import or a preserving add keeps, by the marker, or by the mapping file. known is false when
+// none tells.
+func (r *runner) sameObject(e, cur directory.Entry) (same, known bool) {
+	scheme := r.prof.Identity
+	if r.opt.Native || r.opt.Preserve {
+		if want, got := first(e.Values(scheme.Attr())), first(cur.Values(scheme.Attr())); want != "" && got != "" {
+			return want == got, true
+		}
+	}
+	k, err := identity.Of(scheme, e)
+	if err != nil || k.IsZero() {
+		return false, false
+	}
+	if m := r.opt.Marker; m != nil {
+		if v := first(cur.Values(m.Attr)); v != "" {
+			return strings.EqualFold(v, m.Encode(k)), true
+		}
+	}
+	if r.opt.Mapping != nil {
+		if t, err := identity.Of(scheme, cur); err == nil && !t.IsZero() {
+			for _, mapped := range r.opt.Mapping.Targets(k) {
+				if mapped == t {
+					return true, true
+				}
+			}
+			return false, len(r.opt.Mapping.Targets(k)) > 0
+		}
+	}
+	return false, false
 }
 
 // hasRefs reports whether e holds any DN reference value. A schema violation of an entry without one is not about
@@ -884,6 +969,10 @@ func (r *runner) references(ctx context.Context, p *plan.Plan) error {
 				}
 				var usable []string
 				for _, v := range values {
+					if r.isSkipped(dn.RefDN(v)) && r.nameTaken(dn.RefDN(v)) {
+						r.notWritten(name, e.DN, v, WhyNameTaken)
+						continue
+					}
 					class, err := r.refs.Class(ctx, v)
 					if err != nil {
 						return err
@@ -933,6 +1022,30 @@ func (r *runner) unwritten(ctx context.Context, name, from, v string) error {
 	if err != nil {
 		return err
 	}
+	r.notWritten(name, from, v, why)
+	return nil
+}
+
+func (r *runner) isSkipped(d string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.skipped[dn.Normalize(d)]
+}
+
+// nameTaken reports whether d was not added because the target holds another entry under its name.
+func (r *runner) nameTaken(d string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, n := range r.report.NameTaken {
+		if dn.Equal(n.DN, d) {
+			return true
+		}
+	}
+	return false
+}
+
+// notWritten counts a reference value not written for why, warning of the first per attribute and value.
+func (r *runner) notWritten(name, from, v, why string) {
 	key := strings.ToLower(name) + "\x00" + dn.NormalizeRef(v)
 	r.mu.Lock()
 	r.report.Unwritten[name+": "+why]++
@@ -945,7 +1058,6 @@ func (r *runner) unwritten(ctx context.Context, name, from, v string) error {
 		// The DN alone: the binary part of a DN-Binary value may be a credential (msDS-KeyCredentialLink).
 		r.warn("skip %s values naming %s (first of %s): it %s", name, dn.RefDN(v), from, why)
 	}
-	return nil
 }
 
 // applyReference applies a DN reference attribute. A single value is replaced if it differs; a multi-value attribute only gets the missing values added.

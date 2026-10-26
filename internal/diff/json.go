@@ -27,10 +27,11 @@ type jsonDifference struct {
 	OnlyTarget *[]string `json:"only_target,omitempty"`
 	CaseOnly   bool      `json:"case_only,omitempty"`
 	Base64     bool      `json:"base64,omitempty"`
-	// RENAMED
+	// RENAMED, NAME_TAKEN (the target's entry holding the name; unsure: it may be this one renamed)
 	TargetDN string `json:"target_dn,omitempty"`
 	Renamed  bool   `json:"renamed,omitempty"`
 	Moved    bool   `json:"moved,omitempty"`
+	Unsure   bool   `json:"unsure,omitempty"`
 }
 
 // JSON writes the differences as JSON Lines: one object per difference, then one summary object (kind SUMMARY).
@@ -50,6 +51,8 @@ func (j *JSON) Difference(d Difference) error {
 	switch d.Kind {
 	case Renamed:
 		out.TargetDN, out.Renamed, out.Moved = d.TargetDN, d.RDNRenamed, d.Moved
+	case NameTaken:
+		out.TargetDN, out.Unsure = d.TargetDN, d.Unsure
 	case Differ:
 		out.Attr, out.CaseOnly = d.Attr, d.CaseOnly
 		lists := [][]string{d.Source, d.Target}
@@ -149,7 +152,7 @@ func (j *JSON) Summary(job plan.Job, sum Summary, excluded []string) error {
 	for _, k := range job.Kinds {
 		out.Compared[k.Name] = sum.Compared[k.Name]
 	}
-	for _, k := range []Kind{OnlySource, OnlyTarget, Differ, Renamed, Replaced, Unmarked} {
+	for _, k := range []Kind{OnlySource, OnlyTarget, Differ, Renamed, Replaced, Unmarked, NameTaken} {
 		out.Differences[string(k)] = sum.Differences[k]
 	}
 	return j.enc.Encode(out)

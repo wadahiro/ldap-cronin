@@ -16,7 +16,7 @@ import (
 
 type Dir struct {
 	mu      sync.Mutex
-	Entries map[string]*directory.Entry // key: dn.Normalize
+	Entries map[string]*directory.Entry // key: dn.Normalize, through Fold when set
 	Ops     []string                    // log of write operations ("add <dn>", etc.)
 	roots   []string
 	// Attributes in StrictRefs make Add/Replace/AddValues fail unless the referenced DN exists (like link attributes on real AD/Samba).
@@ -38,6 +38,22 @@ type Dir struct {
 	// RIDs from 1100 on, as a DC gives them.
 	SIDs    string
 	nextRID uint32
+	// Fold, when set, makes names it maps to the same key one name, as a server takes some names as the same
+	// (Windows ignores width and kana type, Samba collapses spaces): an Add of such a sibling is refused as existing,
+	// and a read of its DN returns the entry that holds the name, under that entry's DN.
+	Fold func(normalized string) string
+	// EchoDN makes Get answer with the DN asked for, the entry's own in distinguishedName, as Windows does for a
+	// name it takes as another's.
+	EchoDN bool
+}
+
+// key is where an entry of that DN is kept.
+func (d *Dir) key(dnStr string) string {
+	k := dn.Normalize(dnStr)
+	if d.Fold != nil {
+		k = d.Fold(k)
+	}
+	return k
 }
 
 // SID encodes a SID text (S-1-5-21-1-2-3-1105) as the bytes of objectSid.
@@ -123,13 +139,13 @@ func (d *Dir) Put(dnStr string, attrs map[string][]string) {
 	defer d.mu.Unlock()
 	e := &directory.Entry{DN: dnStr, Attrs: clone(attrs)}
 	d.assignGUID(e.Attrs)
-	d.Entries[dn.Normalize(dnStr)] = e
+	d.Entries[d.key(dnStr)] = e
 }
 
 func (d *Dir) Delete(dnStr string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	delete(d.Entries, dn.Normalize(dnStr))
+	delete(d.Entries, d.key(dnStr))
 }
 
 // Snapshot copies the entries, like a lab snapshot.
@@ -157,7 +173,7 @@ func (d *Dir) Restore(entries map[string]*directory.Entry) {
 func (d *Dir) Lookup(dnStr string) *directory.Entry {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return d.Entries[dn.Normalize(dnStr)]
+	return d.Entries[d.key(dnStr)]
 }
 
 // Walk collects the matching DNs first and hands them to fn one at a time, so a large data set is never copied wholesale.
@@ -197,11 +213,19 @@ func (d *Dir) Get(ctx context.Context, dnStr string, attrs []string) (*directory
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	e, ok := d.Entries[dn.Normalize(dnStr)]
+	e, ok := d.Entries[d.key(dnStr)]
 	if !ok {
 		return nil, nil
 	}
 	p := project(*e, attrs)
+	if d.EchoDN {
+		p.DN = dnStr
+		for _, a := range attrs {
+			if strings.EqualFold(a, "distinguishedName") {
+				p.Attrs[a] = []string{e.DN}
+			}
+		}
+	}
 	return &p, nil
 }
 
@@ -211,12 +235,12 @@ func (d *Dir) Add(ctx context.Context, e directory.Entry, controls ...directory.
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	key := dn.Normalize(e.DN)
+	key := d.key(e.DN)
 	if _, ok := d.Entries[key]; ok {
 		return directory.ErrExists
 	}
 	parent := dn.Parent(e.DN)
-	if _, ok := d.Entries[dn.Normalize(parent)]; !ok && !d.isRoot(parent) {
+	if _, ok := d.Entries[d.key(parent)]; !ok && !d.isRoot(parent) {
 		return fmt.Errorf("add %s: parent %s does not exist", e.DN, parent)
 	}
 	if err := d.checkRefs(e.DN, e.Attrs); err != nil {
@@ -255,14 +279,14 @@ func (d *Dir) principals(values []string) []string {
 		}
 		sid = strings.TrimSuffix(sid, ">")
 		parent := "CN=ForeignSecurityPrincipals," + d.roots[0]
-		if _, ok := d.Entries[dn.Normalize(parent)]; !ok {
-			d.Entries[dn.Normalize(parent)] = &directory.Entry{DN: parent, Attrs: map[string][]string{"objectClass": {"top", "container"}}}
+		if _, ok := d.Entries[d.key(parent)]; !ok {
+			d.Entries[d.key(parent)] = &directory.Entry{DN: parent, Attrs: map[string][]string{"objectClass": {"top", "container"}}}
 		}
 		p := "CN=" + sid + "," + parent
-		if _, ok := d.Entries[dn.Normalize(p)]; !ok {
+		if _, ok := d.Entries[d.key(p)]; !ok {
 			attrs := map[string][]string{"objectClass": {"top", "foreignSecurityPrincipal"}, "cn": {sid}}
 			d.assignGUID(attrs)
-			d.Entries[dn.Normalize(p)] = &directory.Entry{DN: p, Attrs: attrs}
+			d.Entries[d.key(p)] = &directory.Entry{DN: p, Attrs: attrs}
 		}
 		out = append(out, p)
 	}
@@ -275,7 +299,7 @@ func (d *Dir) Replace(ctx context.Context, dnStr string, attrs map[string][]stri
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	e, ok := d.Entries[dn.Normalize(dnStr)]
+	e, ok := d.Entries[d.key(dnStr)]
 	if !ok {
 		return fmt.Errorf("modify %s: no such object", dnStr)
 	}
@@ -313,7 +337,7 @@ func (d *Dir) AddValues(ctx context.Context, dnStr, attr string, values []string
 		d.Ops = append(d.Ops, "schemaUpdateNow")
 		return nil
 	}
-	e, ok := d.Entries[dn.Normalize(dnStr)]
+	e, ok := d.Entries[d.key(dnStr)]
 	if !ok {
 		return fmt.Errorf("modify %s: no such object", dnStr)
 	}
@@ -347,7 +371,7 @@ func (d *Dir) checkRefs(entryDN string, attrs map[string][]string) error {
 			continue
 		}
 		for _, v := range values {
-			if _, ok := d.Entries[dn.Normalize(v)]; !ok {
+			if _, ok := d.Entries[d.key(v)]; !ok {
 				return fmt.Errorf("%s: %s=%s: referenced object not found", entryDN, n, v)
 			}
 		}

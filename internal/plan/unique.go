@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/go-ldap/ldap/v3"
+
 	"github.com/wadahiro/ldap-cronin/internal/directory"
 	"github.com/wadahiro/ldap-cronin/internal/dn"
 	"github.com/wadahiro/ldap-cronin/internal/profile"
@@ -251,4 +253,42 @@ func Withholding(ctx context.Context, src, dst directory.Directory, job Job, roo
 		return nil, nil, err
 	}
 	return unique(ctx, src, job, rules)
+}
+
+// TargetDN is the DN of e, read from a target by asked: a server may echo the DN asked for though the entry holds
+// another name it takes as the same (Windows does: CN=ｻﾄｳ answered with CN=サトウ's entry), so the profile's DN
+// attribute tells, and without one the RDN attribute's values (a value equal to the asked one but for case is the
+// same name everywhere). TargetDNAttrs are the attributes it needs.
+func TargetDN(prof profile.Profile, asked string, e directory.Entry) string {
+	if prof.DNAttr != "" {
+		if v := e.Values(prof.DNAttr); len(v) > 0 && v[0] != "" {
+			return v[0]
+		}
+	}
+	typ, val, ok := dn.FirstRDN(asked)
+	if !ok {
+		return e.DN
+	}
+	vals := e.Values(typ)
+	if len(vals) == 0 {
+		return e.DN
+	}
+	for _, v := range vals {
+		if strings.EqualFold(v, val) {
+			return e.DN
+		}
+	}
+	return typ + "=" + ldap.EscapeDN(vals[0]) + "," + dn.Parent(asked)
+}
+
+// TargetDNAttrs are the attributes TargetDN reads of an entry read by asked.
+func TargetDNAttrs(prof profile.Profile, asked string) []string {
+	var out []string
+	if prof.DNAttr != "" {
+		out = append(out, prof.DNAttr)
+	}
+	if typ, _, ok := dn.FirstRDN(asked); ok {
+		out = append(out, typ)
+	}
+	return out
 }

@@ -21,6 +21,9 @@ func WriteSummary(w io.Writer, job plan.Job, sum Summary, excluded []string) {
 	if sum.CaseOnly > 0 {
 		fmt.Fprintf(w, "                    of which case only: %d\n", sum.CaseOnly)
 	}
+	if sum.Differences[NameTaken] > 0 {
+		fmt.Fprintf(w, "  NAME_TAKEN  : %d   (the target holds another entry under a name it takes as the same: not cloned)\n", sum.Differences[NameTaken])
+	}
 	if sum.Matching != "" {
 		fmt.Fprintf(w, "  RENAMED     : %d   (same object, but its DN differs on target: renamed/moved)\n", sum.Differences[Renamed])
 		if sum.Differences[Replaced] > 0 {

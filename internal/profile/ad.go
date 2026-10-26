@@ -177,6 +177,7 @@ var AD = Profile{
 	Descriptors:  adDescriptors{},
 	Native:       adNative{},
 	Unique:       adUnique{},
+	DNAttr:       "distinguishedName",
 }
 
 // accountSecrets are the other secrets an account may hold, never cloned, compared or printed: the password a

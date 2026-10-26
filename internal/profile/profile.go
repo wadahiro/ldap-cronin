@@ -312,6 +312,10 @@ type Profile struct {
 	Native NativeSupport
 	// Unique is nil where a target enforces nothing a source may break (generic LDAP).
 	Unique Uniqueness
+	// DNAttr is the attribute holding an entry's own DN (AD: distinguishedName), "" for none. A read of a DN may
+	// return the DN asked for though the entry holds another name the server takes as the same (Windows echoes it),
+	// and this attribute says which entry it is.
+	DNAttr string
 }
 
 // Kind returns the spec of a kind by name.
