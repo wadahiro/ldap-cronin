@@ -102,10 +102,15 @@ func ReadSchema(ctx context.Context, d directory.Directory) (*Schema, error) {
 // Writable returns, sorted, the attributes an object of class may hold that a client can write: what the class,
 // the classes it derives from and their auxiliary classes must or may contain, without what only the server writes
 // (systemOnly), the constructed attributes, the back links, and those holding a DN inside a larger value
-// (DN-Binary, DN-String). ok is false when the schema has no such class.
-func (s *Schema) Writable(class string) ([]string, bool) {
+// (DN-Binary, DN-String). systemOnly names those a client writes though the schema marks them systemOnly. ok is
+// false when the schema has no such class.
+func (s *Schema) Writable(class string, systemOnly ...string) ([]string, bool) {
 	if s.Classes[strings.ToLower(class)] == nil {
 		return nil, false
+	}
+	written := map[string]bool{}
+	for _, n := range systemOnly {
+		written[strings.ToLower(n)] = true
 	}
 	names := map[string]string{}
 	seen := map[string]bool{}
@@ -118,7 +123,7 @@ func (s *Schema) Writable(class string) ([]string, bool) {
 		seen[strings.ToLower(name)] = true
 		for _, f := range []string{"mustContain", "systemMustContain", "mayContain", "systemMayContain"} {
 			for _, v := range c.Values(f) {
-				if a := s.Attributes[strings.ToLower(v)]; a != nil && writable(a) {
+				if a := s.Attributes[strings.ToLower(v)]; a != nil && (writable(a) || written[strings.ToLower(a.Name)] && clientWritable(a)) {
 					names[strings.ToLower(a.Name)] = a.Name
 				}
 			}
@@ -140,9 +145,14 @@ func (s *Schema) Writable(class string) ([]string, bool) {
 // writable is whether a client can write a: not systemOnly, constructed or a back link. A DN inside a larger value
 // (DN-Binary, DN-String) is written as a reference (dn.SplitRef).
 func writable(a *SchemaElement) bool {
+	return !strings.EqualFold(a.value("systemOnly"), "TRUE") && clientWritable(a)
+}
+
+// clientWritable is writable without systemOnly: neither constructed nor a back link.
+func clientWritable(a *SchemaElement) bool {
 	flags, _ := strconv.Atoi(a.value("systemFlags"))
 	link, _ := strconv.Atoi(a.value("linkID"))
-	return !strings.EqualFold(a.value("systemOnly"), "TRUE") && flags&flagAttrIsConstructed == 0 && link%2 == 0
+	return flags&flagAttrIsConstructed == 0 && link%2 == 0
 }
 
 // SchemaChange is one step of a SchemaPlan: a new definition (Add), values added to a class the target has

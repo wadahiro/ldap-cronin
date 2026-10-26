@@ -790,8 +790,8 @@ the ones a list names:
   skipped with a warning per entry it names. For the lab, `[scope] configuration_refs = "clone"` creates those
   entries from the source once `schema` has given the lab Exchange's classes; or `exclude` the attributes.
 - An attribute the target refuses over LDAP is left out the same way, with the reason: a Samba lab refuses
-  `userParameters` (old RAS and Terminal Services settings), which a real AD takes, and what its schema marks
-  `systemOnly` (the resource-based delegation, with `credentials = "copy"`).
+  `userParameters` (old RAS and Terminal Services settings), which a real AD takes, and the resource-based delegation
+  (with `credentials = "copy"`), which a real AD lets a client write though its schema marks it `systemOnly`.
 - `diff` counts the compared attributes per kind instead of naming hundreds; `check -attrs` names them.
 - Some attributes a client may write are refreshed by the server or the machine itself (`msDS-SupportedEncryptionTypes`
   of a live computer, say): they are copied once and may show as `DIFF` on a later diff. `exclude` them if they get

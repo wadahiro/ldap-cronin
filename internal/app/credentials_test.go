@@ -10,6 +10,7 @@ import (
 
 	"github.com/wadahiro/ldap-cronin/internal/config"
 	"github.com/wadahiro/ldap-cronin/internal/dump"
+	"github.com/wadahiro/ldap-cronin/internal/fakedir"
 	"github.com/wadahiro/ldap-cronin/internal/profile"
 )
 
@@ -161,32 +162,62 @@ func TestCredentialsFromADump(t *testing.T) {
 }
 
 // An attribute the target's schema marks systemOnly is left out with the reason, though the source's lets a client
-// write it: Samba 4.19.5 marks msDS-AllowedToActOnBehalfOfOtherIdentity so, which a Windows source holds and its
-// clients write; Samba refuses it over LDAP, which would stop clone at the first object holding one.
+// write it, as a target would refuse it at the first object holding one. msDS-AllowedToActOnBehalfOfOtherIdentity is
+// the exception: both Windows' schema and Samba's mark it systemOnly, yet Windows lets a client write it (measured on
+// Windows Server 2019), so a Windows target is given it, from a source whose schema says the same; Samba holds a
+// client to it and is not.
 func TestWhatTheTargetsSchemaHasSystemOnlyIsLeftOut(t *testing.T) {
-	ctx := context.Background()
-	const rbcd = "msDS-AllowedToActOnBehalfOfOtherIdentity"
-	w := credentialsWorld()
-	may := []string{"title", "userPassword", rbcd}
-	withClasses(w.src, may)
-	withClasses(w.dst, may)
-	e := map[string][]string{"objectClass": {"attributeSchema"}, "cn": {rbcd}, "lDAPDisplayName": {rbcd}, "attributeID": {"1.9.rbcd"},
-		"attributeSyntax": {"2.5.5.15"}}
-	w.src.Put("CN="+rbcd+","+schemaNC, e)
-	w.dst.Put("CN="+rbcd+","+schemaNC, e)
-	w.dst.Lookup("CN=" + rbcd + "," + schemaNC).Attrs["systemOnly"] = []string{"TRUE"}
-	w.src.Lookup(alice).Attrs[rbcd] = []string{"\x01\x00\x04\x80"}
-	s := w.openWith(t, "[mapping]\nmode = \"off\"\n[attributes]\ncredentials = \"copy\"\n")
-	var log bytes.Buffer
-	if _, err := s.Clone(ctx, false, &log, &log); err != nil {
-		t.Fatalf("%v\n%s", err, log.String())
-	}
-	got := w.dst.Lookup(alice)
-	if got.Values(rbcd) != nil || strings.Join(got.Values("userPassword"), "") != prodSecret ||
-		!strings.Contains(log.String(), rbcd+": the target's schema has it systemOnly") {
-		t.Fatalf("%v\n%s", got.Attrs, log.String())
-	}
-	if code, err := s.Diff(ctx, DiffOutput{}, &bytes.Buffer{}); err != nil || code != ExitSame {
-		t.Fatalf("diff: %d %v", code, err)
+	const rbcd, sealed = "msDS-AllowedToActOnBehalfOfOtherIdentity", "acmeSealed"
+	for name, c := range map[string]struct {
+		vendor []string
+		copied bool
+		why    string
+	}{
+		"Windows": {nil, true, ""},
+		"Samba":   {[]string{"Samba Team (https://www.samba.org)"}, false, rbcd + ": Samba lets only the system write it"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			w := credentialsWorld()
+			may := []string{"title", "userPassword", rbcd, sealed}
+			withClasses(w.src, may)
+			withClasses(w.dst, may)
+			for _, n := range []string{rbcd, sealed} {
+				for _, d := range []*fakedir.Dir{w.src, w.dst} {
+					d.Put("CN="+n+","+schemaNC, map[string][]string{"objectClass": {"attributeSchema"}, "cn": {n}, "lDAPDisplayName": {n},
+						"attributeID": {"1.9." + n}, "attributeSyntax": {"2.5.5.12"}})
+				}
+			}
+			w.src.Lookup("CN=" + rbcd + "," + schemaNC).Attrs["systemOnly"] = []string{"TRUE"}
+			w.dst.Lookup("CN=" + rbcd + "," + schemaNC).Attrs["systemOnly"] = []string{"TRUE"}
+			w.dst.Lookup("CN=" + sealed + "," + schemaNC).Attrs["systemOnly"] = []string{"TRUE"}
+			if c.vendor != nil {
+				w.dst.Lookup("").Attrs["vendorName"] = c.vendor
+			}
+			// The delegation is translated, which reads each domain's SID.
+			w.src.Put(domain, map[string][]string{"objectClass": {"domainDNS"}, "objectSid": {fakedir.SID(srcDomainSID)}, "objectGUID": {"0123456789abcdef"}})
+			w.dst.Put(domain, map[string][]string{"objectClass": {"domainDNS"}, "objectSid": {fakedir.SID(dstDomainSID)}, "objectGUID": {"fedcba9876543210"}})
+			w.dst.SIDs = "7-8-9"
+			// The built-in Administrators, the same SID on every domain.
+			value := testSD(0, "S-1-5-32-544", "S-1-5-32-544", testACE(0, 0, 0xf01ff, "S-1-5-32-544"))
+			w.src.Lookup(alice).Attrs[rbcd] = []string{value}
+			w.src.Lookup(alice).Attrs[sealed] = []string{"sealed"}
+			s := w.openWith(t, "[mapping]\nmode = \"off\"\n[attributes]\ncredentials = \"copy\"\n")
+			var log bytes.Buffer
+			if _, err := s.Clone(ctx, false, &log, &log); err != nil {
+				t.Fatalf("%v\n%s", err, log.String())
+			}
+			got := w.dst.Lookup(alice)
+			if got.Values(sealed) != nil || !strings.Contains(log.String(), sealed+": the target's schema has it systemOnly") {
+				t.Fatalf("%s: %v\n%s", sealed, got.Attrs, log.String())
+			}
+			if (got.Values(rbcd) != nil) != c.copied || strings.Join(got.Values("userPassword"), "") != prodSecret ||
+				(c.why != "" && !strings.Contains(log.String(), c.why)) {
+				t.Fatalf("%s copied %v, want %v: %v\n%s", rbcd, got.Values(rbcd) != nil, c.copied, got.Attrs, log.String())
+			}
+			if code, err := s.Diff(ctx, DiffOutput{}, &bytes.Buffer{}); err != nil || code != ExitSame {
+				t.Fatalf("diff: %d %v", code, err)
+			}
+		})
 	}
 }

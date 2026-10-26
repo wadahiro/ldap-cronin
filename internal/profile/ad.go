@@ -324,7 +324,7 @@ func (adSchema) Writable(ctx context.Context, src directory.Directory, classes [
 	}
 	out := map[string][]string{}
 	for _, c := range classes {
-		names, ok := s.Writable(c)
+		names, ok := s.Writable(c, systemOnlyWritten...)
 		if !ok {
 			return nil, false, fmt.Errorf("the source schema has no class %s", c)
 		}
@@ -422,10 +422,16 @@ func wellKnownPrincipal(entryDN string) (string, bool) {
 	return "<SID=" + strings.ToUpper(sid) + ">", true
 }
 
+// systemOnlyWritten are the attributes AD's schema marks systemOnly that Windows lets a client write all the same,
+// as tools that set up a delegation do. Measured on Windows Server 2019: msDS-AllowedToActOnBehalfOfOtherIdentity is
+// systemOnly in its schema and an Administrator replaces it over LDAP. Samba 4.19.5 marks it so too, and enforces it
+// (sambaRefused). Without the exception, mode = "all" would drop the delegation from a Windows source, and the
+// target's systemOnly refuse it on a Windows target.
+var systemOnlyWritten = []string{"msDS-AllowedToActOnBehalfOfOtherIdentity"}
+
 // adRefusals is what an AD target refuses over LDAP although its schema has it: the attributes its own schema marks
-// systemOnly (the source's may not: Samba 4.19.5 marks msDS-AllowedToActOnBehalfOfOtherIdentity so, which Windows
-// lets a client write, and refuses it "can only be modified as system"), and on Samba the ones it refuses by its
-// code, told from Windows by the vendorName of its root DSE (Windows publishes none).
+// systemOnly (the source's may not, an extension's added differently), but systemOnlyWritten, and on Samba the ones it
+// refuses by its code, told from Windows by the vendorName of its root DSE (Windows publishes none).
 type adRefusals struct{}
 
 // sambaRefused are the attributes Samba will not have written over LDAP, with the reason it gives.
@@ -433,6 +439,8 @@ var sambaRefused = map[string]string{
 	// samldb: "setting userParameters is not supported over LDAP"; Windows takes it (old RAS and Terminal Services
 	// settings in a binary format Samba does not parse).
 	"userParameters": "Samba refuses it over LDAP (https://bugzilla.samba.org/show_bug.cgi?id=8077)",
+	// Its schema has it systemOnly, as Windows' does, but unlike Windows Samba holds a client to that.
+	"msDS-AllowedToActOnBehalfOfOtherIdentity": "Samba lets only the system write it (\"can only be modified as system\")",
 }
 
 func (adRefusals) Refused(ctx context.Context, dst directory.Directory) (map[string]string, error) {
@@ -443,7 +451,7 @@ func (adRefusals) Refused(ctx context.Context, dst directory.Directory) (map[str
 	}
 	if root != nil && first(root.Values("schemaNamingContext")) != "" {
 		err = dst.Walk(ctx, first(root.Values("schemaNamingContext")), "(objectClass=attributeSchema)", []string{"lDAPDisplayName", "systemOnly"}, func(e directory.Entry) error {
-			if n := first(e.Values("lDAPDisplayName")); n != "" && strings.EqualFold(first(e.Values("systemOnly")), "TRUE") {
+			if n := first(e.Values("lDAPDisplayName")); n != "" && strings.EqualFold(first(e.Values("systemOnly")), "TRUE") && !Set(systemOnlyWritten)[strings.ToLower(n)] {
 				out[n] = "the target's schema has it systemOnly: only the server writes it"
 			}
 			return nil
