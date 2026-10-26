@@ -23,7 +23,7 @@ sys.stdout = sys.stderr
 import ldb  # noqa: E402
 import samba  # noqa: E402
 from samba import dsdb  # noqa: E402
-from samba.auth import system_session  # noqa: E402
+from samba.auth import admin_session, system_session  # noqa: E402
 from samba.dcerpc import misc, security  # noqa: E402
 from samba.ndr import ndr_pack, ndr_unpack  # noqa: E402
 from samba.param import LoadParm  # noqa: E402
@@ -184,6 +184,30 @@ def op_search(req):
     return ok(entries=[entry_to_json(r) for r in res])
 
 
+def add_entry(dn, attrs, controls):
+    """Add an entry. At an add, samldb refuses a computer's sAMAccountName without a trailing $ unless the requester is
+    in BUILTIN\\Administrators, which the system session is not (an Administrator over LDAP is let through); AD
+    names the loser of a sAMAccountName conflict $DUPLICATE-<n>, a computer's too. Such an entry is added through a
+    session of the domain's administrators instead (measured on 4.19.5: it takes the same controls, objectGUID and
+    objectSid; appending a $ and renaming it after is refused the same way)."""
+    try:
+        db.add(message(dn, attrs, ldb.FLAG_MOD_ADD), controls=controls)
+    except ldb.LdbError as e:
+        if e.args[0] != ldb.ERR_UNWILLING_TO_PERFORM or "trailing $" not in str(e.args[1]):
+            raise
+        admin_db().add(message(dn, attrs, ldb.FLAG_MOD_ADD), controls=controls)
+
+
+_admin_db = None
+
+
+def admin_db():
+    global _admin_db
+    if _admin_db is None:
+        _admin_db = SamDB(url="/var/lib/samba/private/sam.ldb", session_info=admin_session(lp, db.get_domain_sid()), lp=lp)
+    return _admin_db
+
+
 def op_add(req):
     global max_rid, server_count
     attrs = dict(req["attrs"])
@@ -199,7 +223,7 @@ def op_add(req):
     else:
         rid = 0
     try:
-        db.add(message(req["dn"], attrs, ldb.FLAG_MOD_ADD), controls=controls)
+        add_entry(req["dn"], attrs, controls)
     except ldb.LdbError as e:
         if e.args[0] == ldb.ERR_CONSTRAINT_VIOLATION and rid:
             # The objectSid is the cause only when another object holds it; samldb refuses a userPrincipalName or

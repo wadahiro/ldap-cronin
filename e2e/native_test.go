@@ -136,6 +136,12 @@ func TestNativeImportKeepsObjectGUIDAndObjectSid(t *testing.T) {
 		t.Fatalf("setting the server attributes on the source: %v\n%s", err, out)
 	}
 
+	// A computer whose sAMAccountName alone collided: AD renamed it $DUPLICATE-<n>, without the trailing $ samldb
+	// wants of a computer at an add by anyone but an administrator (the import writes as the system).
+	pcLeftover := "CN=PC9-old,OU=Users,OU=IDM," + base
+	must(src.Add(context.Background(), directory.Entry{DN: pcLeftover, Attrs: map[string][]string{"objectClass": {"computer"},
+		"sAMAccountName": {"$DUPLICATE-2a7"}, "userAccountControl": {"4096"}}}))
+
 	root, err := src.Get(context.Background(), base, []string{"objectSid", "objectGUID"})
 	must(err)
 	srcSID, err := ad.SIDText([]byte(root.Values("objectSid")[0]))
@@ -196,6 +202,13 @@ func TestNativeImportKeepsObjectGUIDAndObjectSid(t *testing.T) {
 	must(err)
 	if left == nil || strings.Join(left.Values("sAMAccountName"), "") != "$DUPLICATE-1f4" || left.Values("userPrincipalName") != nil {
 		t.Fatalf("the leftover in the lab: %+v", left)
+	}
+	lab2, err := dialAs(dstLDAPS, admin, password)
+	must(err)
+	pc, err := lab2.Get(context.Background(), pcLeftover, []string{"sAMAccountName"})
+	lab2.Close()
+	if err != nil || pc == nil || strings.Join(pc.Values("sAMAccountName"), "") != "$DUPLICATE-2a7" {
+		t.Fatalf("the computer's leftover in the lab: %v %+v", err, pc)
 	}
 	for _, a := range creds {
 		if len(held.Values(a)) != 1 || strings.Join(got.Values(a), "") != strings.Join(held.Values(a), "") {

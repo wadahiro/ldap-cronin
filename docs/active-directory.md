@@ -85,6 +85,9 @@ first. A leftover is one whose RDN holds `\nCNF:` or whose `sAMAccountName` begi
   on Samba one's `userPrincipalName` equal to another's `sAMAccountName@<realm>`), cannot be given to one of them by
   rule: `check` and `clone` refuse to start, before anything is written, naming them. Leave one out with
   `[scope.filters]`, or the attribute with `[attributes] exclude`.
+- A computer's `$DUPLICATE-` name lacks the trailing `$` samldb wants of a computer, which it lets only the domain's
+  administrators choose: an Administrator over LDAP may, the system a native import writes as may not, so a native
+  import adds such a computer through a session of the domain's administrators.
 - Measured on Samba 4.19.5, over LDAP and natively (`[target.lab] native = true`), with leftovers given to the source
   by writing its database file around samldb. Not verified yet: that Windows takes a CNF name and a `$DUPLICATE-`
   `sAMAccountName` from a client, as Samba does.
