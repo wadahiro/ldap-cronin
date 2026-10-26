@@ -45,8 +45,8 @@ const (
 	// it would have overwritten that one. Unsure is set when no marker or identifier tells it is not this entry
 	// renamed.
 	NameTaken Kind = "NAME_TAKEN"
-	// NotWritable means the target refuses the source entry's name (on Windows the leftover of a name conflict,
-	// whose RDN holds a line feed), so clone did not add it; Why says so.
+	// NotWritable means the target refuses the source entry (on Windows the leftover of a name conflict, whose RDN
+	// holds a line feed, and an RDN or a sAMAccountName longer than it takes), so clone did not add it; Why says so.
 	NotWritable Kind = "NOT_WRITABLE"
 )
 
@@ -366,7 +366,7 @@ func (r *runner) implied() {
 // An entry without a kind (a create-only ancestor) is checked only for existence, rename and move.
 // structural entries also record where they live on the target, for the expected parent of their children.
 func (r *runner) check(ctx context.Context, want directory.Entry, names []string, kind *plan.Kind, structural bool) error {
-	if why := r.withheld.RefusedWhy(want.DN); why != "" {
+	if why := r.withheld.RefusedEntryWhy(want); why != "" {
 		r.report(Difference{Kind: NotWritable, DN: want.DN, Why: why})
 		return nil
 	}

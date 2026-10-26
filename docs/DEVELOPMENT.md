@@ -257,6 +257,20 @@ It takes effect at once on the DC written to. Once it is set back, the duplicate
 one is refused again: the state of a production domain whose duplicates came from replication. Samba ignores it
 (`1` measured).
 
+**Lengths.** Windows adds the SAM's limits to the schema's (`rangeUpper`); Samba keeps the schema's only:
+
+| Value | Length | Samba | Windows |
+|---|---|---|---|
+| A user's `sAMAccountName` | 20 / **21** | taken / **taken** | taken / **refused** (80, 0x523: not a properly formed account name) |
+| A computer's `sAMAccountName`, its `$` counted | 16, 17 / **21** | taken / **taken** | taken / **refused** (0x523) |
+| A group's `sAMAccountName` | 21, 64, 256 / 257 | taken / refused (the schema's 256) | taken / refused (0x523) |
+| `cn` and `ou` as an RDN | 64 / **65** | taken / **taken** | taken / **refused** (19, 0x2082: range constraint) |
+| `userPrincipalName`, `description` | 1024 / 1025 | taken / refused | taken / refused |
+| `displayName` | 256 / 257 | taken / refused | taken / refused |
+
+So a Samba source can hold a user's or computer's `sAMAccountName` and an RDN a Windows target refuses; a
+Windows source cannot hold one a Samba target refuses.
+
 **`gPLink`** (a string, not a DN): both take a value naming GPOs the domain lacks, and `gPOptions` with it.
 
 What clone does with these: [active-directory.md](active-directory.md#replication-conflict-leftovers) for the

@@ -196,9 +196,10 @@ type UniqueRules struct {
 	ImpliedHow string
 	// Why is said of each value withheld (the target's rule, in its words).
 	Why string
-	// Refuses, when set, says why the target refuses an entry of that DN (its name, or a parent's), "" when it
-	// takes it: such an entry is not added at all.
-	Refuses func(dn string) string
+	// Refuses, when set, says why the target refuses the entry (its name, a parent's, or a value it must hold), ""
+	// when it takes it: such an entry is not added at all. Given an entry with its DN alone, it says what its DN
+	// decides.
+	Refuses func(e directory.Entry) string
 }
 
 // NativeSupport reads what a lab needs to be provisioned as the same domain as the source (clone -native).

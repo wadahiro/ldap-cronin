@@ -104,8 +104,8 @@ type Report struct {
 	// same (Windows ignores width and kana type, Samba collapses spaces), each with the target's entry: writing them
 	// would have overwritten that one.
 	NameTaken []NameTaken
-	// Refused lists the entries not added because the target refuses their names (plan.Withheld.Refused: on
-	// Windows the leftover of a name conflict, whose RDN holds a line feed), with why.
+	// Refused lists the entries not added because the target refuses them (plan.Withheld.Refused: on Windows the
+	// leftover of a name conflict, whose RDN holds a line feed, and what is longer than it takes), with why.
 	Refused []plan.RefusedEntry
 	// Resumed counts the objects (and the reference passes of objects) an earlier run finished, which the journal
 	// let this one skip.
@@ -189,7 +189,7 @@ func (rep *Report) WriteSummary(w io.Writer) {
 		}
 	}
 	if len(rep.Refused) > 0 {
-		fmt.Fprintf(w, "not added, the target refuses their names: %d\n", len(rep.Refused))
+		fmt.Fprintf(w, "not added, the target refuses them: %d\n", len(rep.Refused))
 		for i, e := range rep.Refused {
 			if i == maxNameTakenShown {
 				fmt.Fprintf(w, "  ... and %d more (see the warnings)\n", len(rep.Refused)-i)
@@ -582,7 +582,7 @@ func (r *runner) leaf(ctx context.Context, k *plan.Kind, e directory.Entry) erro
 	if err := r.timeUp(); err != nil {
 		return err
 	}
-	if r.refused(e.DN) {
+	if r.refused(e) {
 		return nil
 	}
 	key := "object " + dn.Normalize(e.DN)
@@ -651,7 +651,7 @@ func (r *runner) writeLeaf(ctx context.Context, k *plan.Kind, e directory.Entry)
 // ensure creates or updates one container, or a parent leaf as its kind. A create-only ancestor that already exists
 // on the target (CN=Users, ...) is left untouched.
 func (r *runner) ensure(ctx context.Context, n plan.Node) error {
-	if r.refused(n.Entry.DN) {
+	if r.refused(n.Entry) {
 		return nil
 	}
 	if n.Leaf() {
@@ -1075,12 +1075,12 @@ func (r *runner) refuse(d, why string) {
 
 // refused reports whether the target refuses an entry of that DN, recording it the first time (one no kind took,
 // such as a parent, is met only when it is written).
-func (r *runner) refused(d string) bool {
-	why := r.withheld.RefusedWhy(d)
+func (r *runner) refused(e directory.Entry) bool {
+	why := r.withheld.RefusedEntryWhy(e)
 	if why == "" {
 		return false
 	}
-	r.refuse(d, why)
+	r.refuse(e.DN, why)
 	return true
 }
 

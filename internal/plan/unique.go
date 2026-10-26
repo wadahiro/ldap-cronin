@@ -26,7 +26,8 @@ type Withheld struct {
 	Why    string
 	// Refused lists the entries of the kinds the target refuses altogether (profile.UniqueRules.Refuses), with why.
 	Refused []RefusedEntry
-	refuses func(dn string) string
+	refused map[string]string // normalized DN -> why, of Refused
+	refuses func(e directory.Entry) string
 }
 
 // RefusedEntry is a source entry the target refuses, and why.
@@ -35,12 +36,19 @@ type RefusedEntry struct{ DN, Why string }
 // Refuses reports whether the target refuses some names (whether RefusedWhy can say anything).
 func (w *Withheld) Refuses() bool { return w != nil && w.refuses != nil }
 
-// RefusedWhy says why the target refuses an entry of that DN, "" when it takes it.
-func (w *Withheld) RefusedWhy(d string) string {
+// RefusedWhy says why the target refuses the entry of that DN, "" when it takes it: one of the kinds found so before
+// anything was written, or what the DN alone decides.
+func (w *Withheld) RefusedWhy(d string) string { return w.RefusedEntryWhy(directory.Entry{DN: d}) }
+
+// RefusedEntryWhy is RefusedWhy of an entry read, whose values may decide too (one no kind took: a parent).
+func (w *Withheld) RefusedEntryWhy(e directory.Entry) string {
 	if w == nil || w.refuses == nil {
 		return ""
 	}
-	return w.refuses(d)
+	if why := w.refused[dn.Normalize(e.DN)]; why != "" {
+		return why
+	}
+	return w.refuses(e)
 }
 
 // WithheldValue is one value withheld from DN, with the other objects that hold it.
@@ -99,7 +107,7 @@ func (w *Withheld) Strip(e directory.Entry) (directory.Entry, []string) {
 // clashes. It is one more paged search, reading only those attributes.
 func unique(ctx context.Context, src directory.Directory, job Job, rules profile.UniqueRules) (*Withheld, []Clash, error) {
 	u := job.Profile.Unique
-	w := &Withheld{values: map[string]map[string]map[string]bool{}, Why: rules.Why, refuses: rules.Refuses}
+	w := &Withheld{values: map[string]map[string]map[string]bool{}, Why: rules.Why, refuses: rules.Refuses, refused: map[string]string{}}
 	if u == nil || (len(rules.Attrs) == 0 && rules.Refuses == nil) {
 		return w, nil, nil
 	}
@@ -139,9 +147,10 @@ func unique(ctx context.Context, src directory.Directory, job Job, rules profile
 			}
 		}
 		if rules.Refuses != nil {
-			if why := rules.Refuses(e.DN); why != "" {
+			if why := rules.Refuses(e); why != "" {
 				// Not written, so it holds none of its values on the target.
 				w.Refused = append(w.Refused, RefusedEntry{DN: e.DN, Why: why})
+				w.refused[dn.Normalize(e.DN)] = why
 				return nil
 			}
 		}

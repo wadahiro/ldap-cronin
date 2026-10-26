@@ -3,6 +3,7 @@ package profile
 import (
 	"context"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/go-ldap/ldap/v3"
 
@@ -47,7 +48,7 @@ func (adUnique) Rules(ctx context.Context, dst directory.Directory, root string)
 			// conflict resolution gives a name. So the leftover of a name conflict cannot be created there, nor what
 			// is below it.
 			if root, err := dst.Get(ctx, "", []string{"defaultNamingContext"}); err == nil && root != nil && first(root.Values("defaultNamingContext")) != "" {
-				r.Refuses = refusesLineFeed
+				r.Refuses = windowsRefuses
 			}
 			return r, nil
 		}
@@ -71,21 +72,43 @@ func (adUnique) Rules(ctx context.Context, dst directory.Directory, root string)
 	return r, nil
 }
 
-// refusesLineFeed is Windows' rule for the names a client writes: no line feed in any RDN of the DN.
-func refusesLineFeed(d string) string {
-	parsed, err := ldap.ParseDN(d)
+// Windows' limits beyond the schema's (measured on Windows Server 2019; Samba keeps none of them, so a Samba source
+// may hold a value they refuse): an RDN value of 64 characters, a user's or computer's sAMAccountName of 20 (a
+// computer's $ counted), a group's taking the schema's 256.
+const (
+	windowsRDNMax  = 64
+	windowsSAMMax  = 20
+	windowsRDNWhy  = "its RDN is longer than the 64 characters Windows takes"
+	windowsSAMWhy  = "its sAMAccountName is longer than the 20 characters Windows takes of a user's or computer's"
+	windowsLFWhy   = "a leftover of a name conflict: Windows refuses a line feed in an RDN a client writes"
+	windowsUnderLF = "below a leftover of a name conflict, whose name Windows refuses (a line feed in its RDN)"
+)
+
+// windowsRefuses is what Windows refuses of an entry a client writes: a line feed in any RDN of its DN (only its own
+// conflict resolution gives such a name), an RDN longer than it takes (the entry's own or a parent's), and a user's or
+// computer's sAMAccountName longer than the SAM takes.
+func windowsRefuses(e directory.Entry) string {
+	parsed, err := ldap.ParseDN(e.DN)
 	if err != nil {
 		return ""
 	}
 	for i, rdn := range parsed.RDNs {
 		for _, a := range rdn.Attributes {
-			if strings.Contains(a.Value, "\n") {
-				if i == 0 {
-					return "a leftover of a name conflict: Windows refuses a line feed in an RDN a client writes"
-				}
-				return "below a leftover of a name conflict, whose name Windows refuses (a line feed in its RDN)"
+			switch {
+			case strings.Contains(a.Value, "\n") && i == 0:
+				return windowsLFWhy
+			case strings.Contains(a.Value, "\n"):
+				return windowsUnderLF
+			case utf8.RuneCountInString(a.Value) > windowsRDNMax && i == 0:
+				return windowsRDNWhy
+			case utf8.RuneCountInString(a.Value) > windowsRDNMax:
+				return "below an entry whose RDN is longer than the 64 characters Windows takes"
 			}
 		}
+	}
+	classes := Set(e.Values("objectClass"))
+	if (classes["user"] || classes["computer"]) && utf8.RuneCountInString(first(e.Values("sAMAccountName"))) > windowsSAMMax {
+		return windowsSAMWhy
 	}
 	return ""
 }

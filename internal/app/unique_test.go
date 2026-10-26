@@ -149,7 +149,7 @@ func TestTheLeftoverOfANameConflictIsNotAddedToWindows(t *testing.T) {
 	if _, err := s.Check(ctx, CheckOptions{Config: "c.toml"}, &out); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "entries clone will not add, the target refuses their names: 1\n  "+kimLeftover+"  (a leftover of a name conflict") {
+	if !strings.Contains(out.String(), "entries clone will not add, the target refuses them: 1\n  "+kimLeftover+"  (a leftover of a name conflict") {
 		t.Fatalf("check:\n%s", out.String())
 	}
 	var log bytes.Buffer
@@ -165,13 +165,56 @@ func TestTheLeftoverOfANameConflictIsNotAddedToWindows(t *testing.T) {
 	}
 	var sum bytes.Buffer
 	rep.WriteSummary(&sum)
-	if !strings.Contains(sum.String(), "not added, the target refuses their names: 1\n  "+kimLeftover) || !strings.Contains(log.String(), "not added: "+kimLeftover) {
+	if !strings.Contains(sum.String(), "not added, the target refuses them: 1\n  "+kimLeftover) || !strings.Contains(log.String(), "not added: "+kimLeftover) {
 		t.Fatalf("summary:\n%s\nlog:\n%s", sum.String(), log.String())
 	}
 	out.Reset()
 	code, err := s.Diff(ctx, DiffOutput{}, &out)
 	if err != nil || code != ExitDiff || !strings.Contains(out.String(), "NOT_WRITABLE "+kimLeftover) || !strings.Contains(out.String(), "NOT_WRITABLE: 1") ||
 		strings.Contains(out.String(), "DIFF        "+team) {
+		t.Fatalf("diff (%d, %v):\n%s", code, err, out.String())
+	}
+}
+
+// Windows' limits beyond the schema's, which a Samba source may break: a user's or computer's sAMAccountName of 20
+// characters, an RDN of 64 (and what is below it). A group's sAMAccountName of 21 is taken.
+func TestWhatIsLongerThanWindowsTakesIsNotAddedThere(t *testing.T) {
+	ctx := context.Background()
+	w := newWorld()
+	w.dst.Put("", map[string][]string{"defaultNamingContext": {domain}})
+	user := []string{"top", "person", "organizationalPerson", "user"}
+	longSAM := "CN=Long SAM,OU=Users," + base
+	longCN := "CN=" + strings.Repeat("c", 65) + ",OU=Users," + base
+	longOU := "OU=" + strings.Repeat("o", 65) + "," + base
+	below := "CN=Below," + longOU
+	group := "CN=Long Group,OU=Users," + base
+	w.src.Put(longSAM, map[string][]string{"objectClass": user, "cn": {"Long SAM"}, "sAMAccountName": {strings.Repeat("s", 21)}})
+	w.src.Put(longCN, map[string][]string{"objectClass": user, "cn": {strings.Repeat("c", 65)}, "sAMAccountName": {"longcn"}})
+	w.src.Put(longOU, map[string][]string{"objectClass": {"top", "organizationalUnit"}, "ou": {strings.Repeat("o", 65)}})
+	w.src.Put(below, map[string][]string{"objectClass": user, "cn": {"Below"}, "sAMAccountName": {"below"}})
+	w.src.Put(group, map[string][]string{"objectClass": {"top", "group"}, "cn": {"Long Group"}, "sAMAccountName": {strings.Repeat("g", 21)},
+		"member": {alice, longSAM}})
+	s := w.openWith(t, "[mapping]\nmode = \"off\"\n")
+	var log bytes.Buffer
+	rep, err := s.Clone(ctx, false, &log, &log)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, log.String())
+	}
+	why := map[string]string{}
+	for _, e := range rep.Refused {
+		why[e.DN] = e.Why
+	}
+	for d, want := range map[string]string{longSAM: "sAMAccountName is longer than the 20", longCN: "RDN is longer than the 64",
+		longOU: "RDN is longer than the 64", below: "below an entry whose RDN is longer"} {
+		if !strings.Contains(why[d], want) || w.dst.Lookup(d) != nil {
+			t.Errorf("%s: %q, on the target %v", d, why[d], w.dst.Lookup(d) != nil)
+		}
+	}
+	if w.dst.Lookup(group) == nil || len(w.dst.Lookup(group).Values("member")) != 1 {
+		t.Fatalf("the group (its sAMAccountName of 21 taken) and its members: %+v\n%s", w.dst.Lookup(group), log.String())
+	}
+	var out bytes.Buffer
+	if code, err := s.Diff(ctx, DiffOutput{}, &out); err != nil || code != ExitDiff || !strings.Contains(out.String(), "NOT_WRITABLE: 4") {
 		t.Fatalf("diff (%d, %v):\n%s", code, err, out.String())
 	}
 }
