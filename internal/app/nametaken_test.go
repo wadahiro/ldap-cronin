@@ -62,7 +62,7 @@ func nameTaken(t *testing.T, echo bool) {
 	if got := w.dst.Lookup("CN=Team,OU=Users," + base).Values("member"); len(got) != 1 || got[0] != added {
 		t.Fatalf("the group's members: %v", got)
 	}
-	if rep.Unwritten["member: "+clone.WhyNameTaken] != 1 || !strings.Contains(log.String(), "not added: "+skipped) {
+	if rep.Unwritten["member: names an entry not added: "+clone.WhyNameTaken] != 1 || !strings.Contains(log.String(), "not added: "+skipped) {
 		t.Fatalf("%+v\n%s", rep.Unwritten, log.String())
 	}
 	var sum bytes.Buffer

@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 
+	"github.com/go-ldap/ldap/v3"
+
 	"github.com/wadahiro/ldap-cronin/internal/ad"
 	"github.com/wadahiro/ldap-cronin/internal/directory"
 	"github.com/wadahiro/ldap-cronin/internal/dn"
@@ -36,8 +38,18 @@ func (adUnique) Rules(ctx context.Context, dst directory.Directory, root string)
 	samba := dst == nil
 	if dst != nil {
 		var err error
-		if samba, err = IsSamba(ctx, dst); err != nil || !samba {
+		if samba, err = IsSamba(ctx, dst); err != nil {
 			return r, err
+		}
+		if !samba {
+			// Windows (a server that is not Samba; a dry-run's LDIF has no root DSE) refuses a line feed in an RDN a
+			// client writes, whatever its form (measured on Windows Server 2019: NAMING_VIOLATION), which only its own
+			// conflict resolution gives a name. So the leftover of a name conflict cannot be created there, nor what
+			// is below it.
+			if root, err := dst.Get(ctx, "", []string{"defaultNamingContext"}); err == nil && root != nil && first(root.Values("defaultNamingContext")) != "" {
+				r.Refuses = refusesLineFeed
+			}
+			return r, nil
 		}
 	}
 	// samldb takes an account without a userPrincipalName to hold sAMAccountName@realm (measured on 4.19.5:
@@ -57,4 +69,23 @@ func (adUnique) Rules(ctx context.Context, dst directory.Directory, root string)
 		return ""
 	}}
 	return r, nil
+}
+
+// refusesLineFeed is Windows' rule for the names a client writes: no line feed in any RDN of the DN.
+func refusesLineFeed(d string) string {
+	parsed, err := ldap.ParseDN(d)
+	if err != nil {
+		return ""
+	}
+	for i, rdn := range parsed.RDNs {
+		for _, a := range rdn.Attributes {
+			if strings.Contains(a.Value, "\n") {
+				if i == 0 {
+					return "a leftover of a name conflict: Windows refuses a line feed in an RDN a client writes"
+				}
+				return "below a leftover of a name conflict, whose name Windows refuses (a line feed in its RDN)"
+			}
+		}
+	}
+	return ""
 }

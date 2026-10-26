@@ -24,6 +24,23 @@ type Withheld struct {
 	// Values lists each value withheld, for the warnings and check.
 	Values []WithheldValue
 	Why    string
+	// Refused lists the entries of the kinds the target refuses altogether (profile.UniqueRules.Refuses), with why.
+	Refused []RefusedEntry
+	refuses func(dn string) string
+}
+
+// RefusedEntry is a source entry the target refuses, and why.
+type RefusedEntry struct{ DN, Why string }
+
+// Refuses reports whether the target refuses some names (whether RefusedWhy can say anything).
+func (w *Withheld) Refuses() bool { return w != nil && w.refuses != nil }
+
+// RefusedWhy says why the target refuses an entry of that DN, "" when it takes it.
+func (w *Withheld) RefusedWhy(d string) string {
+	if w == nil || w.refuses == nil {
+		return ""
+	}
+	return w.refuses(d)
 }
 
 // WithheldValue is one value withheld from DN, with the other objects that hold it.
@@ -82,8 +99,8 @@ func (w *Withheld) Strip(e directory.Entry) (directory.Entry, []string) {
 // clashes. It is one more paged search, reading only those attributes.
 func unique(ctx context.Context, src directory.Directory, job Job, rules profile.UniqueRules) (*Withheld, []Clash, error) {
 	u := job.Profile.Unique
-	w := &Withheld{values: map[string]map[string]map[string]bool{}, Why: rules.Why}
-	if u == nil || len(rules.Attrs) == 0 {
+	w := &Withheld{values: map[string]map[string]map[string]bool{}, Why: rules.Why, refuses: rules.Refuses}
+	if u == nil || (len(rules.Attrs) == 0 && rules.Refuses == nil) {
 		return w, nil, nil
 	}
 	type group struct {
@@ -119,6 +136,13 @@ func unique(ctx context.Context, src directory.Directory, job Job, rules profile
 			if k.Is != nil && k.Is(e.Values("objectClass")) {
 				copied = copiedBy[i]
 				break
+			}
+		}
+		if rules.Refuses != nil {
+			if why := rules.Refuses(e.DN); why != "" {
+				// Not written, so it holds none of its values on the target.
+				w.Refused = append(w.Refused, RefusedEntry{DN: e.DN, Why: why})
+				return nil
 			}
 		}
 		leftover := u.Leftover(e)
@@ -188,6 +212,7 @@ func unique(ctx context.Context, src directory.Directory, job Job, rules profile
 		return w.Values[i].Attr+w.Values[i].Value < w.Values[j].Attr+w.Values[j].Value
 	})
 	sort.Slice(clashes, func(i, j int) bool { return clashes[i].Attr+clashes[i].Value < clashes[j].Attr+clashes[j].Value })
+	sort.Slice(w.Refused, func(i, j int) bool { return dn.Normalize(w.Refused[i].DN) < dn.Normalize(w.Refused[j].DN) })
 	return w, clashes, nil
 }
 

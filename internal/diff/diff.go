@@ -45,6 +45,9 @@ const (
 	// it would have overwritten that one. Unsure is set when no marker or identifier tells it is not this entry
 	// renamed.
 	NameTaken Kind = "NAME_TAKEN"
+	// NotWritable means the target refuses the source entry's name (on Windows the leftover of a name conflict,
+	// whose RDN holds a line feed), so clone did not add it; Why says so.
+	NotWritable Kind = "NOT_WRITABLE"
 )
 
 type Difference struct {
@@ -70,6 +73,8 @@ type Difference struct {
 	RDNRenamed bool
 	Moved      bool
 	Unsure     bool
+	// For NotWritable, why the target refuses it.
+	Why string
 }
 
 // Summary is the compared scope and the number of differences.
@@ -361,6 +366,11 @@ func (r *runner) implied() {
 // An entry without a kind (a create-only ancestor) is checked only for existence, rename and move.
 // structural entries also record where they live on the target, for the expected parent of their children.
 func (r *runner) check(ctx context.Context, want directory.Entry, names []string, kind *plan.Kind, structural bool) error {
+	if why := r.withheld.RefusedWhy(want.DN); why != "" {
+		r.report(Difference{Kind: NotWritable, DN: want.DN, Why: why})
+		return nil
+	}
+	want = r.withoutRefused(want)
 	if kind != nil {
 		var stripped []string
 		if want, stripped = r.withheld.Strip(want); len(stripped) > 0 {
@@ -447,4 +457,49 @@ func fingerprinted(d Difference) Difference {
 	d.Source, d.Target, d.OnlySource, d.OnlyTarget = hide(d.Source), hide(d.Target), hide(d.OnlySource), hide(d.OnlyTarget)
 	d.CaseOnly, d.SourceCasePair, d.TargetCasePair = false, nil, nil // case markers would point into the value
 	return d
+}
+
+// withoutRefused is want without the reference values naming entries the target refuses (clone does not add them,
+// nor write those values), counted as not compared.
+func (r *runner) withoutRefused(want directory.Entry) directory.Entry {
+	if !r.withheld.Refuses() {
+		return want
+	}
+	var out *directory.Entry
+	for n, vs := range want.Attrs {
+		if !r.p.IsRef(n) {
+			continue
+		}
+		var keep []string
+		for _, v := range vs {
+			why := r.withheld.RefusedWhy(dn.RefDN(v))
+			if why == "" {
+				keep = append(keep, v)
+				continue
+			}
+			r.mu.Lock()
+			r.sum.NotCompared[n]++
+			r.sum.NotComparedWhy[n+": names an entry not added: "+why]++
+			r.mu.Unlock()
+		}
+		if len(keep) == len(vs) {
+			continue
+		}
+		if out == nil {
+			c := directory.Entry{DN: want.DN, Attrs: make(map[string][]string, len(want.Attrs))}
+			for k, v := range want.Attrs {
+				c.Attrs[k] = v
+			}
+			out = &c
+		}
+		if len(keep) == 0 {
+			delete(out.Attrs, n)
+		} else {
+			out.Attrs[n] = keep
+		}
+	}
+	if out == nil {
+		return want
+	}
+	return *out
 }

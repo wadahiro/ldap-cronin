@@ -132,3 +132,46 @@ func TestAValueTwoRealObjectsHoldStopsCloneBeforeAnyWrite(t *testing.T) {
 		t.Fatal("nothing may be written")
 	}
 }
+
+// Windows refuses a line feed in an RDN a client writes, so the leftover of a name conflict is not added there:
+// check lists it first, clone warns and lists it, leaves out the member naming it, and its values no longer clash;
+// diff reports it as NOT_WRITABLE and does not compare that member. Samba takes it (above).
+func TestTheLeftoverOfANameConflictIsNotAddedToWindows(t *testing.T) {
+	ctx := context.Background()
+	w := conflictWorld("")
+	w.dst.Put("", map[string][]string{"defaultNamingContext": {domain}}) // a server, not Samba: Windows
+	team := "CN=Team,OU=Users," + base
+	w.src.Put(team, map[string][]string{"objectClass": {"top", "group"}, "cn": {"Team"}, "sAMAccountName": {"team"},
+		"member": {kim, kimLeftover}})
+	s := w.openWith(t, "[mapping]\nmode = \"off\"\n")
+
+	var out bytes.Buffer
+	if _, err := s.Check(ctx, CheckOptions{Config: "c.toml"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "entries clone will not add, the target refuses their names: 1\n  "+kimLeftover+"  (a leftover of a name conflict") {
+		t.Fatalf("check:\n%s", out.String())
+	}
+	var log bytes.Buffer
+	rep, err := s.Clone(ctx, false, &log, &log)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, log.String())
+	}
+	if w.dst.Lookup(kimLeftover) != nil || len(rep.Refused) != 1 || rep.Withheld["userPrincipalName"] != 0 {
+		t.Fatalf("refused %+v, withheld %+v", rep.Refused, rep.Withheld)
+	}
+	if got := w.dst.Lookup(team).Values("member"); len(got) != 1 || got[0] != kim {
+		t.Fatalf("the group's members: %v", got)
+	}
+	var sum bytes.Buffer
+	rep.WriteSummary(&sum)
+	if !strings.Contains(sum.String(), "not added, the target refuses their names: 1\n  "+kimLeftover) || !strings.Contains(log.String(), "not added: "+kimLeftover) {
+		t.Fatalf("summary:\n%s\nlog:\n%s", sum.String(), log.String())
+	}
+	out.Reset()
+	code, err := s.Diff(ctx, DiffOutput{}, &out)
+	if err != nil || code != ExitDiff || !strings.Contains(out.String(), "NOT_WRITABLE "+kimLeftover) || !strings.Contains(out.String(), "NOT_WRITABLE: 1") ||
+		strings.Contains(out.String(), "DIFF        "+team) {
+		t.Fatalf("diff (%d, %v):\n%s", code, err, out.String())
+	}
+}

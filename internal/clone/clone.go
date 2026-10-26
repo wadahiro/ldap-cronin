@@ -104,6 +104,9 @@ type Report struct {
 	// same (Windows ignores width and kana type, Samba collapses spaces), each with the target's entry: writing them
 	// would have overwritten that one.
 	NameTaken []NameTaken
+	// Refused lists the entries not added because the target refuses their names (plan.Withheld.Refused: on
+	// Windows the leftover of a name conflict, whose RDN holds a line feed), with why.
+	Refused []plan.RefusedEntry
 	// Resumed counts the objects (and the reference passes of objects) an earlier run finished, which the journal
 	// let this one skip.
 	Resumed      int
@@ -122,7 +125,7 @@ type NameTaken struct {
 
 // WhyNameTaken is why a reference value naming such an entry is not written: the target would take it to name the
 // other entry.
-const WhyNameTaken = "names an entry not added: the target holds another under a name it takes as the same"
+const WhyNameTaken = "the target holds another under a name it takes as the same"
 
 // maxNameTakenShown caps the entries the summary lists; the count is always given.
 const maxNameTakenShown = 50
@@ -185,6 +188,16 @@ func (rep *Report) WriteSummary(w io.Writer) {
 			fmt.Fprintf(w, "  %s  (the target's: %s%s)\n", n.DN, n.TargetDN, unknown)
 		}
 	}
+	if len(rep.Refused) > 0 {
+		fmt.Fprintf(w, "not added, the target refuses their names: %d\n", len(rep.Refused))
+		for i, e := range rep.Refused {
+			if i == maxNameTakenShown {
+				fmt.Fprintf(w, "  ... and %d more (see the warnings)\n", len(rep.Refused)-i)
+				break
+			}
+			fmt.Fprintf(w, "  %s  (%s)\n", e.DN, e.Why)
+		}
+	}
 	if rep.Placeholders > 0 {
 		fmt.Fprintf(w, "placeholders created for entries the source did not return (unreadable to the account reading it; see the warnings): %d\n", rep.Placeholders)
 	}
@@ -213,11 +226,13 @@ type runner struct {
 	mu      sync.Mutex // guards report, out and skipped
 	report  Report
 	skipped map[string]bool // normalized DNs not created (see upsert); the reference pass leaves them alone
-	unwrote map[string]bool // attribute and normalized DN of each value warned about as not written
-	primary []primaryOf     // the accounts whose primary group is not their type's default (guarded by mu)
-	acls    []string        // the DNs of the objects to give the source's ACL (ACLTranslated; guarded by mu)
-	aclOn   bool
-	leftOut map[string]bool // the SIDs warned about as left out of the ACEs
+	// notAdded says why an entry of the source was not added (normalized DN): the values naming it are not written.
+	notAdded map[string]string
+	unwrote  map[string]bool // attribute and normalized DN of each value warned about as not written
+	primary  []primaryOf     // the accounts whose primary group is not their type's default (guarded by mu)
+	acls     []string        // the DNs of the objects to give the source's ACL (ACLTranslated; guarded by mu)
+	aclOn    bool
+	leftOut  map[string]bool // the SIDs warned about as left out of the ACEs
 	// sdOn are the attributes written last with the target's SIDs (plan.Job.Translated), by lowercase name; sdValues
 	// the values to write (guarded by mu).
 	sdOn       map[string]string
@@ -282,6 +297,10 @@ func Run(ctx context.Context, src, dst directory.Directory, job plan.Job, opt Op
 		aclOn: job.ACL == plan.ACLTranslated && !opt.Native, leftOut: map[string]bool{}, withheld: withheld,
 		phase: "reading the source", since: started}
 	defer r.lap("")
+	r.notAdded = map[string]string{}
+	for _, e := range withheld.Refused {
+		r.refuse(e.DN, e.Why)
+	}
 	if len(withheld.Values) > 0 {
 		r.report.Withheld, r.report.WithheldWhy = map[string]int{}, withheld.Why
 	}
@@ -563,6 +582,9 @@ func (r *runner) leaf(ctx context.Context, k *plan.Kind, e directory.Entry) erro
 	if err := r.timeUp(); err != nil {
 		return err
 	}
+	if r.refused(e.DN) {
+		return nil
+	}
 	key := "object " + dn.Normalize(e.DN)
 	if r.skip(key) {
 		r.withACL(e.DN)
@@ -629,6 +651,9 @@ func (r *runner) writeLeaf(ctx context.Context, k *plan.Kind, e directory.Entry)
 // ensure creates or updates one container, or a parent leaf as its kind. A create-only ancestor that already exists
 // on the target (CN=Users, ...) is left untouched.
 func (r *runner) ensure(ctx context.Context, n plan.Node) error {
+	if r.refused(n.Entry.DN) {
+		return nil
+	}
 	if n.Leaf() {
 		if err := r.leaf(ctx, n.Kind, n.Entry); err != nil || !n.Outside {
 			return err
@@ -734,6 +759,7 @@ func (r *runner) upsert(ctx context.Context, e directory.Entry, account profile.
 				r.mu.Lock()
 				r.report.NameTaken = append(r.report.NameTaken, NameTaken{DN: e.DN, TargetDN: actual, Unknown: !known})
 				r.skipped[dn.Normalize(e.DN)] = true
+				r.notAdded[dn.Normalize(e.DN)] = WhyNameTaken
 				r.mu.Unlock()
 				r.warn("not added: %s: the target holds %s under a name it takes as the same", e.DN, actual)
 				return false, nil, errSkipped
@@ -969,8 +995,8 @@ func (r *runner) references(ctx context.Context, p *plan.Plan) error {
 				}
 				var usable []string
 				for _, v := range values {
-					if r.isSkipped(dn.RefDN(v)) && r.nameTaken(dn.RefDN(v)) {
-						r.notWritten(name, e.DN, v, WhyNameTaken)
+					if why := r.notAddedWhy(dn.RefDN(v)); why != "" {
+						r.notWritten(name, e.DN, v, "names an entry not added: "+why)
 						continue
 					}
 					class, err := r.refs.Class(ctx, v)
@@ -1026,22 +1052,36 @@ func (r *runner) unwritten(ctx context.Context, name, from, v string) error {
 	return nil
 }
 
-func (r *runner) isSkipped(d string) bool {
+// notAddedWhy says why the source entry at d was not added, "" when it was (or is yet to be).
+func (r *runner) notAddedWhy(d string) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.skipped[dn.Normalize(d)]
+	return r.notAdded[dn.Normalize(d)]
 }
 
-// nameTaken reports whether d was not added because the target holds another entry under its name.
-func (r *runner) nameTaken(d string) bool {
+// refuse records an entry the target refuses, warning of it once.
+func (r *runner) refuse(d, why string) {
+	key := dn.Normalize(d)
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	for _, n := range r.report.NameTaken {
-		if dn.Equal(n.DN, d) {
-			return true
-		}
+	if r.notAdded[key] != "" {
+		r.mu.Unlock()
+		return
 	}
-	return false
+	r.notAdded[key], r.skipped[key] = why, true
+	r.report.Refused = append(r.report.Refused, plan.RefusedEntry{DN: d, Why: why})
+	r.mu.Unlock()
+	r.warn("not added: %s: %s", d, why)
+}
+
+// refused reports whether the target refuses an entry of that DN, recording it the first time (one no kind took,
+// such as a parent, is met only when it is written).
+func (r *runner) refused(d string) bool {
+	why := r.withheld.RefusedWhy(d)
+	if why == "" {
+		return false
+	}
+	r.refuse(d, why)
+	return true
 }
 
 // notWritten counts a reference value not written for why, warning of the first per attribute and value.

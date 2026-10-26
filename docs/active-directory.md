@@ -100,8 +100,11 @@ first. A leftover is one whose RDN holds `\nCNF:` or whose `sAMAccountName` begi
 - Measured on Samba 4.19.5, over LDAP and natively (`[target.lab] native = true`), with leftovers given to the source
   by writing its database file around samldb. Measured on Windows Server 2019 over LDAP: a `$DUPLICATE-`
   `sAMAccountName` is taken (a computer's too), the shared values are refused and withheld as on Samba, but **an RDN
-  holding a line feed is refused** (`NAMING_VIOLATION`), so the leftover of a name conflict cannot be created there:
-  clone stops at it; leave it out with `[scope.filters]` (`(!(sAMAccountName=$DUPLICATE-<n>))`) for now.
+  holding a line feed is refused**, whatever its form or a rename to it (`NAMING_VIOLATION`; only Windows' own
+  conflict resolution gives such a name). So on Windows the leftover of a name conflict, and what is below it, is
+  not added: `check` lists it first, `clone` warns of it and lists it in its summary (`not added, the target refuses
+  their names`), the references naming it are left out with that reason, and `diff` reports it as `NOT_WRITABLE`.
+  A program that is to meet such leftovers is tested against a Samba lab, which holds them as they are.
 
 ## When the target is a real AD
 

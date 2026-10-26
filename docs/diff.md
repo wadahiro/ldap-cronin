@@ -41,9 +41,10 @@ It is read-only.
 | `RENAMED` | The same object has a different DN on the target (renamed or moved) | Yes |
 | `REPLACED` | A different object than the cloned one exists at the same DN (its identifier or marker names another object), and the original is nowhere to be found | Yes |
 | `UNMARKED` | The object at the source DN has no marker (marker mode only): recreated, marker removed, or added to the source after the clone | Yes |
+| `NOT_WRITABLE` | The target refuses the source entry's name, so clone did not add it: on Windows the leftover of a name conflict (`\0ACNF:` in its RDN) and what is below it ([active-directory.md](active-directory.md#replication-conflict-leftovers)); `why` says so | No |
 | `NAME_TAKEN` | The target answers for the source DN with another entry, under a name it takes as the same (Windows ignores width and kana type, Samba collapses spaces: [the measured rules](DEVELOPMENT.md#research-notes-what-samba-and-windows-take-as-the-same-name-and-what-they-refuse-measured)), so clone did not add the source entry; `unsure` when no marker or identifier tells it is not the cloned entry renamed | No |
 
-Object matching tells which source object a target object was cloned from; it is on by default ([how it works](#how-rename-and-move-detection-works-and-its-configuration)). Without it, see [when matching is off](#6-when-matching-is-off). Every result, `RENAMED`, `REPLACED`, `UNMARKED` and `NAME_TAKEN` included, makes the exit code 1: a rename alone is a change made on the target. The cloned entry renamed on the target to a name the target takes as its own (`CN=ｻﾄｳ` to `CN=サトウ` on Windows) is `RENAMED`, told by its marker or identifier.
+Object matching tells which source object a target object was cloned from; it is on by default ([how it works](#how-rename-and-move-detection-works-and-its-configuration)). Without it, see [when matching is off](#6-when-matching-is-off). Every result, `RENAMED`, `REPLACED`, `UNMARKED`, `NAME_TAKEN` and `NOT_WRITABLE` included, makes the exit code 1: a rename alone is a change made on the target. The cloned entry renamed on the target to a name the target takes as its own (`CN=ｻﾄｳ` to `CN=サトウ` on Windows) is `RENAMED`, told by its marker or identifier.
 
 ## Patterns: what happened on the target and how it appears
 

@@ -405,6 +405,17 @@ const maxWithheldShown = 20
 
 // writeWithheld lists the values clone will not write (plan.Withheld), each with the objects that keep it.
 func writeWithheld(out io.Writer, w *plan.Withheld) {
+	if len(w.Refused) > 0 {
+		fmt.Fprintf(out, "entries clone will not add, the target refuses their names: %d\n", len(w.Refused))
+		for i, e := range w.Refused {
+			if i == maxWithheldShown {
+				fmt.Fprintf(out, "  ... and %d more (clone warns of each)\n", len(w.Refused)-i)
+				break
+			}
+			fmt.Fprintf(out, "  %s  (%s)\n", e.DN, e.Why)
+		}
+		fmt.Fprintln(out)
+	}
 	if len(w.Values) == 0 {
 		return
 	}
