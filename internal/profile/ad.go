@@ -151,11 +151,14 @@ var AD = Profile{
 	SchemaAttrs: adSchema{},
 	SchemaCopy:  adSchema{},
 	Writable:    adSchema{},
-	NotAll: map[string]string{
-		// gPLink is a string ("[LDAP://cn={GUID},cn=policies,...;0]"), not a DN, so it is no reference clone could
-		// follow, and GPOs are no kind: copied, it links the target's OUs to policies it lacks.
-		"gplink":    "it links GPOs, which clone does not copy",
-		"gpoptions": "it goes with gPLink (blocks inheritance of GPOs, which clone does not copy)",
+	// gPLink is a string ("[LDAP://cn={GUID},cn=policies,...;0]"), not a DN, so it is no reference clone could
+	// follow, and a GPO is no kind (its settings are files in SYSVOL, out of LDAP's reach). It is copied as it is all
+	// the same: the value is production's, which a program reading OUs sees, and a domain has the two default GPOs
+	// under the same GUIDs everywhere, so links to them hold in a lab of the source's domain name. Leaving it out
+	// (as before) kept a value from the clone that the target takes.
+	CopyNotes: map[string]string{
+		"gplink":    "copied as it is; the GPOs it links are not (a new domain has the two default ones only); [attributes] exclude = [\"gPLink\", \"gPOptions\"] leaves both out",
+		"gpoptions": "copied as it is (whether the OU blocks the GPOs inherited from above)",
 	},
 	Refusals: adRefusals{},
 	Root:     adRoot{},

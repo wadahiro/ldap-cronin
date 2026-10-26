@@ -190,9 +190,9 @@ to do next:
 source: the dump prod.ldif.gz (server dc01.ad.example.com)
 target: the lab ldap-cronin-ad does not exist yet: ldap-cronin lab up --config config.toml creates it like the source
 
-[ou] 12 entries; 1 attributes they hold are not copied:
-  gPLink           3  it links GPOs, which clone does not copy
+[ou] 12 entries: clone copies every attribute they hold that a client can write (mode = "all")
   (and 10 more only the server writes; -attrs lists every attribute)
+  note: gPLink (3 entries): copied as it is; the GPOs it links are not (a new domain has the two default ones only); [attributes] exclude = ["gPLink", "gPOptions"] leaves both out
 [group] 40 entries: clone copies every attribute they hold that a client can write (mode = "all")
 [user] 1150 entries; 4 attributes they hold are not copied:
   homeDirectory  1150  [attributes] exclude names it
@@ -783,7 +783,8 @@ the ones a list names:
   extensions and `proxyAddresses`, `mS-DS-ConsistencyGuid` or `msDS-cloudExtensionAttribute*` included.
 - Never copied all the same: what only the server writes (`systemOnly`, constructed attributes, back links such as
   `memberOf`), identifiers, every credential (`unicodePwd`, `userPassword`, LAPS, ...), and the marker attribute.
-  `gPLink` and `gPOptions` of an OU are left out too: they link GPOs, which are not cloned.
+- `gPLink` and `gPOptions` of an OU are copied as they are, but not the GPOs they link (`check` notes it; `exclude`
+  them if they get in the way).
 - An attribute the target's schema lacks is left out with a note at the start of `clone` and `diff`, instead of
   stopping the run: give the target your extensions with `schema` first. A dry-run reads no target, so its LDIF has
   them all.

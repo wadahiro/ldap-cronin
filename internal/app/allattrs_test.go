@@ -117,9 +117,10 @@ func TestModeAllNeedsAProfileThatReadsTheSchema(t *testing.T) {
 	}
 }
 
-// The default on AD is every attribute a client can write, without gPLink (it links GPOs, which clone does not
-// copy): check names it with why. What no client can write is "never" in -attrs, not "not copied".
-func TestTheDefaultLeavesOutGPLinkAndSaysWhy(t *testing.T) {
+// The default on AD is every attribute a client can write, gPLink included: it is copied as it is and compared,
+// and check notes that the GPOs it links are not copied. What no client can write is "never" in -attrs, not "not
+// copied".
+func TestTheDefaultCopiesGPLinkAndNotesTheGPOs(t *testing.T) {
 	w := newWorld()
 	withClasses(w.src, []string{"title"})
 	ou := w.src.Lookup("CN=organizationalUnit," + schemaNC)
@@ -139,7 +140,7 @@ func TestTheDefaultLeavesOutGPLinkAndSaysWhy(t *testing.T) {
 		t.Fatal("the default on AD is every attribute a client can write")
 	}
 	k, _ := s.Job.Kind("ou")
-	if got := strings.Join(k.Attrs, ","); strings.Contains(got, "gPLink") || !strings.Contains(got, "description") {
+	if got := strings.Join(k.Attrs, ","); !strings.Contains(got, "gPLink") || !strings.Contains(got, "description") {
 		t.Fatalf("ou attributes: %s", got)
 	}
 	var out bytes.Buffer
@@ -148,7 +149,8 @@ func TestTheDefaultLeavesOutGPLinkAndSaysWhy(t *testing.T) {
 	}
 	got := out.String()
 	for _, want := range []string{
-		"[ou] 2 entries; 1 attributes they hold are not copied:\n  gPLink        1  it links GPOs, which clone does not copy\n",
+		"[ou] 2 entries: clone copies every attribute they hold that a client can write (mode = \"all\")\n",
+		"  note: gPLink (1 entries): copied as it is; the GPOs it links are not",
 		"never       directReports",
 	} {
 		if !strings.Contains(got, want) {
@@ -157,5 +159,17 @@ func TestTheDefaultLeavesOutGPLinkAndSaysWhy(t *testing.T) {
 	}
 	if strings.Contains(got, "not copied  directReports") {
 		t.Errorf("a back link is never copied, not left behind:\n%s", got)
+	}
+	var log bytes.Buffer
+	if _, err := s.Clone(context.Background(), false, &log, &log); err != nil {
+		t.Fatalf("%v\n%s", err, log.String())
+	}
+	if got := w.dst.Lookup("OU=Users," + base).Values("gPLink"); len(got) != 1 || !strings.HasPrefix(got[0], "[LDAP://cn={31B2F340") {
+		t.Fatalf("gPLink on the target: %v", got)
+	}
+	w.dst.Lookup("OU=Users," + base).Attrs["gPLink"] = []string{"[LDAP://cn={0},cn=policies,cn=system," + domain + ";0]"}
+	out.Reset()
+	if code, err := s.Diff(context.Background(), DiffOutput{}, &out); err != nil || code != ExitDiff || !strings.Contains(out.String(), "gPLink") {
+		t.Fatalf("diff compares gPLink (%d, %v):\n%s", code, err, out.String())
 	}
 }

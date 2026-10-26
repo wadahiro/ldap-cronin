@@ -230,7 +230,7 @@ Markers of another source and mapping pairs of another target (a recreated lab) 
 | Moved, and an object with the same name was created at the original DN | `RENAMED` for the original and `ONLY_TARGET` for the new one (*) |
 | A password was changed | Not detected (not compared) |
 | A masked attribute was changed | Not detected (because it is masked) |
-| An attribute that is not copied was changed | Not detected (`exclude`d, `gPLink`, or with allow lists not named: add it with `extra_include`) |
+| An attribute that is not copied was changed | Not detected (`exclude`d, or with allow lists not named: add it with `extra_include`) |
 
 (*) Requires object matching (on by default). With `[mapping] mode = "off"`, a rename or move looks like two entries, `ONLY_SOURCE` + `ONLY_TARGET`, and a recreated object is only compared by its attributes.
 

@@ -125,9 +125,7 @@ func (s *Session) attrStatus(kind string, allowed map[string]bool, key, marker s
 	case allowed[key] && s.Job.Masker.MaskedIn(kind, key):
 		return attrMasked, ""
 	case allowed[key]:
-		return attrCopied, ""
-	case s.Job.AllWritable && prof.NotAll[key] != "":
-		return attrNotCopied, prof.NotAll[key]
+		return attrCopied, prof.CopyNotes[key]
 	case s.Job.AllWritable:
 		return attrNotCopied, "[attributes] exclude names it"
 	}

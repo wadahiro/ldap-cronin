@@ -84,7 +84,7 @@ workers = 8                          # parallel connections to the target, for c
 
 [attributes]
 # By default on AD every attribute a client can write on each kind's class is copied and compared, your schema
-# extensions included (`ldap-cronin schema` carries their definitions), but gPLink and gPOptions (GPOs are not cloned).
+# extensions included (`ldap-cronin schema` carries their definitions). An OU's gPLink is copied, not the GPOs it links.
 # exclude = ["telephoneNumber"]   # remove from all kinds (any mode)
 # credentials = "copy"   # AD: also the credentials the source returns (LAPS, msDS-KeyCredentialLink, userPassword, ...),
 #                        # for a clone with the source's structure; never the password hashes. A dump needs

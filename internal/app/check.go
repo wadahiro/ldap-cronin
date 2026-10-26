@@ -172,10 +172,13 @@ func (s *Session) Check(ctx context.Context, o CheckOptions, out io.Writer) (int
 			count int
 			why   string
 		}
-		var notCopied []held
+		var notCopied, noted []held
 		managed := 0
 		for key, n := range u.Attrs {
 			st, why := s.attrStatus(u.Kind.Name, allowed, key, marker)
+			if st == attrCopied && prof.CopyNotes[key] != "" {
+				noted = append(noted, held{u.Names[key], n, prof.CopyNotes[key]})
+			}
 			if st != attrNotCopied {
 				continue
 			}
@@ -232,6 +235,10 @@ func (s *Session) Check(ctx context.Context, o CheckOptions, out io.Writer) (int
 		}
 		if managed > 0 {
 			fmt.Fprintf(out, "  (and %d more only the server writes; -attrs lists every attribute)\n", managed)
+		}
+		sort.Slice(noted, func(i, j int) bool { return strings.ToLower(noted[i].name) < strings.ToLower(noted[j].name) })
+		for _, h := range noted {
+			fmt.Fprintf(out, "  note: %s (%d entries): %s\n", h.name, h.count, h.why)
 		}
 	}
 	if err := s.writeHolders(ctx, out); err != nil {

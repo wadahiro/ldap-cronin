@@ -208,9 +208,6 @@ func (s *Session) writableAttrs(ctx context.Context) error {
 		return err
 	}
 	never := profile.Set(append(append([]string{prof.Identity.Attr(), marker}, prof.NeverClone...), prof.PasswordAttrs...))
-	for n := range prof.NotAll {
-		never[n] = true
-	}
 	s.Job.AllWritable = true
 	for i := range s.Job.Kinds {
 		k := &s.Job.Kinds[i]

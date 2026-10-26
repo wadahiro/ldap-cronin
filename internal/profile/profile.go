@@ -294,9 +294,8 @@ type Profile struct {
 	SchemaCopy SchemaCopier
 	// Writable is nil when the profile cannot tell which attributes a client can write ([attributes] mode = "all").
 	Writable WritableLister
-	// NotAll are attributes a client can write that mode = "all" leaves out, by lowercase name, with why: their
-	// values would be wrong on the clone. Unlike NeverClone an allow list may still name them.
-	NotAll map[string]string
+	// CopyNotes are said by check of attributes clone copies, by lowercase name: what the copy does not bring along.
+	CopyNotes map[string]string
 	// Refusals is nil when every target of the type takes every attribute its schema has.
 	Refusals RefusalReader
 	Root     RootResolver
