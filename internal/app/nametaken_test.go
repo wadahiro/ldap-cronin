@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/wadahiro/ldap-cronin/internal/clone"
+	"github.com/wadahiro/ldap-cronin/internal/plan"
 )
 
 const (
@@ -113,4 +114,99 @@ func renamedToTheSameName(t *testing.T, echo bool) {
 	if err != nil || len(rep.NameTaken) != 0 || rep.Added != 0 {
 		t.Fatalf("clone after the rename: %v %+v\n%s", err, rep, log.String())
 	}
+}
+
+// An OU whose name the target takes as another OU's is not added, nor what is below it: written, the entries below
+// would go into the other OU, which the target takes their parent's DN to name.
+func TestWhatIsBelowAnEntryWhoseNameIsTakenIsNotAdded(t *testing.T) {
+	for name, echo := range map[string]bool{"stored DN": false, "DN asked for": true} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			w := newWorld()
+			w.dst.Fold = func(k string) string { return strings.Join(strings.Fields(k), " ") }
+			w.dst.EchoDN = echo
+			one, two := "OU=Team A,"+base, "OU=Team  A,"+base
+			user := []string{"top", "person", "organizationalPerson", "user"}
+			for i, ou := range []string{one, two} {
+				w.src.Put(ou, map[string][]string{"objectClass": {"top", "organizationalUnit"}, "ou": {strings.TrimPrefix(strings.Split(ou, ",")[0], "OU=")}})
+				w.src.Put("CN=Member"+string(rune('1'+i))+","+ou, map[string][]string{"objectClass": user, "cn": {"Member" + string(rune('1'+i))},
+					"sAMAccountName": {"member" + string(rune('1'+i))}})
+			}
+			s := w.openWith(t, "")
+			var log bytes.Buffer
+			rep, err := s.Clone(ctx, false, &log, &log)
+			if err != nil {
+				t.Fatalf("%v\n%s", err, log.String())
+			}
+			if len(rep.NameTaken) != 1 || len(rep.Refused) != 1 || !strings.Contains(rep.Refused[0].Why, "below "+rep.NameTaken[0].DN+", not added") {
+				t.Fatalf("name taken %+v, refused %+v\n%s", rep.NameTaken, rep.Refused, log.String())
+			}
+			below := 0
+			for k := range w.dst.Snapshot() {
+				if strings.HasPrefix(k, "cn=member") {
+					below++
+				}
+			}
+			if below != 1 {
+				t.Fatalf("one member goes in: %d\n%s", below, log.String())
+			}
+			var out bytes.Buffer
+			if code, err := s.Diff(ctx, DiffOutput{}, &out); err != nil || code != ExitDiff || !strings.Contains(out.String(), "NAME_TAKEN  : 1") ||
+				!strings.Contains(out.String(), "NOT_WRITABLE: 1") {
+				t.Fatalf("diff (%d, %v):\n%s", code, err, out.String())
+			}
+		})
+	}
+}
+
+// A value naming an entry the target takes as another's is not written, however that entry came to be wanted:
+// referenced from outside the scope (taken when it was created for the value), or one the source does not return,
+// which a placeholder would stand for (the target answers with the other: counted as a value not written).
+func TestAValueNamingAnEntryWhoseNameIsTakenIsNotWritten(t *testing.T) {
+	ctx := context.Background()
+	w := newWorld()
+	w.dst.Fold = func(k string) string { return strings.Join(strings.Fields(k), " ") }
+	user := []string{"top", "person", "organizationalPerson", "user"}
+	outOne, outTwo := "CN=Out X,OU=Else,"+domain, "CN=Out  X,OU=Else,"+domain
+	ghost, ghostTwo := "CN=Ghost A,OU=Users,"+base, "CN=Ghost  A,OU=Users,"+base // the second the source does not return
+	w.src.Put("OU=Else,"+domain, map[string][]string{"objectClass": {"top", "organizationalUnit"}, "ou": {"Else"}})
+	for i, d := range []string{outOne, outTwo} {
+		w.src.Put(d, map[string][]string{"objectClass": user, "cn": {strings.TrimPrefix(strings.Split(d, ",")[0], "CN=")}, "sAMAccountName": {"out" + string(rune('1'+i))}})
+	}
+	w.src.Put(ghost, map[string][]string{"objectClass": user, "cn": {"Ghost A"}, "sAMAccountName": {"ghost"}})
+	team := "CN=Team,OU=Users," + base
+	w.src.Put(team, map[string][]string{"objectClass": {"top", "group"}, "cn": {"Team"}, "sAMAccountName": {"team"},
+		"member": {outOne, outTwo, ghost, ghostTwo}})
+	s := w.openWith(t, "")
+	var log bytes.Buffer
+	rep, err := s.Clone(ctx, false, &log, &log)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, log.String())
+	}
+	members := w.dst.Lookup(team).Values("member")
+	if len(members) != 2 || !contains(members, ghost) {
+		t.Fatalf("the group's members: %v\nname taken %+v\n%s", members, rep.NameTaken, log.String())
+	}
+	taken := map[string]bool{}
+	for _, n := range rep.NameTaken {
+		taken[n.DN] = true
+	}
+	if !(taken[outOne] || taken[outTwo]) || rep.Unwritten["member: "+plan.WhyNameTaken] != 1 {
+		t.Fatalf("name taken %+v, unwritten %+v\n%s", rep.NameTaken, rep.Unwritten, log.String())
+	}
+	// diff reports the entry, and compares the group's member without the values clone left out.
+	var out bytes.Buffer
+	if code, err := s.Diff(ctx, DiffOutput{}, &out); err != nil || code != ExitDiff || !strings.Contains(out.String(), "NAME_TAKEN  : 1") ||
+		strings.Contains(out.String(), "DIFF        "+team) {
+		t.Fatalf("diff (%d, %v):\n%s", code, err, out.String())
+	}
+}
+
+func contains(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }

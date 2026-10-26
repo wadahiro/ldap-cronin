@@ -6,6 +6,7 @@ import (
 
 	"github.com/wadahiro/ldap-cronin/internal/compare"
 	"github.com/wadahiro/ldap-cronin/internal/directory"
+	"github.com/wadahiro/ldap-cronin/internal/dn"
 	"github.com/wadahiro/ldap-cronin/internal/plan"
 )
 
@@ -77,13 +78,18 @@ func (r *runner) resolveRefs(ctx context.Context, refs *plan.Classifier) error {
 			if err != nil {
 				return err
 			}
-			if class.Reproducible() {
+			// An entry reported NAME_TAKEN (one referenced from outside the scope, created for the value) is not on the
+			// target, nor the values naming it, which clone leaves out.
+			taken := r.isNameTaken(dn.RefDN(v))
+			if class.Reproducible() && !taken {
 				w = append(w, v)
 				continue
 			}
-			why, err := refs.Why(ctx, v)
-			if err != nil {
-				return err
+			why := "names an entry not added: " + plan.NameTakenWhy
+			if !taken {
+				if why, err = refs.Why(ctx, v); err != nil {
+					return err
+				}
 			}
 			r.mu.Lock()
 			r.sum.NotCompared[pr.name]++

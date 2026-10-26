@@ -125,7 +125,7 @@ type NameTaken struct {
 
 // WhyNameTaken is why a reference value naming such an entry is not written: the target would take it to name the
 // other entry.
-const WhyNameTaken = "the target holds another under a name it takes as the same"
+const WhyNameTaken = plan.NameTakenWhy
 
 // maxNameTakenShown caps the entries the summary lists; the count is always given.
 const maxNameTakenShown = 50
@@ -395,6 +395,9 @@ func (r *runner) holders(ctx context.Context, p *plan.Plan, hs []plan.Holder) er
 		if h.Why != "" {
 			return r.unheld(h, h.Why)
 		}
+		if why := r.notAddedWhy(h.DN); why != "" {
+			return r.unheld(h, "is not added: "+why)
+		}
 		switch {
 		case h.Builtin && r.opt.DryRun:
 		case h.Builtin || h.Existing:
@@ -415,6 +418,10 @@ func (r *runner) holders(ctx context.Context, p *plan.Plan, hs []plan.Holder) er
 		default:
 			if err := r.outside(ctx, h.DN, func() (*plan.Kind, error) { return h.Kind, nil }); err != nil {
 				return err
+			}
+			// Its name may have been taken just now: the values would go to the entry holding it.
+			if why := r.notAddedWhy(h.DN); why != "" {
+				return r.unheld(h, "is not added: "+why)
 			}
 		}
 		for _, name := range h.Attrs {
@@ -499,6 +506,10 @@ func (r *runner) primaryGroups(ctx context.Context, p *plan.Plan) error {
 					return err
 				}
 			}
+		}
+		if why := r.notAddedWhy(gdn); why != "" {
+			r.notPrimary(a, "names a group not added: "+why)
+			continue
 		}
 		rid := ""
 		if g, err := r.dst.Get(ctx, gdn, []string{"objectSid"}); err != nil {
@@ -663,6 +674,9 @@ func (r *runner) ensure(ctx context.Context, n plan.Node) error {
 	}
 	if !n.CreateOnly {
 		created, cur, err := r.upsert(ctx, n.Entry, nil)
+		if errors.Is(err, errSkipped) {
+			return nil
+		}
 		if err != nil {
 			return err
 		}
@@ -670,9 +684,12 @@ func (r *runner) ensure(ctx context.Context, n plan.Node) error {
 		r.withSDValues(n.Entry)
 		return r.track(ctx, n.Entry, created, cur)
 	}
-	cur, err := r.dst.Get(ctx, n.Entry.DN, append([]string{"objectClass"}, r.guidAttr()...))
+	cur, err := r.dst.Get(ctx, n.Entry.DN, append(append([]string{"objectClass"}, r.guidAttr()...), plan.TargetDNAttrs(r.prof, n.Entry.DN)...))
 	if err != nil {
 		return err
+	}
+	if r.taken(n.Entry.DN, cur) {
+		return nil
 	}
 	if cur != nil {
 		return r.track(ctx, n.Entry, false, cur)
@@ -756,12 +773,7 @@ func (r *runner) upsert(ctx context.Context, e directory.Entry, account profile.
 		// to a name equal to it there), or another entry, which an update would overwrite.
 		if actual := plan.TargetDN(r.prof, e.DN, *cur); !dn.Equal(actual, e.DN) {
 			if same, known := r.sameObject(e, *cur); !same {
-				r.mu.Lock()
-				r.report.NameTaken = append(r.report.NameTaken, NameTaken{DN: e.DN, TargetDN: actual, Unknown: !known})
-				r.skipped[dn.Normalize(e.DN)] = true
-				r.notAdded[dn.Normalize(e.DN)] = WhyNameTaken
-				r.mu.Unlock()
-				r.warn("not added: %s: the target holds %s under a name it takes as the same", e.DN, actual)
+				r.nameTakenAt(e.DN, actual, !known)
 				return false, nil, errSkipped
 			}
 		}
@@ -995,10 +1007,6 @@ func (r *runner) references(ctx context.Context, p *plan.Plan) error {
 				}
 				var usable []string
 				for _, v := range values {
-					if why := r.notAddedWhy(dn.RefDN(v)); why != "" {
-						r.notWritten(name, e.DN, v, "names an entry not added: "+why)
-						continue
-					}
 					class, err := r.refs.Class(ctx, v)
 					if err != nil {
 						return err
@@ -1026,6 +1034,11 @@ func (r *runner) references(ctx context.Context, p *plan.Plan) error {
 							continue
 						}
 					}
+					// After what the value names was created: it may have been left out just now (its name taken).
+					if why := r.notAddedWhy(dn.RefDN(v)); why != "" {
+						r.notWritten(name, e.DN, v, "names an entry not added: "+why)
+						continue
+					}
 					usable = append(usable, v)
 				}
 				if err := r.applyReference(ctx, e.DN, name, usable); err != nil {
@@ -1050,6 +1063,33 @@ func (r *runner) unwritten(ctx context.Context, name, from, v string) error {
 	}
 	r.notWritten(name, from, v, why)
 	return nil
+}
+
+// nameTakenAt records the source entry at d as not added, the target holding actual under a name it takes as the
+// same, and warns of it.
+func (r *runner) nameTakenAt(d, actual string, unknown bool) {
+	r.mu.Lock()
+	r.report.NameTaken = append(r.report.NameTaken, NameTaken{DN: d, TargetDN: actual, Unknown: unknown})
+	r.skipped[dn.Normalize(d)] = true
+	r.notAdded[dn.Normalize(d)] = WhyNameTaken
+	r.mu.Unlock()
+	r.warn("not added: %s: the target holds %s under a name it takes as the same", d, actual)
+}
+
+// taken reports whether cur, read from the target at d by what clone only creates when it is missing (a create-only
+// parent, a placeholder, an entry of the configuration partition), is another entry under a name the target takes as
+// the same: then d is recorded as not added, nothing telling it is that one (none of them carries a marker), and
+// what is below it and the values naming it are left out too.
+func (r *runner) taken(d string, cur *directory.Entry) bool {
+	if cur == nil {
+		return false
+	}
+	actual := plan.TargetDN(r.prof, d, *cur)
+	if dn.Equal(actual, d) {
+		return false
+	}
+	r.nameTakenAt(d, actual, true)
+	return true
 }
 
 // notAddedWhy says why the source entry at d was not added, "" when it was (or is yet to be).
@@ -1078,10 +1118,26 @@ func (r *runner) refuse(d, why string) {
 func (r *runner) refused(e directory.Entry) bool {
 	why := r.withheld.RefusedEntryWhy(e)
 	if why == "" {
+		why = r.underNotAdded(e.DN)
+	}
+	if why == "" {
 		return false
 	}
 	r.refuse(e.DN, why)
 	return true
+}
+
+// underNotAdded says why an entry below one not added is not added either, "" when none above it was left out: its
+// DN names that parent, which the target would take as the entry holding its name (a parent is written first).
+func (r *runner) underNotAdded(d string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for p := dn.Parent(d); p != ""; p = dn.Parent(p) {
+		if why := r.notAdded[dn.Normalize(p)]; why != "" {
+			return "below " + p + ", not added: " + why
+		}
+	}
+	return ""
 }
 
 // notWritten counts a reference value not written for why, warning of the first per attribute and value.
@@ -1242,8 +1298,12 @@ func (r *runner) placeholder(ctx context.Context, v string) error {
 
 // addPlaceholder adds e, a placeholder, unless the target holds its DN; it warns once per placeholder.
 func (r *runner) addPlaceholder(ctx context.Context, e directory.Entry) error {
-	cur, err := r.dst.Get(ctx, e.DN, []string{"objectClass"})
+	if r.underNotAdded(e.DN) != "" {
+		return nil
+	}
+	cur, err := r.dst.Get(ctx, e.DN, append([]string{"objectClass"}, plan.TargetDNAttrs(r.prof, e.DN)...))
 	if err != nil || cur != nil {
+		r.taken(e.DN, cur)
 		return err
 	}
 	if err := r.dst.Add(ctx, e); err != nil {
@@ -1270,8 +1330,9 @@ func (r *runner) configuration(ctx context.Context, v string) error {
 		return nil
 	}
 	return r.once(ctx, "config:"+dn.Normalize(v), func() error {
-		cur, err := r.dst.Get(ctx, v, []string{"objectClass"})
+		cur, err := r.dst.Get(ctx, v, append([]string{"objectClass"}, plan.TargetDNAttrs(r.prof, v)...))
 		if err != nil || cur != nil {
+			r.taken(v, cur)
 			return err
 		}
 		if err := r.configuration(ctx, parent); err != nil {

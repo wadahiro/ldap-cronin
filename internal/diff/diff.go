@@ -131,7 +131,7 @@ type Options struct {
 // RENAMED if found at a different DN. This verifies changes made by another program that renamed or moved objects on the target.
 func Run(ctx context.Context, src, dst directory.Directory, job plan.Job, o Options, emit func(Difference)) (Summary, error) {
 	r := &runner{job: job, emit: emit, outside: map[string]string{}, sum: Summary{Compared: map[string]int{}, Differences: map[Kind]int{}, NotCompared: map[string]int{}, NotComparedWhy: map[string]int{}, Unheld: map[string]int{}, ACEsNotCompared: map[string]int{}},
-		primaryOutside: map[string]string{}, held: map[string]bool{}}
+		primaryOutside: map[string]string{}, held: map[string]bool{}, nameTaken: map[string]bool{}}
 	if o.Resolver != nil {
 		r.sum.Matching = o.Resolver.Describe()
 	}
@@ -268,10 +268,13 @@ type runner struct {
 	principals *plan.Principals
 	sdOn       map[string]string
 	withheld   *plan.Withheld // the source's values clone does not write (plan.Withholding)
-	aclErr     error
-	p          *plan.Plan
-	loc        *locator
-	emit       func(Difference)
+	// nameTaken are the source entries reported NAME_TAKEN (normalized DN; guarded by mu): clone adds nothing below
+	// them either. Parents are compared before what is below them.
+	nameTaken map[string]bool
+	aclErr    error
+	p         *plan.Plan
+	loc       *locator
+	emit      func(Difference)
 
 	mu  sync.Mutex // guards sum and serializes emit
 	sum Summary
@@ -370,6 +373,10 @@ func (r *runner) check(ctx context.Context, want directory.Entry, names []string
 		r.report(Difference{Kind: NotWritable, DN: want.DN, Why: why})
 		return nil
 	}
+	if p := r.belowNameTaken(want.DN); p != "" {
+		r.report(Difference{Kind: NotWritable, DN: want.DN, Why: "below " + p + ", whose name the target takes as another entry's (NAME_TAKEN)"})
+		return nil
+	}
 	want = r.withoutRefused(want)
 	if kind != nil {
 		var stripped []string
@@ -389,6 +396,9 @@ func (r *runner) check(ctx context.Context, want directory.Entry, names []string
 		return err
 	}
 	if res.nameTaken != "" {
+		r.mu.Lock()
+		r.nameTaken[dn.Normalize(want.DN)] = true
+		r.mu.Unlock()
 		r.report(Difference{Kind: NameTaken, DN: want.DN, TargetDN: res.nameTaken, Unsure: res.unsure})
 		return nil
 	}
@@ -502,4 +512,26 @@ func (r *runner) withoutRefused(want directory.Entry) directory.Entry {
 		return want
 	}
 	return *out
+}
+
+// belowNameTaken is the DN of an entry above d reported NAME_TAKEN, "" for none.
+func (r *runner) belowNameTaken(d string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.nameTaken) == 0 {
+		return ""
+	}
+	for p := dn.Parent(d); p != ""; p = dn.Parent(p) {
+		if r.nameTaken[dn.Normalize(p)] {
+			return p
+		}
+	}
+	return ""
+}
+
+// isNameTaken reports whether the source entry at d was reported NAME_TAKEN.
+func (r *runner) isNameTaken(d string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.nameTaken[dn.Normalize(d)]
 }

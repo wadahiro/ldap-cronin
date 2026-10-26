@@ -83,10 +83,16 @@ const (
 	WhyBuiltin       = "names a built-in object the target lacks"
 	WhySkipped       = "names an entry outside the scope ([scope] references = \"skip\")"
 	WhyNotOnTarget   = "names an entry outside the scope the target lacks ([scope] references = \"existing\")"
-	WhyFenced        = "names a schema definition or a partition of the forest, which clone never creates"
-	WhyWellKnown     = "names a well-known principal (Everyone, Authenticated Users), which Windows takes only in a built-in group"
-	WhyWrapped       = "names a well-known principal inside a DN-Binary or DN-String value, which clone does not write"
-	WhyUnplaceable   = "names an entry missing or unreadable on the source whose name no placeholder can take (not CN=)"
+	// WhyNameTaken: the target answers for the DN with another entry, under a name it takes as the same; written,
+	// the value would name that one.
+	WhyNameTaken = "names an entry the target holds another under the name of"
+	// NameTakenWhy is why an entry of the source is not added: the target holds another under a name it takes as
+	// the same.
+	NameTakenWhy   = "the target holds another under a name it takes as the same"
+	WhyFenced      = "names a schema definition or a partition of the forest, which clone never creates"
+	WhyWellKnown   = "names a well-known principal (Everyone, Authenticated Users), which Windows takes only in a built-in group"
+	WhyWrapped     = "names a well-known principal inside a DN-Binary or DN-String value, which clone does not write"
+	WhyUnplaceable = "names an entry missing or unreadable on the source whose name no placeholder can take (not CN=)"
 )
 
 // whyClass is the reason for a value naming an entry of an object class no kind copies.
@@ -206,9 +212,14 @@ func (c *Classifier) classify(ctx context.Context, v string, chk *refCheck) erro
 			chk.class = RefValueOnly // written either way, so whether the target holds it needs no read
 			return nil
 		}
-		cur, err := c.dst.Get(ctx, v, []string{"objectClass"})
+		d := dn.RefDN(v)
+		cur, err := c.dst.Get(ctx, d, append([]string{"objectClass"}, TargetDNAttrs(prof, d)...))
 		if err != nil {
 			return err
+		}
+		if cur != nil && !dn.Equal(TargetDN(prof, d, *cur), d) {
+			chk.class, chk.why = RefUnreproducible, WhyNameTaken
+			return nil
 		}
 		if cur != nil {
 			chk.class = RefExisting
