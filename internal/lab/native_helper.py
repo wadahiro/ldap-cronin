@@ -204,11 +204,13 @@ def op_add(req):
         if e.args[0] == ldb.ERR_CONSTRAINT_VIOLATION and rid:
             # The objectSid is the cause only when another object holds it; samldb refuses a userPrincipalName or
             # servicePrincipalName in use with the same code, and naming the SID then sends the reader the wrong way.
+            # A deleted object keeps its objectSid, so it is searched too.
             sid = ndr_unpack(security.dom_sid, b64d(attrs["objectSid"][0]))
-            found = db.search(base=BASE, scope=ldb.SCOPE_SUBTREE, expression="(objectSid=%s)" % sid, attrs=["distinguishedName"])
-            if len(found):
+            found = db.search(base=BASE, scope=ldb.SCOPE_SUBTREE, expression="(objectSid=%s)" % sid, attrs=["distinguishedName"],
+                              controls=["show_deleted:1", "show_recycled:1"])
+            if len(found) or "index violation on objectSid" in str(e.args[1]):
                 owners = ", ".join(str(r.dn) for r in found)
-                return fail(e.args[0], "objectSid %s collided with an existing object in the lab (%s): %s" % (sid, owners, e.args[1]))
+                return fail(e.args[0], "objectSid %s collided with an existing object in the lab (%s): %s" % (sid, owners or "unknown", e.args[1]))
         if e.args[0] == ldb.ERR_CONSTRAINT_VIOLATION:
             return fail(e.args[0], "the lab refused %s: %s" % (req["dn"], e.args[1]))
         raise
@@ -272,11 +274,63 @@ def op_add_values(req):
     return ok()
 
 
-def op_finish(_req):
-    """Post-import cleanup. Advance the RID allocation past the largest imported RID and verify consistency with dbcheck."""
+# The journal of a run done in slices (clone -time-limit): the keys of the objects done and the largest RID imported,
+# in the lab's volume so that a snapshot carries exactly the progress its data has. Its first line is the
+# fingerprint of the source and config it is valid for.
+JOURNAL = "/var/lib/samba/ldap-cronin-journal"
+
+
+def op_journal_load(req):
+    """Read the journal if it is for this fingerprint; otherwise start one for it. The largest RID it recorded joins max_rid."""
+    global max_rid
+    keys = []
+    try:
+        with open(JOURNAL, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except FileNotFoundError:
+        lines = []
+    if lines and lines[0] == "fp " + req["fingerprint"]:
+        for line in lines[1:]:
+            kind, _, rest = line.partition(" ")
+            if kind == "k":
+                keys.append(rest)
+            elif kind == "rid" and rest.isdigit():
+                max_rid = max(max_rid, int(rest))
+        return ok(keys=keys, stale=False)
+    with open(JOURNAL, "w", encoding="utf-8") as f:
+        f.write("fp " + req["fingerprint"] + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+    return ok(keys=[], stale=bool(lines))
+
+
+def op_journal_add(req):
+    """Append keys done, and the largest RID imported so far (a resumed run skips the objects that hold the others)."""
+    with open(JOURNAL, "a", encoding="utf-8") as f:
+        for key in req["keys"]:
+            f.write("k " + key + "\n")
+        f.write("rid %d\n" % max_rid)
+        f.flush()
+        os.fsync(f.fileno())
+    return ok()
+
+
+def op_journal_clear(_req):
+    try:
+        os.remove(JOURNAL)
+    except FileNotFoundError:
+        pass
+    return ok()
+
+
+def op_finish(req):
+    """Post-import cleanup. Advance the RID allocation past the largest imported RID and verify consistency with dbcheck
+    (left out at the end of a slice: it reads the whole database, and the last slice runs it)."""
     bumped = None
     if max_rid:
         bumped = bump_rid(max_rid)
+    if req.get("dbcheck") is False:
+        return ok(max_rid=max_rid, rid_next=bumped, dbcheck="", fast_passwords=fast_count, server_attributes=server_count)
     proc = subprocess.run(["samba-tool", "dbcheck", "--cross-ncs"], capture_output=True, text=True)
     out = (proc.stdout + proc.stderr).strip().splitlines()
     summary = out[-1] if out else ""
@@ -308,7 +362,8 @@ def bump_rid(maximum):
 
 
 OPS = {"hello": op_hello, "get": op_get, "search": op_search, "add": op_add, "replace": op_replace,
-       "add_values": op_add_values, "finish": op_finish}
+       "add_values": op_add_values, "finish": op_finish, "journal_load": op_journal_load,
+       "journal_add": op_journal_add, "journal_clear": op_journal_clear}
 
 
 def main():

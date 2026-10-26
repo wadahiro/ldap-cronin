@@ -353,6 +353,9 @@ type fakeHelper struct {
 	ops     []string
 	failOp  string // returns an error for this op
 	hello   map[string]any
+	// journal stands for the file in the lab's volume: it outlives one helper, as the volume does.
+	journalFP   string
+	journalKeys []string
 }
 
 func newFakeHelper() *fakeHelper {
@@ -455,7 +458,27 @@ func (h *fakeHelper) handle(req map[string]any) map[string]any {
 		}
 		return map[string]any{"ok": true, "entries": entries}
 	case "finish":
+		if req["dbcheck"] == false {
+			return map[string]any{"ok": true, "max_rid": 1234, "rid_next": 1235, "dbcheck": ""}
+		}
 		return map[string]any{"ok": true, "max_rid": 1234, "rid_next": 1235, "dbcheck": "Checked 3 objects (0 errors)"}
+	case "journal_load":
+		fp, _ := req["fingerprint"].(string)
+		if fp == h.journalFP {
+			return map[string]any{"ok": true, "keys": h.journalKeys}
+		}
+		stale := h.journalFP != ""
+		h.journalFP, h.journalKeys = fp, nil
+		return map[string]any{"ok": true, "keys": []string{}, "stale": stale}
+	case "journal_add":
+		raw, _ := json.Marshal(req["keys"])
+		var keys []string
+		_ = json.Unmarshal(raw, &keys)
+		h.journalKeys = append(h.journalKeys, keys...)
+		return map[string]any{"ok": true}
+	case "journal_clear":
+		h.journalFP, h.journalKeys = "", nil
+		return map[string]any{"ok": true}
 	}
 	return map[string]any{"ok": false, "code": -1, "msg": "unknown op"}
 }

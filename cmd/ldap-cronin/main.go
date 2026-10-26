@@ -29,6 +29,8 @@ const (
 	envTargetPassword = "LDAP_CRONIN_TARGET_PASSWORD"
 	envUserPassword   = "LDAP_CRONIN_USER_PASSWORD"
 	exitError         = 2
+	// exitMore is clone stopped at -time-limit: what it wrote is complete, and running it again goes on.
+	exitMore = 3
 )
 
 const usage = `Usage: ldap-cronin <command> [flags]
@@ -54,6 +56,8 @@ Flags (clone/diff):
                    after it, so ldapmodify alone gives users that can log on; without it they are comments
   -y, -yes         (clone only) Write without asking: clone shows the target (a lab: what it does to it) and the
                    source and asks [y/N] first
+  -time-limit <d>  (clone only) Stop before the first object after d (15m), exit 3; running again goes on. A native
+                   import from a dump keeps a journal in the lab and skips what is done (a snapshot carries it)
   -format <f>      (diff only) text (default), or json: JSON Lines, one object per difference, then the summary
   -max-values <n>  (diff only, text) Show at most n values per direction of a multi-valued difference (default: 0, all)
   -progress <m>    auto (default): on a terminal a status kept at the bottom of the screen (phase, count, rate, time
@@ -144,6 +148,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "interrupted")
 		return exitError
 	}
+	if errors.Is(err, clone.ErrTimeLimit) {
+		fmt.Fprintln(stderr, "clone stopped at -time-limit: what it wrote is complete; run it again to go on (exit 3)")
+		return exitMore
+	}
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
 		return exitError
@@ -208,6 +216,7 @@ func runClone(ctx context.Context, args []string, out io.Writer) error {
 	cfgPath := fs.String("config", "config.toml", "config file")
 	dryRun := fs.Bool("dry-run", false, "print LDIF instead of writing")
 	withPassword := fs.Bool("with-password", false, "with -dry-run: the LDIF carries the users' fixed password and what follows it, so ldapmodify alone completes them")
+	timeLimit := fs.Duration("time-limit", 0, "stop before the first object after this long (exit 3); run again to go on: a native import from a dump skips what is done")
 	yes := yesFlag(fs)
 	progressMode := progressFlag(fs)
 	for _, a := range args {
@@ -222,6 +231,9 @@ func runClone(ctx context.Context, args []string, out io.Writer) error {
 	if *withPassword && !*dryRun {
 		return errors.New("-with-password is for -dry-run: clone itself always sets the password")
 	}
+	if *timeLimit < 0 || (*timeLimit > 0 && *dryRun) {
+		return errors.New("-time-limit is a positive duration (15m), for a clone that writes")
+	}
 	mode, err := progress.ParseMode(*progressMode)
 	if err != nil {
 		return err
@@ -233,6 +245,7 @@ func runClone(ctx context.Context, args []string, out io.Writer) error {
 	defer s.Close()
 	askBeforeWriting(s, *yes)
 	s.WithPassword = *withPassword
+	s.TimeLimit = *timeLimit
 	lt := s.Cfg.Target.Lab
 	if lt.OnEC2() {
 		lt = nil // a Windows Server reached through its tunnel at [target] url: written as any server is

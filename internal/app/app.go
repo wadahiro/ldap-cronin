@@ -10,6 +10,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/wadahiro/ldap-cronin/internal/config"
 	"github.com/wadahiro/ldap-cronin/internal/directory"
@@ -82,6 +83,11 @@ type Session struct {
 	WithPassword bool
 	// Progress, when set, is told how far clone and diff are.
 	Progress *progress.Bar
+	// TimeLimit, when set, stops clone before the first object it would start after it (clone.ErrTimeLimit), so
+	// a session that ends after a while (a cloud shell) runs it in slices; a native import resumes where it stopped.
+	TimeLimit time.Duration
+	// clock is the time (nil: time.Now), for the tests.
+	clock func() time.Time
 
 	secrets Secrets
 	dial    Dialer
@@ -386,4 +392,32 @@ func (s *Session) Target(ctx context.Context) (directory.Directory, func(), erro
 		}
 	}
 	return dst.View(s.Job.Profile.Ranged), dst.Close, nil
+}
+
+func (s *Session) now() time.Time {
+	if s.clock != nil {
+		return s.clock()
+	}
+	return time.Now()
+}
+
+// deadline is when clone stops (TimeLimit from now), zero for none.
+func (s *Session) deadline() time.Time {
+	if s.TimeLimit <= 0 {
+		return time.Time{}
+	}
+	return s.now().Add(s.TimeLimit)
+}
+
+// dumpMeta is the header of the dump the session reads, ok=false for a server.
+func (s *Session) dumpMeta() (ldifdir.Meta, bool) {
+	ro, ok := s.src.(readOnlyConn)
+	if !ok {
+		return ldifdir.Meta{}, false
+	}
+	d, ok := ro.conn.(*ldifdir.Dir)
+	if !ok {
+		return ldifdir.Meta{}, false
+	}
+	return d.Meta(), true
 }

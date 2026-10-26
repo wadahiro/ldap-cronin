@@ -76,6 +76,9 @@ type wireResponse struct {
 	DBCheck       string `json:"dbcheck"`
 	FastPasswords int    `json:"fast_passwords"`
 	ServerAttrs   int    `json:"server_attributes"`
+
+	Keys  []string `json:"keys"`
+	Stale bool     `json:"stale"`
 }
 
 // NativeFinish is the result of the post-import cleanup (RID allocation, dbcheck).
@@ -335,6 +338,76 @@ func (n *Native) Finish(ctx context.Context) (NativeFinish, error) {
 	n.finished = true
 	return NativeFinish{MaxRID: resp.MaxRID, RIDNext: resp.RIDNext, DBCheck: resp.DBCheck, FastPasswords: resp.FastPasswords,
 		ServerAttributes: resp.ServerAttrs}, nil
+}
+
+// FinishSlice is Finish at the end of a slice of an import done in slices (clone -time-limit): the RID allocation is
+// advanced, so the lab can be used and snapshotted as it is, and dbcheck is left to the slice that completes it.
+func (n *Native) FinishSlice(ctx context.Context) (NativeFinish, error) {
+	resp, err := n.call(ctx, map[string]any{"op": "finish", "dbcheck": false})
+	if err != nil {
+		return NativeFinish{}, err
+	}
+	n.finished = true
+	return NativeFinish{MaxRID: resp.MaxRID, RIDNext: resp.RIDNext, FastPasswords: resp.FastPasswords, ServerAttributes: resp.ServerAttrs}, nil
+}
+
+// NativeJournal records what an import done in slices has finished, in the lab's volume: a snapshot of the lab
+// carries exactly the progress its data has, which a file beside it (in a home directory that outlives the lab)
+// would not.
+type NativeJournal struct {
+	n       *Native
+	done    map[string]bool
+	pending []string
+	// Stale is set when the lab held a journal of another source or config, which was dropped.
+	Stale bool
+}
+
+// journalFlush is how many keys are sent at once; a key not yet sent is only compared again by the next run.
+const journalFlush = 500
+
+// Journal reads the lab's journal for fingerprint (the source and config it is valid for), or starts one.
+func (n *Native) Journal(ctx context.Context, fingerprint string) (*NativeJournal, error) {
+	resp, err := n.call(ctx, map[string]any{"op": "journal_load", "fingerprint": fingerprint})
+	if err != nil {
+		return nil, err
+	}
+	j := &NativeJournal{n: n, done: make(map[string]bool, len(resp.Keys)), Stale: resp.Stale}
+	for _, k := range resp.Keys {
+		j.done[k] = true
+	}
+	return j, nil
+}
+
+// Len is how many keys the lab's journal held when it was read.
+func (j *NativeJournal) Len() int { return len(j.done) }
+
+func (j *NativeJournal) Has(key string) bool { return j.done[key] }
+
+func (j *NativeJournal) Mark(ctx context.Context, key string) error {
+	j.pending = append(j.pending, key)
+	if len(j.pending) < journalFlush {
+		return nil
+	}
+	return j.Flush(ctx)
+}
+
+// Flush sends the keys not yet sent.
+func (j *NativeJournal) Flush(ctx context.Context) error {
+	if len(j.pending) == 0 {
+		return nil
+	}
+	if _, err := j.n.call(ctx, map[string]any{"op": "journal_add", "keys": j.pending}); err != nil {
+		return err
+	}
+	j.pending = j.pending[:0]
+	return nil
+}
+
+// Clear removes the journal: the import is complete, and a later one compares everything again.
+func (j *NativeJournal) Clear(ctx context.Context) error {
+	j.pending = nil
+	_, err := j.n.call(ctx, map[string]any{"op": "journal_clear"})
+	return err
 }
 
 // Close ends the helper and resumes the lab that was stopped. It runs to the end even when ctx is cancelled, since

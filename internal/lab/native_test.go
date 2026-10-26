@@ -135,6 +135,42 @@ func TestNativeFinishRunsBeforeTheLabIsRestarted(t *testing.T) {
 	}
 }
 
+// The journal of an import done in slices outlives the helper (it is in the lab's volume) for the same
+// fingerprint, is dropped for another, and the end of a slice advances the RIDs without dbcheck.
+func TestNativeJournalOutlivesASliceAndOnlyForItsFingerprint(t *testing.T) {
+	ctx := context.Background()
+	fx := newLabFixture(t)
+	fx.up("ad.example.com")
+	n, err := fx.l.OpenNative(ctx, NativeOptions{})
+	must(t, err)
+	j, err := n.Journal(ctx, "fp-1")
+	must(t, err)
+	must(t, j.Mark(ctx, "object cn=a"))
+	if fx.d.helper.journalKeys != nil {
+		t.Fatal("a mark is buffered until a flush")
+	}
+	must(t, j.Flush(ctx))
+	res, err := n.FinishSlice(ctx)
+	if err != nil || res.MaxRID != 1234 || res.DBCheck != "" {
+		t.Fatalf("%+v %v", res, err)
+	}
+	must(t, n.Close(ctx))
+
+	n, err = fx.l.OpenNative(ctx, NativeOptions{})
+	must(t, err)
+	if j, err = n.Journal(ctx, "fp-1"); err != nil || !j.Has("object cn=a") || j.Stale {
+		t.Fatalf("the same fingerprint: %v %+v", err, j)
+	}
+	if j, err = n.Journal(ctx, "fp-2"); err != nil || j.Has("object cn=a") || !j.Stale {
+		t.Fatalf("another fingerprint: %v %+v", err, j)
+	}
+	must(t, j.Clear(ctx))
+	if _, err := n.Finish(ctx); err != nil {
+		t.Fatal(err)
+	}
+	must(t, n.Close(ctx))
+}
+
 func TestNativeRestartsTheLabWhenTheSelfCheckFails(t *testing.T) {
 	fx := newLabFixture(t)
 	fx.up("ad.example.com")

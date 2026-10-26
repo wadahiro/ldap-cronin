@@ -2,8 +2,13 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"github.com/wadahiro/ldap-cronin/internal/clone"
@@ -87,12 +92,49 @@ func (s *Session) Native(ctx context.Context, l *lab.Lab, opts lab.NativeOptions
 		fmt.Fprintf(s.Warn, "note: a native import keeps the identifiers, so no mapping (%s) is recorded; diff matches them directly\n", s.Cfg.Mapping.File)
 	}
 	// One worker: the helper handles one request at a time anyway.
-	report, err = clone.Run(ctx, s.Src, n, s.Job, clone.Options{UserPassword: password, Workers: 1, Native: true, Progress: s.Progress}, out)
+	opt := clone.Options{UserPassword: password, Workers: 1, Native: true, Progress: s.Progress, Now: s.now}
+	var journal *lab.NativeJournal
+	if fp, ok := s.journalFingerprint(); ok {
+		if journal, err = n.Journal(ctx, fp); err != nil {
+			return nil, err
+		}
+		if journal.Stale {
+			fmt.Fprintln(out, "note: the lab's journal was of another dump or config: it was dropped, and every object is compared")
+		}
+		if journal.Len() > 0 {
+			fmt.Fprintf(out, "resuming: the lab's journal holds %d objects and reference passes an earlier run finished; they are skipped\n", journal.Len())
+		}
+		opt.Journal = journal
+	} else if s.TimeLimit > 0 {
+		fmt.Fprintln(s.Warn, "note: the source is a server, which may change between runs, so a run after -time-limit compares every object again (from a dump it goes on where it stopped)")
+	}
+	opt.Deadline = s.deadline()
+	report, err = clone.Run(ctx, s.Src, n, s.Job, opt, out)
+	if journal != nil {
+		// Kept also after a failure or an interruption: what is recorded is done.
+		if ferr := journal.Flush(context.WithoutCancel(ctx)); ferr != nil && err == nil {
+			err = ferr
+		}
+	}
+	if errors.Is(err, clone.ErrTimeLimit) {
+		res, ferr := n.FinishSlice(ctx)
+		if ferr != nil {
+			return report, fmt.Errorf("post-slice cleanup (RID update) failed: %w", ferr)
+		}
+		fmt.Fprintf(out, "native: %s\n", res.Summary())
+		return report, err
+	}
 	if err != nil {
 		return report, err
 	}
 	if opts.ACL {
 		if err := s.nativeACLs(ctx, n, src.Root, out); err != nil {
+			return report, err
+		}
+	}
+	// Complete: the next import compares everything again (the source may have been dumped anew).
+	if journal != nil {
+		if err := journal.Clear(ctx); err != nil {
 			return report, err
 		}
 	}
@@ -187,4 +229,28 @@ func reverseDNs(in []string) []string {
 		out[len(in)-1-i] = v
 	}
 	return out
+}
+
+// journalFingerprint identifies the dump and the config a native import's journal is valid for: what an earlier
+// run finished is done only for the same entries written the same way. A server may change between runs, so it
+// has none (ok=false). The fixed password is left out, the config being hashed as a whole.
+func (s *Session) journalFingerprint() (string, bool) {
+	m, ok := s.dumpMeta()
+	if !ok {
+		return "", false
+	}
+	cfg := *s.Cfg
+	cfg.Accounts.FixedPassword = ""
+	b, err := json.Marshal(cfg)
+	if err != nil {
+		return "", false
+	}
+	h := sha256.New()
+	h.Write(b)
+	size := int64(-1)
+	if st, err := os.Stat(s.Cfg.Source.LDIF); err == nil {
+		size = st.Size()
+	}
+	fmt.Fprintf(h, "\n%s\n%s\n%d\n%d", m.Server, m.DumpedAt, m.Entries, size)
+	return hex.EncodeToString(h.Sum(nil)), true
 }

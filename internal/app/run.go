@@ -25,7 +25,7 @@ const (
 // Clone adds and updates the target. With dryRun it connects nowhere but the source and writes LDIF to out.
 // Progress goes to log (standard error for a dry-run, so its standard output can be passed to ldapmodify).
 func (s *Session) Clone(ctx context.Context, dryRun bool, out, log io.Writer) (*clone.Report, error) {
-	opt := clone.Options{UserPassword: "<fixed-password>", Workers: s.Cfg.Run.Workers, Progress: s.Progress, DryRun: dryRun}
+	opt := clone.Options{UserPassword: "<fixed-password>", Workers: s.Cfg.Run.Workers, Progress: s.Progress, DryRun: dryRun, Now: s.now}
 	mode, attr, err := s.Cfg.MappingFor(s.Job.Profile)
 	if err != nil {
 		return nil, err
@@ -90,6 +90,7 @@ func (s *Session) Clone(ctx context.Context, dryRun bool, out, log io.Writer) (*
 			}
 		}
 	}
+	opt.Deadline = s.deadline() // from here: the time asking took is not the run's
 	report, err := clone.Run(ctx, s.Src, dst, job, opt, log)
 	// Closed even after a failure or an interruption: every pair recorded so far is kept, and a re-run continues.
 	if opt.Mapping != nil {

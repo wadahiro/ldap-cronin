@@ -284,6 +284,36 @@ ldap-cronin diff -config config.toml      # matches objects by objectGUID direct
   users got the hash directly.
 - `diff` switches to matching by `objectGUID` automatically when the `objectGUID` is the same on both sides; the summary shows `rename/move check: on (objectGUID preserved ...)`. The decision uses the `objectGUID` of the first object `diff` compares under `base_dn`, found with the configured filters (`base_dn` itself only when nothing is under it, because a container that exists in the lab from the start, such as `CN=Users`, has the lab's own `objectGUID`). **The domain GUID alone is not enough**: after a plain LDAP `clone` into a lab made by `lab up --config`, the domain GUID matches but the objects' GUIDs differ.
 
+### Importing in slices (`-time-limit`)
+
+A large import can outlast the session it runs in (a cloud shell closes an idle session, and its docker data goes
+with it). `clone -time-limit 15m` stops before the first object it would start after 15 minutes, with exit code 3:
+everything it wrote is complete, object by object, and running `clone` again goes on.
+
+```sh
+until ldap-cronin clone -config config.toml -y -time-limit 15m; do
+  [ $? -eq 3 ] || break                         # 3: stopped at the limit; anything else is an error
+  ldap-cronin lab snapshot slice --force         # what is done so far, kept outside the session
+done
+```
+
+- From a dump (`[source] ldif`), the import keeps a journal in the lab's volume of the objects it finished (and
+  of their references), and the next run skips them without reading the lab again: its summary says how many
+  (`skipped, done by an earlier run`). Being in the volume, a snapshot carries exactly the journal of its data,
+  so a lab restored from an older snapshot resumes from that snapshot's progress. The journal is valid for the same
+  dump and the same config only; with another it is dropped and every object is compared. It is removed when an
+  import completes.
+- From a server there is no journal (it may change between runs): the next run compares every object again.
+- The end of a slice advances the RID allocation (the lab can be used and snapshotted as it is); `dbcheck`, which
+  reads the whole database, runs once, at the end of the slice that completes the import. So do the ACLs
+  (`[target.lab] acl = "source"`).
+- An interrupted import (Ctrl-C, a lost session) keeps the journal too, but its last object may be half done:
+  the next run compares that one and completes it.
+- Done means done for the lab: do not write the lab between slices (a test run, a hand edit), or that object is
+  not compared again until a complete import has removed the journal.
+- The summary of every `clone` ends with how long each phase took (`time: reading the source 42s, OUs and parents 3s, user
+  12m4s, ...`), to see where a slow run spends its time.
+
 ### Limitations (read these)
 
 - **Samba only.** It cannot be used with a real AD (Windows AD does not let you create an object with a chosen `objectGUID`, either over LDAP or directly).

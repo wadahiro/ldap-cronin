@@ -6,9 +6,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -24,9 +26,11 @@ import (
 	"github.com/wadahiro/ldap-cronin/internal/diff"
 	"github.com/wadahiro/ldap-cronin/internal/directory"
 	"github.com/wadahiro/ldap-cronin/internal/dn"
+	"github.com/wadahiro/ldap-cronin/internal/dump"
 	"github.com/wadahiro/ldap-cronin/internal/identity"
 	"github.com/wadahiro/ldap-cronin/internal/lab"
 	"github.com/wadahiro/ldap-cronin/internal/ldapdir"
+	"github.com/wadahiro/ldap-cronin/internal/profile"
 )
 
 // Samba-only native import: create a lab with the same domain SID and GUID as the source, and import including objectGUID and objectSid.
@@ -303,6 +307,51 @@ func TestNativeImportKeepsObjectGUIDAndObjectSid(t *testing.T) {
 		t.Fatal("another password must be refused")
 	}
 
+	// An import from a dump that stops midway keeps what it finished in the lab's journal: the next one skips it,
+	// adds the rest and removes the journal. An OU of its own, which the imports above did not touch, and before the
+	// lab creates an object of its own, whose RID the source's new objects could take.
+	slice := "OU=Slice," + cloneBase
+	must(src.Add(context.Background(), directory.Entry{DN: slice, Attrs: map[string][]string{"objectClass": {"organizationalUnit"}, "ou": {"Slice"}}}))
+	for i := range 5 {
+		must(src.Add(context.Background(), directory.Entry{DN: fmt.Sprintf("CN=Slice %d,%s", i, slice),
+			Attrs: map[string][]string{"objectClass": {"user"}, "sAMAccountName": {fmt.Sprintf("slice%d", i)}}}))
+	}
+	var dumped bytes.Buffer
+	_, err = dump.Write(context.Background(), src, profile.AD, dump.Options{BaseDNs: []string{slice}, Server: "ldaps://source", Version: "e2e"}, &dumped)
+	must(err)
+	dumpPath := filepath.Join(t.TempDir(), "slice.ldif")
+	must(os.WriteFile(dumpPath, dumped.Bytes(), 0o600))
+	sliceCfg, err := config.Parse([]byte(fmt.Sprintf("[source]\nldif = %q\n"+
+		"[target]\nurl = \"ldaps://%s:%d\"\nbind_dn = %q\ninsecure_skip_verify = true\n"+
+		"[target.lab]\nprefix = %q\nimage = %q\nnative = true\n[scope]\nbase_dn = %q\n", dumpPath, host, dstLDAPS, admin, dstLab.Prefix, image, slice)))
+	must(err)
+	sliced, err := app.Open(context.Background(), sliceCfg, app.Secrets{SourceBind: pw, TargetBind: pw, UserPassword: func() (string, error) { return fixed, nil }}, app.LDAP, &bytes.Buffer{})
+	must(err)
+	defer sliced.Close()
+	stopped, stop := context.WithCancel(context.Background())
+	interrupt := &stopAfterAdds{left: 2, stop: stop}
+	if _, err := sliced.CloneLab(stopped, dstLab, interrupt, interrupt); !errors.Is(err, context.Canceled) {
+		t.Fatalf("the interrupted import: %v\n%s", err, interrupt.log.String())
+	}
+	journal := func() bool {
+		return exec.Command("docker", "exec", dstLab.Name(), "test", "-f", "/var/lib/samba/ldap-cronin-journal").Run() == nil
+	}
+	if !journal() {
+		t.Fatal("the interrupted import left no journal in the lab")
+	}
+	var resumed bytes.Buffer
+	sliceRep, err := sliced.CloneLab(context.Background(), dstLab, &resumed, &resumed)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, resumed.String())
+	}
+	if sliceRep.Resumed < 1 || sliceRep.Added != 3 || !strings.Contains(resumed.String(), "resuming: the lab's journal holds") || journal() {
+		t.Fatalf("the resumed import: %+v, journal left %v\n%s", sliceRep, journal(), resumed.String())
+	}
+	// The imports stopped and restarted the lab.
+	dst.Close()
+	dst, err = dialAs(dstLDAPS, admin, password)
+	must(err)
+
 	// A user created over LDAP after the import does not collide with the imported RIDs.
 	conn, err := ldap.DialURL(fmt.Sprintf("ldaps://%s:%d", host, dstLDAPS), ldap.DialWithTLSConfig(&tls.Config{InsecureSkipVerify: true}))
 	must(err)
@@ -379,4 +428,22 @@ func TestNativeImportKeepsObjectGUIDAndObjectSid(t *testing.T) {
 	if g1 == nil || strings.Join(g1.Values("objectGUID"), "") != strings.Join(g2.Values("objectGUID"), "") {
 		t.Fatalf("restore must keep the objectGUID: %+v / %+v", g1, g2)
 	}
+
+}
+
+// stopAfterAdds is a log that cancels the run once it has said it added left entries.
+type stopAfterAdds struct {
+	left int
+	stop context.CancelFunc
+	log  bytes.Buffer
+}
+
+func (w *stopAfterAdds) Write(p []byte) (int, error) {
+	w.log.Write(p)
+	if w.left > 0 && bytes.Contains(p, []byte("add    CN=Slice")) {
+		if w.left--; w.left == 0 {
+			w.stop()
+		}
+	}
+	return len(p), nil
 }

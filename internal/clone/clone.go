@@ -11,6 +11,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/wadahiro/ldap-cronin/internal/directory"
 	"github.com/wadahiro/ldap-cronin/internal/dn"
@@ -47,7 +48,24 @@ type Options struct {
 	// DryRun says the target is the LDIF of a dry-run, which holds only what the run wrote: a built-in group (Domain
 	// Admins) is taken to be there, as every domain has it.
 	DryRun bool
+	// Now is the clock the phases are timed by (nil: time.Now).
+	Now func() time.Time
+	// Deadline, when set, stops the run before the first object it would start after it, with ErrTimeLimit: a
+	// session that ends after a while (a cloud shell) runs the clone in slices.
+	Deadline time.Time
+	// Journal, when set, records the objects done, and those it holds are skipped: a run resumed after
+	// ErrTimeLimit does not read the target again for what an earlier one finished.
+	Journal Journal
 }
+
+// Journal records what a run has finished. The keys are opaque; Mark may buffer.
+type Journal interface {
+	Has(key string) bool
+	Mark(ctx context.Context, key string) error
+}
+
+// ErrTimeLimit stops a run at Options.Deadline. What it wrote is complete object by object; running again goes on.
+var ErrTimeLimit = errors.New("the time limit was reached")
 
 // maxWarnings caps the warnings kept and shown, so that a flood of out-of-scope reference targets does not exhaust memory with warnings.
 const maxWarnings = 1000
@@ -80,16 +98,37 @@ type Report struct {
 	Placeholders int
 	// Withheld counts, per attribute, the values not written because a replication-conflict leftover shares them
 	// with another object and the target holds each once (plan.Withheld); WithheldWhy says why.
-	Withheld     map[string]int
-	WithheldWhy  string
+	Withheld    map[string]int
+	WithheldWhy string
+	// Resumed counts the objects (and the reference passes of objects) an earlier run finished, which the journal
+	// let this one skip.
+	Resumed      int
 	WarningCount int
 	Warnings     []string // first maxWarnings only
+	// Took is how long each phase took, in order, so a slow run says where its time went.
+	Took []PhaseTime
+}
+
+// PhaseTime is how long one phase of a run took.
+type PhaseTime struct {
+	Name string
+	Took time.Duration
 }
 
 // WriteSummary prints the counts of a run: what was written, and what was cloned from outside the scope or not
 // cloned at all, so a tester knows what the target holds.
 func (rep *Report) WriteSummary(w io.Writer) {
 	fmt.Fprintf(w, "\nadded=%d updated=%d unchanged=%d warnings=%d\n", rep.Added, rep.Updated, rep.Unchanged, rep.WarningCount)
+	if rep.Resumed > 0 {
+		fmt.Fprintf(w, "skipped, done by an earlier run (the journal): %d\n", rep.Resumed)
+	}
+	if len(rep.Took) > 0 {
+		parts := make([]string, len(rep.Took))
+		for i, t := range rep.Took {
+			parts[i] = fmt.Sprintf("%s %s", t.Name, t.Took.Round(time.Second))
+		}
+		fmt.Fprintf(w, "time: %s\n", strings.Join(parts, ", "))
+	}
 	if rep.Referenced > 0 {
 		plan.WriteCounts(w, "referenced objects outside the scope cloned", rep.ReferencedKinds)
 	}
@@ -155,6 +194,18 @@ type runner struct {
 	withheld   *plan.Withheld   // the values the target would refuse (see Run)
 	refs       *plan.Classifier
 	done       map[string]*onceErr // see once
+	// phase is the phase being timed since since (lap).
+	phase string
+	since time.Time
+}
+
+// lap ends the phase being timed, recording how long it took, and starts next ("" starts none).
+func (r *runner) lap(next string) {
+	now := r.opt.Now()
+	if r.phase != "" {
+		r.report.Took = append(r.report.Took, PhaseTime{Name: r.phase, Took: now.Sub(r.since)})
+	}
+	r.phase, r.since = next, now
 }
 
 // errSkipped means an entry was not created and a warning says why; the run goes on.
@@ -173,6 +224,10 @@ func Run(ctx context.Context, src, dst directory.Directory, job plan.Job, opt Op
 			read.Extra = job.Profile.Preserve.Operational
 		}
 	}
+	if opt.Now == nil {
+		opt.Now = time.Now
+	}
+	started := opt.Now()
 	opt.Progress.Phase("reading the source", -1)
 	if err := plan.CheckTargetSchema(ctx, src, dst, job); err != nil {
 		return nil, err
@@ -192,7 +247,9 @@ func Run(ctx context.Context, src, dst directory.Directory, job plan.Job, opt Op
 	}
 	r := &runner{dst: dst, opt: opt, out: out, prof: job.Profile, skipped: map[string]bool{}, done: map[string]*onceErr{},
 		unwrote: map[string]bool{}, report: Report{ReferencedKinds: map[string]int{}, Unwritten: map[string]int{}, Unheld: map[string]int{}, ACEsLeftOut: map[string]int{}, SDValues: map[string]int{}},
-		aclOn: job.ACL == plan.ACLTranslated && !opt.Native, leftOut: map[string]bool{}, withheld: withheld}
+		aclOn: job.ACL == plan.ACLTranslated && !opt.Native, leftOut: map[string]bool{}, withheld: withheld,
+		phase: "reading the source", since: started}
+	defer r.lap("")
 	if len(withheld.Values) > 0 {
 		r.report.Withheld, r.report.WithheldWhy = map[string]int{}, withheld.Why
 	}
@@ -211,6 +268,7 @@ func Run(ctx context.Context, src, dst directory.Directory, job plan.Job, opt Op
 	if err := r.run(ctx, p); err != nil {
 		return &r.report, err
 	}
+	r.lap("counting what is not cloned")
 	nc, err := p.Unselected(ctx)
 	r.report.NotCloned = nc
 	return &r.report, err
@@ -234,6 +292,7 @@ func (r *runner) run(ctx context.Context, p *plan.Plan) error {
 		phases++
 	}
 	bar.Phases(phases)
+	r.lap("OUs and parents")
 	bar.Phase("OUs and parents", len(p.Containers))
 	if err := p.EachLevel(ctx, r.opt.Workers, func(ctx context.Context, n plan.Node) error {
 		defer bar.Add(1)
@@ -242,6 +301,7 @@ func (r *runner) run(ctx context.Context, p *plan.Plan) error {
 		return err
 	}
 	for _, k := range p.Leaves() {
+		r.lap(k.Name)
 		bar.Phase(k.Name, p.LeafCount(k))
 		if err := p.EachLeafOf(ctx, r.opt.Workers, k, func(ctx context.Context, k *plan.Kind, e directory.Entry) error {
 			defer bar.Add(1)
@@ -250,9 +310,11 @@ func (r *runner) run(ctx context.Context, p *plan.Plan) error {
 			return err
 		}
 	}
+	r.lap("references")
 	if err := r.references(ctx, p); err != nil {
 		return err
 	}
+	r.lap("primary groups, groups outside the scope, ACLs")
 	// Before the holders: AD refuses a member value naming an account whose primary group the group is, so an
 	// account leaves Domain Users as its primary group before it is added to Domain Users' member.
 	if err := r.primaryGroups(ctx, p); err != nil {
@@ -438,7 +500,66 @@ func (r *runner) unheld(h plan.Holder, why string) error {
 	return nil
 }
 
+// timeUp is ErrTimeLimit once the deadline has passed.
+func (r *runner) timeUp() error {
+	if !r.opt.Deadline.IsZero() && !r.opt.Now().Before(r.opt.Deadline) {
+		return ErrTimeLimit
+	}
+	return nil
+}
+
+// skip reports whether the journal holds key, counting it as resumed.
+func (r *runner) skip(key string) bool {
+	if r.opt.Journal == nil || !r.opt.Journal.Has(key) {
+		return false
+	}
+	r.count(func(rep *Report) { rep.Resumed++ })
+	return true
+}
+
+// mark records key as done in the journal.
+func (r *runner) mark(ctx context.Context, key string) error {
+	if r.opt.Journal == nil {
+		return nil
+	}
+	return r.opt.Journal.Mark(ctx, key)
+}
+
+// leaf writes one entry of a kind, unless the journal says an earlier run did: then only what the later passes need
+// of it is noted.
 func (r *runner) leaf(ctx context.Context, k *plan.Kind, e directory.Entry) error {
+	if err := r.timeUp(); err != nil {
+		return err
+	}
+	key := "object " + dn.Normalize(e.DN)
+	if r.skip(key) {
+		r.withACL(e.DN)
+		r.withSDValues(e)
+		if k.Account {
+			r.notePrimary(e)
+		}
+		return nil
+	}
+	if err := r.writeLeaf(ctx, k, e); err != nil {
+		return err
+	}
+	return r.mark(ctx, key)
+}
+
+// notePrimary notes an account whose primary group is not its type's default, for primaryGroups.
+func (r *runner) notePrimary(e directory.Entry) {
+	pg := r.prof.PrimaryGroup
+	if pg == nil {
+		return
+	}
+	if rid := strings.TrimSpace(first(e.Values(pg.Attr()))); rid != "" && rid != pg.Default(e) {
+		r.mu.Lock()
+		r.primary = append(r.primary, primaryOf{dn: e.DN, rid: rid})
+		r.mu.Unlock()
+	}
+}
+
+func (r *runner) writeLeaf(ctx context.Context, k *plan.Kind, e directory.Entry) error {
 	var account profile.Account
 	if k.Account {
 		account = r.prof.Account
@@ -465,13 +586,7 @@ func (r *runner) leaf(ctx context.Context, k *plan.Kind, e directory.Entry) erro
 	if err != nil {
 		return fmt.Errorf("%s: %w", e.DN, err)
 	}
-	if pg := r.prof.PrimaryGroup; pg != nil {
-		if rid := strings.TrimSpace(first(e.Values(pg.Attr()))); rid != "" && rid != pg.Default(e) {
-			r.mu.Lock()
-			r.primary = append(r.primary, primaryOf{dn: e.DN, rid: rid})
-			r.mu.Unlock()
-		}
-	}
+	r.notePrimary(e)
 	if len(changed) > 0 {
 		r.count(func(rep *Report) { rep.Updated++ })
 		r.logf("update %s (%s)\n", e.DN, strings.Join(changed, ", "))
@@ -749,10 +864,17 @@ func (r *runner) references(ctx context.Context, p *plan.Plan) error {
 			return p.WalkRefs(ctx, k, names, emit)
 		}, func(ctx context.Context, e directory.Entry) error {
 			defer r.opt.Progress.Add(1)
+			if err := r.timeUp(); err != nil {
+				return err
+			}
 			r.mu.Lock()
 			skipped := r.skipped[dn.Normalize(e.DN)]
 			r.mu.Unlock()
 			if skipped {
+				return nil
+			}
+			key := "references " + dn.Normalize(e.DN)
+			if r.skip(key) {
 				return nil
 			}
 			for _, name := range names {
@@ -795,7 +917,7 @@ func (r *runner) references(ctx context.Context, p *plan.Plan) error {
 					return err
 				}
 			}
-			return nil
+			return r.mark(ctx, key)
 		})
 		if err != nil {
 			return err
