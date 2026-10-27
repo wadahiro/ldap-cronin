@@ -68,6 +68,20 @@ type Clash struct {
 	ImpliedHow string
 }
 
+// ValuesOf are the values withheld from the entry at d.
+func (w *Withheld) ValuesOf(d string) []WithheldValue {
+	if w == nil || w.values[dn.Normalize(d)] == nil {
+		return nil
+	}
+	var out []WithheldValue
+	for _, v := range w.Values {
+		if dn.Equal(v.DN, d) {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
 // Strip returns e without the values withheld from it, and the attributes it took values from.
 func (w *Withheld) Strip(e directory.Entry) (directory.Entry, []string) {
 	if w == nil || len(w.values) == 0 {

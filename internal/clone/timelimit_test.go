@@ -107,3 +107,36 @@ func (t *ticker) Add(ctx context.Context, e directory.Entry, c ...directory.Cont
 	}
 	return t.Directory.Add(ctx, e, c...)
 }
+
+// A value withheld from an entry an earlier run wrote is not warned of again by a resumed run, which skips it.
+func TestAResumedRunWarnsOnlyOfTheValuesItWithholds(t *testing.T) {
+	ctx := context.Background()
+	src := seedSource()
+	leftover := `CN=Alice\0ACNF:0f0e0d0c-0b0a-0908-0706-050403020100,OU=Tokyo,OU=Users,` + base
+	src.Lookup(alice).Attrs["userPrincipalName"] = []string{"alice@ad.example.com"}
+	src.Put(leftover, map[string][]string{"objectClass": {"top", "person", "organizationalPerson", "user"}, "cn": {"Alice\nCNF:0f0e0d0c-0b0a-0908-0706-050403020100"},
+		"sAMAccountName": {"$DUPLICATE-1f4"}, "userPrincipalName": {"alice@ad.example.com"}, "userAccountControl": {"512"}})
+	job := options(t, "ou", "group", "user")
+	for name, c := range map[string]struct {
+		done bool
+		warn bool
+	}{"first run": {false, true}, "resumed": {true, false}} {
+		t.Run(name, func(t *testing.T) {
+			dst := fakedir.New(domain)
+			dst.Put("", map[string][]string{"vendorName": {"Samba Team (https://www.samba.org)"}})
+			journal := memJournal{}
+			if c.done {
+				journal["object "+dn.Normalize(leftover)] = true
+			}
+			var log bytes.Buffer
+			rep, err := Run(ctx, src, dst, job, Options{UserPassword: "pw", Workers: 1, Journal: journal}, &log)
+			if err != nil {
+				t.Fatalf("%v\n%s", err, log.String())
+			}
+			warned := strings.Contains(log.String(), "not written: userPrincipalName")
+			if warned != c.warn || (rep.Withheld["userPrincipalName"] == 1) != c.warn {
+				t.Fatalf("warned %v, withheld %+v\n%s", warned, rep.Withheld, log.String())
+			}
+		})
+	}
+}

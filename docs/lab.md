@@ -289,7 +289,9 @@ ldap-cronin diff -config config.toml      # matches objects by objectGUID direct
 
 A large import can outlast the session it runs in (a cloud shell closes an idle session, and its docker data goes
 with it). `clone -time-limit 15m` stops before the first object it would start after 15 minutes, with exit code 3:
-everything it wrote is complete, object by object, and running `clone` again goes on. With `-backup <dir>`, the
+everything it wrote is complete, object by object, and running `clone` again goes on. The 15 minutes count from the
+start of the run (after the question), reading the source included, as a session's time does; the summary's
+`time:` line says how long the reading took. With `-backup <dir>`, the
 lab is snapshotted into `dir` after each run (one stopped at the limit or complete), and a run that finds no lab
 restores it from the latest backup there first: the same command goes on from any session.
 

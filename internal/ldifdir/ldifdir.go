@@ -15,7 +15,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"hash/maphash"
 	"io"
 	"os"
 	"sort"
@@ -49,23 +48,36 @@ type Meta struct {
 type Dir struct {
 	meta        Meta
 	f           *os.File
-	temp        string // the expanded copy of a compressed dump, removed by Close
-	seed        maphash.Seed
-	index       map[uint64][]int64 // hash of the normalized DN -> where its entries start (a collision lists both)
+	temp        string         // the expanded copy of a compressed dump, removed by Close
+	recs        []rec          // every entry, in the dump's order (index.go)
+	byKey       map[string]int // normalized DN -> its rec
+	ids         map[string]uint16
 	operational map[string]bool
 	// contexts are the normalized naming contexts of the root DSE, longest first: a search does not leave the one
 	// its base is in, as a server's does not (a whole domain's search never returns the configuration partition).
 	contexts []string
 	match    *matcher
+	progress Progress
 }
 
 // Open reads the dump at path, gzip-compressed when it ends in .gz, and indexes it.
-func Open(path string) (*Dir, error) {
+func Open(path string) (*Dir, error) { return OpenWith(path, nil) }
+
+// Progress is told how far opening a dump is: stage ("expanding" a compressed one, then "indexing") and the bytes
+// done of total. It is called often; the caller decides how often to show it.
+type Progress func(stage string, done, total int64)
+
+// OpenWith is Open telling progress (nil: nothing) how far it is: a large dump takes minutes on a small CPU, which
+// would otherwise pass in silence.
+func OpenWith(path string, progress Progress) (*Dir, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
-	d := &Dir{f: f, seed: maphash.MakeSeed(), index: map[uint64][]int64{}, operational: map[string]bool{}}
+	if progress == nil {
+		progress = func(string, int64, int64) {}
+	}
+	d := &Dir{f: f, byKey: map[string]int{}, ids: map[string]uint16{}, operational: map[string]bool{}, progress: progress}
 	if strings.HasSuffix(path, ".gz") {
 		if err := d.expand(); err != nil {
 			d.Close()
@@ -81,7 +93,11 @@ func Open(path string) (*Dir, error) {
 
 // expand writes the uncompressed dump to a temporary file and reads that instead.
 func (d *Dir) expand() error {
-	z, err := gzip.NewReader(d.f)
+	var total int64
+	if st, err := d.f.Stat(); err == nil {
+		total = st.Size()
+	}
+	z, err := gzip.NewReader(&countingReader{r: d.f, n: func(n int64) { d.progress("expanding", n, total) }})
 	if err != nil {
 		return err
 	}
@@ -124,18 +140,25 @@ func (d *Dir) scan() error {
 	var list *[]string
 	n := 0
 	categories := map[string]string{}
+	// What the scan needs of an entry beyond the index: the naming contexts, and the categories classes give.
+	scanned := map[string]bool{"namingcontexts": true, "objectclass": true, "ldapdisplayname": true, "defaultobjectcategory": true}
+	var size int64
+	if st, err := d.f.Stat(); err == nil {
+		size = st.Size()
+	}
 	err := d.records(0, func(at int64, lines []string) (bool, error) {
-		e, err := parseEntry(lines)
+		d.progress("indexing", at, size)
+		e, err := parseEntryOf(lines, scanned)
 		if err != nil {
 			return false, err
 		}
-		h := d.key(e.DN)
-		for _, prev := range d.index[h] {
-			if other, err := d.readAt(prev); err == nil && dn.Equal(other.DN, e.DN) {
-				return false, fmt.Errorf("%s is in the dump twice", e.DN)
-			}
+		r := d.indexRec(at, e.DN, lines)
+		r.key = dn.Normalize(e.DN)
+		if _, dup := d.byKey[r.key]; dup {
+			return false, fmt.Errorf("%s is in the dump twice", e.DN)
 		}
-		d.index[h] = append(d.index[h], at)
+		d.byKey[r.key] = len(d.recs)
+		d.recs = append(d.recs, r)
 		n++
 		if e.DN == "" {
 			for _, nc := range e.Values("namingContexts") {
@@ -246,14 +269,12 @@ func (d *Dir) records(offset int64, fn func(at int64, lines []string) (bool, err
 	}
 }
 
-func (d *Dir) key(entryDN string) uint64 { return maphash.String(d.seed, dn.Normalize(entryDN)) }
-
-// readAt parses the entry that starts at offset.
-func (d *Dir) readAt(offset int64) (*directory.Entry, error) {
+// readAt parses the entry that starts at offset: the attributes in need (lowercase), every one when need is nil.
+func (d *Dir) readAt(offset int64, need map[string]bool) (*directory.Entry, error) {
 	var e *directory.Entry
 	err := d.records(offset, func(_ int64, lines []string) (bool, error) {
 		var err error
-		e, err = parseEntry(lines)
+		e, err = parseEntryOf(lines, need)
 		return false, err
 	}, nil)
 	return e, err
@@ -346,17 +367,41 @@ func (d *Dir) Get(ctx context.Context, entryDN string, attrs []string) (*directo
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	for _, at := range d.index[d.key(entryDN)] {
-		e, err := d.readAt(at)
-		if err != nil {
-			return nil, err
+	i, ok := d.byKey[dn.Normalize(entryDN)]
+	if !ok {
+		return nil, nil
+	}
+	e, err := d.readAt(d.recs[i].at, needed(attrs, nil))
+	if err != nil {
+		return nil, err
+	}
+	p := d.project(e, attrs)
+	return &p, nil
+}
+
+// needed are the attributes (lowercase) to decode for a read of attrs testing want, nil for every one ("*").
+func needed(attrs []string, want map[string]bool) map[string]bool {
+	need := map[string]bool{}
+	for a := range want {
+		need[a] = true
+	}
+	for _, a := range attrs {
+		if a == directory.AllAttrs {
+			return nil
 		}
-		if dn.Equal(e.DN, entryDN) {
-			p := d.project(e, attrs)
-			return &p, nil
+		need[strings.ToLower(a)] = true
+	}
+	return need
+}
+
+// dnOnly reports whether attrs asks for no attribute ("1.1", or nothing named).
+func dnOnly(attrs []string) bool {
+	for _, a := range attrs {
+		if a != directory.NoAttrs {
+			return false
 		}
 	}
-	return nil, nil
+	return true
 }
 
 // Walk streams the entries at base and below that match filter, in the dump's order, reading the file through. The
@@ -368,43 +413,42 @@ func (d *Dir) Walk(ctx context.Context, base, filter string, attrs []string, fn 
 	}
 	baseKey := dn.Normalize(base)
 	baseNC := d.contextOf(baseKey)
-	// Only what the filter tests and what is asked for is decoded: a dump of AD holds large binary values (every
-	// object's descriptor), and a clone walks the file many times.
-	need := filterAttrs(f, map[string]bool{})
-	for _, a := range attrs {
-		if a == directory.AllAttrs {
-			need = nil
-			break
-		}
-		need[strings.ToLower(a)] = true
-	}
-	return d.records(0, func(_ int64, lines []string) (bool, error) {
+	// Only what the filter tests and what is asked for is decoded, of the entries the index cannot rule out.
+	need := needed(attrs, filterAttrs(f, map[string]bool{}))
+	bare := dnOnly(attrs)
+	for i := range d.recs {
 		if err := ctx.Err(); err != nil {
-			return false, err
+			return err
 		}
-		name, entryDN, err := field(lines[0])
+		r := &d.recs[i]
+		if (r.key == "" && baseKey != "") || (r.key != baseKey && baseKey != "" && !strings.HasSuffix(r.key, ","+baseKey)) {
+			continue
+		}
+		if baseNC != "" && d.contextOf(r.key) != baseNC {
+			continue // in another naming context below the base (CN=Configuration under the domain)
+		}
+		outcome := d.eval(f, r)
+		if outcome == no {
+			continue
+		}
+		if outcome == yes && bare {
+			if err := fn(directory.Entry{DN: r.dn, Attrs: map[string][]string{}}); err != nil {
+				return err
+			}
+			continue
+		}
+		e, err := d.readAt(r.at, need)
 		if err != nil {
-			return false, err
+			return err
 		}
-		if !strings.EqualFold(name, "dn") {
-			return false, fmt.Errorf("an entry starts with %q, not dn", lines[0])
+		if outcome == unknown && !d.match.match(f, e) {
+			continue
 		}
-		key := dn.Normalize(entryDN)
-		if (key == "" && baseKey != "") || (key != baseKey && baseKey != "" && !strings.HasSuffix(key, ","+baseKey)) {
-			return true, nil
+		if err := fn(d.project(e, attrs)); err != nil {
+			return err
 		}
-		if baseNC != "" && d.contextOf(key) != baseNC {
-			return true, nil // in another naming context below the base (CN=Configuration under the domain)
-		}
-		e, err := parseEntryOf(lines, need)
-		if err != nil {
-			return false, err
-		}
-		if !d.match.match(f, e) {
-			return true, nil
-		}
-		return true, fn(d.project(e, attrs))
-	}, nil)
+	}
+	return nil
 }
 
 // contextOf is the naming context key (normalized) is in, "" for none the dump knows.
@@ -482,3 +526,17 @@ func first(v []string) string {
 }
 
 var _ directory.Directory = (*Dir)(nil)
+
+// countingReader tells n how many bytes have been read through it.
+type countingReader struct {
+	r    io.Reader
+	done int64
+	n    func(int64)
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	k, err := c.r.Read(p)
+	c.done += int64(k)
+	c.n(c.done)
+	return k, err
+}

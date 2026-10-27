@@ -18,6 +18,10 @@ internal/
   directory/         the operations abstraction (Directory)
   ldapdir/           go-ldap implementation (connection pool, paging, member range retrieval, timeouts)
   dryrun/            Directory that prints writes as LDIF
+  ldifdir/           Directory over a dump: one read when it is opened indexes every entry (where it is, its DN, the
+                     attributes it holds, the values the kinds' filters test), so a walk reads only what the index
+                     cannot rule out; a clone walks the dump a dozen times
+  dump/              writing a dump
   lab/               test labs on docker (Samba4 AD, OpenLDAP; what differs is lab.Server), snapshots and restore (needs only the docker command)
   ad/                AD-only helpers: binary objectGUID / objectSid, the domain identity
   fakedir/           in-memory Directory for tests (behaves like a real server where clone depends on it; see below)

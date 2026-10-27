@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wadahiro/ldap-cronin/internal/config"
 	"github.com/wadahiro/ldap-cronin/internal/directory"
@@ -224,5 +225,19 @@ func TestConfigurationRefsFromADump(t *testing.T) {
 	}
 	if got, want := snapshot(w.dst), snapshot(live.dst); got != want {
 		t.Fatalf("from the dump:\n%s\n\nfrom the source:\n%s", got, want)
+	}
+}
+
+// Opening a large dump says how far it is, at most once an interval.
+func TestOpeningADumpSaysHowFarItIs(t *testing.T) {
+	var out bytes.Buffer
+	now := time.Unix(0, 0)
+	report := dumpProgress(&out, func() time.Time { return now }, 10*time.Second)
+	for i := int64(1); i <= 30; i++ {
+		now = now.Add(time.Second)
+		report("indexing", i<<20, 30<<20)
+	}
+	if got := strings.Count(out.String(), "reading the dump: indexing"); got != 3 || !strings.Contains(out.String(), "33% (10 of 30 MB)") {
+		t.Fatalf("%d lines:\n%s", got, out.String())
 	}
 }

@@ -160,7 +160,7 @@ func openSource(ctx context.Context, cfg *config.Config, secrets Secrets, dial D
 		}
 		return dial(ctx, cfg.Source, pw, sourceConns)
 	}
-	d, err := ldifdir.Open(cfg.Source.LDIF)
+	d, err := ldifdir.OpenWith(cfg.Source.LDIF, dumpProgress(warn, time.Now, 10*time.Second))
 	if err != nil {
 		return nil, err
 	}
@@ -420,4 +420,16 @@ func (s *Session) dumpMeta() (ldifdir.Meta, bool) {
 		return ldifdir.Meta{}, false
 	}
 	return d.Meta(), true
+}
+
+// dumpProgress says on warn, every interval, how far opening a large dump is, so minutes on a small CPU do not pass
+// in silence, taken for a hang.
+func dumpProgress(warn io.Writer, now func() time.Time, interval time.Duration) ldifdir.Progress {
+	last := now()
+	return func(stage string, done, total int64) {
+		if t := now(); t.Sub(last) >= interval && total > 0 {
+			last = t
+			fmt.Fprintf(warn, "  reading the dump: %s, %d%% (%d of %d MB)\n", stage, done*100/total, done>>20, total>>20)
+		}
+	}
 }

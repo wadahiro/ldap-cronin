@@ -56,8 +56,9 @@ Flags (clone/diff):
                    after it, so ldapmodify alone gives users that can log on; without it they are comments
   -y, -yes         (clone only) Write without asking: clone shows the target (a lab: what it does to it) and the
                    source and asks [y/N] first
-  -time-limit <d>  (clone only) Stop before the first object after d (15m), exit 3; running again goes on. A native
-                   import from a dump keeps a journal in the lab and skips what is done (a snapshot carries it)
+  -time-limit <d>  (clone only) Stop before the first object after d (15m), exit 3; running again goes on. d counts
+                   from the start of the run, reading the source included (the summary's time: line says how
+                   long that took). A native import from a dump keeps a journal in the lab and skips what is done
   -backup <dir>    (clone into a docker lab) Keep the lab's latest snapshot in dir: taken after the clone (also one
                    stopped at -time-limit), restored from when the lab does not exist (a new cloud shell session)
   -format <f>      (diff only) text (default), or json: JSON Lines, one object per difference, then the summary
@@ -218,7 +219,7 @@ func runClone(ctx context.Context, args []string, out io.Writer) error {
 	cfgPath := fs.String("config", "config.toml", "config file")
 	dryRun := fs.Bool("dry-run", false, "print LDIF instead of writing")
 	withPassword := fs.Bool("with-password", false, "with -dry-run: the LDIF carries the users' fixed password and what follows it, so ldapmodify alone completes them")
-	timeLimit := fs.Duration("time-limit", 0, "stop before the first object after this long (exit 3); run again to go on: a native import from a dump skips what is done")
+	timeLimit := fs.Duration("time-limit", 0, "stop before the first object after this long from the start, reading the source included (exit 3); run again to go on: a native import from a dump skips what is done")
 	backup := fs.String("backup", "", "a directory to keep the docker lab's latest snapshot in: taken after the clone (also one stopped at -time-limit), restored from when the lab does not exist")
 	yes := yesFlag(fs)
 	progressMode := progressFlag(fs)

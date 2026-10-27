@@ -304,10 +304,6 @@ func Run(ctx context.Context, src, dst directory.Directory, job plan.Job, opt Op
 	if len(withheld.Values) > 0 {
 		r.report.Withheld, r.report.WithheldWhy = map[string]int{}, withheld.Why
 	}
-	for _, v := range withheld.Values {
-		r.report.Withheld[v.Attr]++
-		r.warn("not written: %s %s of %s: %s (%s)", v.Attr, v.Value, v.DN, withheld.Why, strings.Join(v.Others, "; "))
-	}
 	if !opt.Native {
 		r.sdOn = job.Translated()
 	}
@@ -1445,7 +1441,14 @@ func (r *runner) sourceExtra(name string) bool {
 }
 
 func (r *runner) desired(e directory.Entry) (directory.Entry, error) {
-	e, _ = r.withheld.Strip(e)
+	var stripped []string
+	if e, stripped = r.withheld.Strip(e); len(stripped) > 0 {
+		// Said of the entries this run writes, not of those an earlier one did (a run resumed after -time-limit).
+		for _, v := range r.withheld.ValuesOf(e.DN) {
+			r.count(func(rep *Report) { rep.Withheld[v.Attr]++ })
+			r.warn("not written: %s %s of %s: %s (%s)", v.Attr, v.Value, v.DN, r.withheld.Why, strings.Join(v.Others, "; "))
+		}
+	}
 	out := directory.Entry{DN: e.DN, Attrs: map[string][]string{}}
 	keep := r.opt.Native || r.opt.Preserve
 	for n, v := range e.Attrs {
