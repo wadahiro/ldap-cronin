@@ -93,9 +93,10 @@ first. A leftover is one whose RDN holds `\nCNF:` or whose `sAMAccountName` begi
 - Compared: `userPrincipalName` and every value of `servicePrincipalName`, exactly (ignoring case), among the entries of
   the kinds, as far as their allow lists copy them. On Samba an account without a `userPrincipalName` holds
   `sAMAccountName@<realm>` (samldb's "implied by sAMAccountName"), so a leftover's value equal to that is not written
-  either; Windows does not check it. Samba also refuses a `servicePrincipalName` that collides through an alias of
-  `sPNMappings` (`HOST` covers `CIFS`, ...); that is not foreseen, and fails with Samba's message. Windows does not
-  look at the aliases (measured).
+  either; Windows does not check it. Samba also refuses `HOST/X` on an object when another holds an alias of it
+  (`http/X`, `cifs/X`, ...: the target's `sPNMappings`), and takes the reverse order, so which one fails depends on
+  the order clone writes in: on a Samba target the alias is withheld (from any object, a leftover or not), the
+  computer keeping `HOST/X`, which it is known by. Windows does not look at the aliases (both measured).
 - `check` lists each value clone will not write with the objects that keep it (without the target, `-no-target` or a
   lab not made yet, by Samba's rules); `clone` warns of each and counts them
   per attribute in its summary; `diff` does not compare them and counts them; a second `clone` writes nothing.

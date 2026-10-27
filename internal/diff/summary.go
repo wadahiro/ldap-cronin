@@ -64,7 +64,7 @@ func WriteSummary(w io.Writer, job plan.Job, sum Summary, excluded []string) {
 		plan.WriteCounts(w, "references not compared (clone cannot write them: the target lacks what they name)", sum.NotComparedWhy)
 	}
 	if len(sum.Withheld) > 0 {
-		plan.WriteCounts(w, "values not compared (clone does not write them: "+sum.WithheldWhy+")", sum.Withheld)
+		plan.WriteCounts(w, "values not compared (clone does not write them: the target refuses them)", sum.WithheldWhy)
 	}
 	switch job.ACL {
 	case plan.ACLAsIs:

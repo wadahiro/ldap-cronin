@@ -419,13 +419,13 @@ func writeWithheld(out io.Writer, w *plan.Withheld) {
 	if len(w.Values) == 0 {
 		return
 	}
-	fmt.Fprintf(out, "values clone will not write: %d (%s):\n", len(w.Values), w.Why)
+	fmt.Fprintf(out, "values clone will not write, the target refuses them: %d\n", len(w.Values))
 	for i, v := range w.Values {
 		if i == maxWithheldShown {
 			fmt.Fprintf(out, "  ... and %d more (clone warns of each)\n", len(w.Values)-i)
 			break
 		}
-		fmt.Fprintf(out, "  %s %s of %s (kept by %s)\n", v.Attr, v.Value, v.DN, strings.Join(v.Others, "; "))
+		fmt.Fprintf(out, "  %s %s of %s (kept by %s): %s\n", v.Attr, v.Value, v.DN, strings.Join(v.Others, "; "), v.Why)
 	}
 	fmt.Fprintln(out)
 }

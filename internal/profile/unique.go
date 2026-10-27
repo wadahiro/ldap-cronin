@@ -62,6 +62,14 @@ func (adUnique) Rules(ctx context.Context, dst directory.Directory, root string)
 		}
 	}
 	realm = ad.RealmOf(realm)
+	if dst != nil {
+		aliases, err := spnAliases(ctx, dst)
+		if err != nil {
+			return r, err
+		}
+		r.SPNAliases = aliases
+		r.AliasWhy = "Samba refuses an SPN of another object's service class it maps to (sPNMappings: host/X with http/X on another)"
+	}
 	r.ImpliedHow = "implied by its sAMAccountName"
 	r.Implied = map[string]func(directory.Entry) string{"userprincipalname": func(e directory.Entry) string {
 		if sam := first(e.Values("sAMAccountName")); sam != "" {
@@ -111,4 +119,44 @@ func windowsRefuses(e directory.Entry) string {
 		return windowsSAMWhy
 	}
 	return ""
+}
+
+// spnAliases reads the target's sPNMappings ("host=alerter,...,http,..."), resolved as samldb resolves them: the
+// first mapping naming a class decides it, a class a mapping is keyed by being no alias (measured on 4.19.5:
+// check_spn_alias_collision refuses host/X when another object holds http/X, and takes the reverse order from one
+// who may write that object). nil when the target has none.
+func spnAliases(ctx context.Context, dst directory.Directory) (map[string]string, error) {
+	root, err := dst.Get(ctx, "", []string{"configurationNamingContext"})
+	if err != nil || root == nil || first(root.Values("configurationNamingContext")) == "" {
+		return nil, err
+	}
+	ds, err := dst.Get(ctx, "CN=Directory Service,CN=Windows NT,CN=Services,"+first(root.Values("configurationNamingContext")), []string{"sPNMappings"})
+	if err != nil || ds == nil {
+		return nil, err
+	}
+	decided := map[string]string{}
+	for _, m := range ds.Values("sPNMappings") {
+		key, list, ok := strings.Cut(m, "=")
+		if !ok {
+			continue
+		}
+		key = strings.ToLower(strings.TrimSpace(key))
+		if _, ok := decided[key]; !ok {
+			decided[key] = ""
+		}
+		for _, a := range strings.Split(list, ",") {
+			if a = strings.ToLower(strings.TrimSpace(a)); a != "" {
+				if _, ok := decided[a]; !ok {
+					decided[a] = key
+				}
+			}
+		}
+	}
+	out := map[string]string{}
+	for a, key := range decided {
+		if key != "" {
+			out[a] = key
+		}
+	}
+	return out, nil
 }

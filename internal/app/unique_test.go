@@ -50,7 +50,7 @@ func TestAConflictLeftoverIsClonedWithoutTheValuesItShares(t *testing.T) {
 	if _, err := s.Check(ctx, CheckOptions{Config: "c.toml"}, &out); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "values clone will not write: 3") || !strings.Contains(out.String(), "userPrincipalName kim@ad.example.com of "+kimLeftover+" (kept by "+kim+")") {
+	if !strings.Contains(out.String(), "values clone will not write, the target refuses them: 3") || !strings.Contains(out.String(), "userPrincipalName kim@ad.example.com of "+kimLeftover+" (kept by "+kim+"): a replication-conflict leftover") {
 		t.Fatalf("check:\n%s", out.String())
 	}
 
@@ -75,7 +75,7 @@ func TestAConflictLeftoverIsClonedWithoutTheValuesItShares(t *testing.T) {
 	}
 	var sum bytes.Buffer
 	rep.WriteSummary(&sum)
-	if !strings.Contains(sum.String(), "values not written (a replication-conflict leftover") {
+	if !strings.Contains(sum.String(), "values not written, the target refuses them (see the warnings)") {
 		t.Fatalf("summary:\n%s", sum.String())
 	}
 
@@ -216,5 +216,95 @@ func TestWhatIsLongerThanWindowsTakesIsNotAddedThere(t *testing.T) {
 	var out bytes.Buffer
 	if code, err := s.Diff(ctx, DiffOutput{}, &out); err != nil || code != ExitDiff || !strings.Contains(out.String(), "NOT_WRITABLE: 4") {
 		t.Fatalf("diff (%d, %v):\n%s", code, err, out.String())
+	}
+}
+
+// Samba refuses host/X on an object when another holds http/X (sPNMappings make host cover http), in whatever order
+// they would come: the alias is withheld from the user, the computer keeps host/X, check lists it, clone warns and
+// counts it, and diff does not compare it. Windows does not look at the aliases: both are written.
+func TestAnSPNCollidingThroughSambasAliasesIsWithheld(t *testing.T) {
+	for name, c := range map[string]struct {
+		vendor   string
+		withheld bool
+	}{"Samba": {samba, true}, "Windows": {"", false}} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			w := newWorld()
+			config := "CN=Configuration," + domain
+			root := map[string][]string{"defaultNamingContext": {domain}, "configurationNamingContext": {config}}
+			if c.vendor != "" {
+				root["vendorName"] = []string{c.vendor}
+			}
+			w.dst.Put("", root)
+			w.dst.Put("CN=Directory Service,CN=Windows NT,CN=Services,"+config, map[string][]string{"objectClass": {"nTDSService"},
+				"sPNMappings": {"host=alerter,cifs,http,www"}})
+			user := []string{"top", "person", "organizationalPerson", "user"}
+			pc := "CN=PC1,OU=Users," + base
+			svc := "CN=Svc,OU=Users," + base
+			w.src.Put(pc, map[string][]string{"objectClass": append(user, "computer"), "cn": {"PC1"}, "sAMAccountName": {"PC1$"},
+				"servicePrincipalName": {"HOST/pc1.ad.example.com"}, "userAccountControl": {"4096"}})
+			w.src.Put(svc, map[string][]string{"objectClass": user, "cn": {"Svc"}, "sAMAccountName": {"svc"},
+				"servicePrincipalName": {"http/pc1.ad.example.com", "HTTP/web.ad.example.com"}})
+			s := w.openWith(t, "[mapping]\nmode = \"off\"\n[attributes]\nmode = \"allowlist\"\nextra_include = [\"servicePrincipalName\"]\n")
+
+			var out bytes.Buffer
+			if _, err := s.Check(ctx, CheckOptions{Config: "c.toml"}, &out); err != nil {
+				t.Fatal(err)
+			}
+			listed := strings.Contains(out.String(), "servicePrincipalName http/pc1.ad.example.com of "+svc+" (kept by "+pc+"): Samba refuses")
+			if listed != c.withheld {
+				t.Fatalf("check:\n%s", out.String())
+			}
+			var log bytes.Buffer
+			rep, err := s.Clone(ctx, false, &log, &log)
+			if err != nil {
+				t.Fatalf("%v\n%s", err, log.String())
+			}
+			want := "HTTP/web.ad.example.com"
+			if !c.withheld {
+				want = "http/pc1.ad.example.com,HTTP/web.ad.example.com"
+			}
+			if got := strings.Join(w.dst.Lookup(svc).Values("servicePrincipalName"), ","); got != want ||
+				strings.Join(w.dst.Lookup(pc).Values("servicePrincipalName"), "") != "HOST/pc1.ad.example.com" {
+				t.Fatalf("the user's SPNs %q, the computer's %v\n%s", got, w.dst.Lookup(pc).Values("servicePrincipalName"), log.String())
+			}
+			if (rep.Withheld["servicePrincipalName"] == 1) != c.withheld {
+				t.Fatalf("withheld %+v", rep.WithheldWhy)
+			}
+			out.Reset()
+			if code, err := s.Diff(ctx, DiffOutput{}, &out); err != nil || code != ExitSame {
+				t.Fatalf("diff (%d, %v):\n%s", code, err, out.String())
+			}
+		})
+	}
+}
+
+// A run stopped by the alias collision left the user's http/X on the target; the resumed run, withholding it, takes
+// it off (the user holds no other SPN, so the attribute is gone from what it writes) rather than leaving it there to
+// make Samba refuse the computer's HOST/X again.
+func TestAResumedRunTakesOffAnSPNItNowWithholds(t *testing.T) {
+	ctx := context.Background()
+	w := newWorld()
+	config := "CN=Configuration," + domain
+	w.dst.Put("", map[string][]string{"vendorName": {samba}, "defaultNamingContext": {domain}, "configurationNamingContext": {config}})
+	w.dst.Put("CN=Directory Service,CN=Windows NT,CN=Services,"+config, map[string][]string{"objectClass": {"nTDSService"}, "sPNMappings": {"host=cifs,http"}})
+	user := []string{"top", "person", "organizationalPerson", "user"}
+	pc, svc := "CN=PC1,OU=Users,"+base, "CN=Svc,OU=Users,"+base
+	w.src.Put(pc, map[string][]string{"objectClass": append(user, "computer"), "cn": {"PC1"}, "sAMAccountName": {"PC1$"},
+		"servicePrincipalName": {"HOST/pc1.ad.example.com"}, "userAccountControl": {"4096"}})
+	w.src.Put(svc, map[string][]string{"objectClass": user, "cn": {"Svc"}, "sAMAccountName": {"svc"}, "servicePrincipalName": {"http/pc1.ad.example.com"}})
+	s := w.openWith(t, "[mapping]\nmode = \"off\"\n[attributes]\nmode = \"allowlist\"\nextra_include = [\"servicePrincipalName\"]\n")
+	var log bytes.Buffer
+	if _, err := s.Clone(ctx, false, &log, &log); err != nil {
+		t.Fatalf("%v\n%s", err, log.String())
+	}
+	// The earlier run, before the value was withheld.
+	w.dst.Lookup(svc).Attrs["servicePrincipalName"] = []string{"http/pc1.ad.example.com"}
+	log.Reset()
+	if _, err := s.Clone(ctx, false, &log, &log); err != nil {
+		t.Fatalf("%v\n%s", err, log.String())
+	}
+	if got := w.dst.Lookup(svc).Values("servicePrincipalName"); len(got) != 0 {
+		t.Fatalf("the user's SPNs: %v\n%s", got, log.String())
 	}
 }

@@ -55,6 +55,8 @@ func (w *Withheld) RefusedEntryWhy(e directory.Entry) string {
 type WithheldValue struct {
 	DN, Attr, Value string
 	Others          []string
+	// Why the target refuses it (the rule of the profile).
+	Why string
 }
 
 // Clash is a value of a unique attribute that more than one object of the source holds and none of them is a
@@ -124,10 +126,6 @@ func unique(ctx context.Context, src directory.Directory, job Job, rules profile
 	w := &Withheld{values: map[string]map[string]map[string]bool{}, Why: rules.Why, refuses: rules.Refuses, refused: map[string]string{}}
 	if u == nil || (len(rules.Attrs) == 0 && rules.Refuses == nil) {
 		return w, nil, nil
-	}
-	type group struct {
-		attr, value string
-		holders     []holder
 	}
 	groups := map[string]*group{}
 	add := func(attr, value string, h holder) {
@@ -212,7 +210,7 @@ func unique(ctx context.Context, src directory.Directory, job Job, rules profile
 			// A leftover loses the value to a real object; among leftovers alone, the first keeps it. An implied value
 			// is not written, so it cannot be withheld.
 			if h.leftover && h.explicit && (real > 0 || i > 0) {
-				w.withhold(h.dn, g.attr, g.value, g.holders)
+				w.withhold(h.dn, g.attr, g.value, g.holders, rules.Why)
 				continue
 			}
 			kept = append(kept, h)
@@ -228,6 +226,7 @@ func unique(ctx context.Context, src directory.Directory, job Job, rules profile
 			clashes = append(clashes, c)
 		}
 	}
+	w.withholdAliases(groups, rules)
 	sort.Slice(w.Values, func(i, j int) bool {
 		if w.Values[i].DN != w.Values[j].DN {
 			return w.Values[i].DN < w.Values[j].DN
@@ -239,13 +238,79 @@ func unique(ctx context.Context, src directory.Directory, job Job, rules profile
 	return w, clashes, nil
 }
 
+// withholdAliases withholds an SPN whose service class is an alias (http) of one another object's SPN of the same
+// rest has (host/X), where the target refuses the pair across objects (rules.SPNAliases: Samba). Samba refuses
+// host/X added after http/X and takes the reverse order, so which one fails depends on the order clone writes in;
+// the alias is the one left out, as host/X is what a computer is known by.
+func (w *Withheld) withholdAliases(groups map[string]*group, rules profile.UniqueRules) {
+	if len(rules.SPNAliases) == 0 {
+		return
+	}
+	split := func(v string) (class, rest string, ok bool) {
+		class, rest, ok = strings.Cut(strings.ToLower(v), "/")
+		return
+	}
+	// The entries that will hold each SPN of a class aliases name (host/X), not those it is withheld from.
+	keyHolders := map[string][]string{}
+	for _, g := range groups {
+		if !strings.EqualFold(g.attr, "servicePrincipalName") {
+			continue
+		}
+		class, rest, ok := split(g.value)
+		if !ok || rules.SPNAliases[class] != "" {
+			continue
+		}
+		for _, h := range g.holders {
+			if h.explicit && !w.withheldFrom(h.dn, g.attr, g.value) {
+				keyHolders[class+"/"+rest] = append(keyHolders[class+"/"+rest], h.dn)
+			}
+		}
+	}
+	for _, g := range groups {
+		if !strings.EqualFold(g.attr, "servicePrincipalName") {
+			continue
+		}
+		class, rest, ok := split(g.value)
+		key := rules.SPNAliases[class]
+		if !ok || key == "" {
+			continue
+		}
+		holders := keyHolders[key+"/"+rest]
+		for _, h := range g.holders {
+			if !h.explicit || w.withheldFrom(h.dn, g.attr, g.value) {
+				continue
+			}
+			var others []holder
+			for _, d := range holders {
+				if !dn.Equal(d, h.dn) {
+					others = append(others, holder{dn: d})
+				}
+			}
+			if len(others) > 0 {
+				w.withhold(h.dn, g.attr, g.value, others, rules.AliasWhy)
+			}
+		}
+	}
+}
+
+// withheldFrom reports whether value of attr is withheld from the entry at d.
+func (w *Withheld) withheldFrom(d, attr, value string) bool {
+	return w.values[dn.Normalize(d)][strings.ToLower(attr)][strings.ToLower(value)]
+}
+
+// group is a value of a unique attribute and the entries holding it.
+type group struct {
+	attr, value string
+	holders     []holder
+}
+
 // holder is an entry holding a value of a unique attribute: written (explicit) or implied.
 type holder struct {
 	dn                 string
 	explicit, leftover bool
 }
 
-func (w *Withheld) withhold(entryDN, attr, value string, holders []holder) {
+func (w *Withheld) withhold(entryDN, attr, value string, holders []holder, why string) {
 	key := dn.Normalize(entryDN)
 	if w.values[key] == nil {
 		w.values[key] = map[string]map[string]bool{}
@@ -255,7 +320,7 @@ func (w *Withheld) withhold(entryDN, attr, value string, holders []holder) {
 		w.values[key][la] = map[string]bool{}
 	}
 	w.values[key][la][strings.ToLower(value)] = true
-	v := WithheldValue{DN: entryDN, Attr: attr, Value: value}
+	v := WithheldValue{DN: entryDN, Attr: attr, Value: value, Why: why}
 	for _, h := range holders {
 		if h.dn != entryDN {
 			v.Others = append(v.Others, h.dn)

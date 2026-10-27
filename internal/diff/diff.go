@@ -93,9 +93,10 @@ type Summary struct {
 	// NotComparedWhy is NotCompared per "attribute: why" (plan.Classifier.Why), for the text summary.
 	NotComparedWhy map[string]int
 	// Withheld counts, per attribute, the source values clone does not write because the target holds each once and a
-	// replication-conflict leftover shares it (plan.Withheld), so diff does not compare them; WithheldWhy says why.
+	// replication-conflict leftover shares it (plan.Withheld), so diff does not compare them; WithheldWhy counts
+	// them per "attribute: why".
 	Withheld    map[string]int
-	WithheldWhy string
+	WithheldWhy map[string]int
 	// ACEsNotCompared counts, per why (plan.WhyNoSourcePrincipal ...), the source's ACEs clone leaves out because
 	// the target has no principal for their trustee (ACLTranslated, plan.Job.SDValues).
 	ACEsNotCompared map[string]int
@@ -383,10 +384,11 @@ func (r *runner) check(ctx context.Context, want directory.Entry, names []string
 		if want, stripped = r.withheld.Strip(want); len(stripped) > 0 {
 			r.mu.Lock()
 			if r.sum.Withheld == nil {
-				r.sum.Withheld, r.sum.WithheldWhy = map[string]int{}, r.withheld.Why
+				r.sum.Withheld, r.sum.WithheldWhy = map[string]int{}, map[string]int{}
 			}
-			for _, n := range stripped {
-				r.sum.Withheld[n]++
+			for _, v := range r.withheld.ValuesOf(want.DN) {
+				r.sum.Withheld[v.Attr]++
+				r.sum.WithheldWhy[v.Attr+": "+v.Why]++
 			}
 			r.mu.Unlock()
 		}

@@ -221,3 +221,54 @@ func TestNamesSambaTakesAsTheSameAreNotOverwritten(t *testing.T) {
 		t.Fatalf("diff (%d, %v):\n%s", code, err, diffOut.String())
 	}
 }
+
+// Samba refuses HOST/X on an object when another holds http/X (sPNMappings), and takes the reverse order. The source
+// is given them in that order; clone writes users before computers, so without withholding the user's http/X the
+// computer's HOST/X would be refused. The computer keeps HOST/X, the user its other SPNs, and diff finds nothing.
+func TestAnSPNCollidingThroughSambasAliasesDoesNotStopClone(t *testing.T) {
+	runID := time.Now().UnixNano() % 1_000_000
+	ctx := context.Background()
+	src, dst := dial(t, srcURL), dial(t, dstURL)
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	realm := strings.ToLower(strings.NewReplacer("DC=", "", ",", ".").Replace(realmDN))
+	scope := fmt.Sprintf("OU=Alias%06d,%s", runID, realmDN)
+	pc, svc := "CN=PC1,"+scope, "CN=Svc,"+scope
+	host, alias, other := fmt.Sprintf("HOST/a%06d.%s", runID, realm), fmt.Sprintf("http/a%06d.%s", runID, realm), fmt.Sprintf("HTTP/w%06d.%s", runID, realm)
+	must(src.Add(ctx, directory.Entry{DN: scope, Attrs: map[string][]string{"objectClass": {"organizationalUnit"}}}))
+	must(src.Add(ctx, directory.Entry{DN: pc, Attrs: map[string][]string{"objectClass": {"computer"}, "userAccountControl": {"4096"},
+		"sAMAccountName": {fmt.Sprintf("a%06dpc$", runID)}, "servicePrincipalName": {host}}}))
+	must(src.Add(ctx, directory.Entry{DN: svc, Attrs: map[string][]string{"objectClass": {"user"}, "sAMAccountName": {fmt.Sprintf("a%06dsvc", runID)},
+		"servicePrincipalName": {alias, other}}}))
+
+	cfg, err := config.Parse([]byte(fmt.Sprintf("[source]\nurl = %q\nbind_dn = %q\ninsecure_skip_verify = true\n"+
+		"[target]\nurl = %q\nbind_dn = %q\ninsecure_skip_verify = true\n[scope]\nbase_dn = %q\n", srcURL, adminDN, dstURL, adminDN, scope)))
+	must(err)
+	pw := func() (string, error) { return adminPw, nil }
+	s, err := app.Open(ctx, cfg, app.Secrets{SourceBind: pw, TargetBind: pw, UserPassword: func() (string, error) { return fixedPw, nil }}, app.LDAP, &bytes.Buffer{})
+	must(err)
+	t.Cleanup(s.Close)
+	var log bytes.Buffer
+	rep, err := s.Clone(ctx, false, &log, &log)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, log.String())
+	}
+	if rep.Withheld["servicePrincipalName"] != 1 {
+		t.Fatalf("withheld %+v\n%s", rep.WithheldWhy, log.String())
+	}
+	for d, want := range map[string]string{pc: strings.ToLower(host), svc: strings.ToLower(other)} {
+		e, err := dst.Get(ctx, d, []string{"servicePrincipalName"})
+		must(err)
+		if e == nil || strings.ToLower(strings.Join(e.Values("servicePrincipalName"), ",")) != want {
+			t.Fatalf("%s on the target: %+v, want %s", d, e, want)
+		}
+	}
+	var out bytes.Buffer
+	if code, err := s.Diff(ctx, app.DiffOutput{}, &out); err != nil || code != app.ExitSame {
+		t.Fatalf("diff: %d %v\n%s", code, err, out.String())
+	}
+}

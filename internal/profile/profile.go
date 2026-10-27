@@ -196,6 +196,11 @@ type UniqueRules struct {
 	ImpliedHow string
 	// Why is said of each value withheld (the target's rule, in its words).
 	Why string
+	// SPNAliases maps a service class (lowercase) to the one it is an alias of in the target's sPNMappings (http to
+	// host): Samba refuses host/X on an object when another holds http/X, whatever order they come in would allow.
+	// nil where the target does not look at aliases (Windows). AliasWhy is said of each value withheld so.
+	SPNAliases map[string]string
+	AliasWhy   string
 	// Refuses, when set, says why the target refuses the entry (its name, a parent's, or a value it must hold), ""
 	// when it takes it: such an entry is not added at all. Given an entry with its DN alone, it says what its DN
 	// decides.

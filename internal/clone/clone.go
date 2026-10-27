@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -96,10 +97,11 @@ type Report struct {
 	// Placeholders counts the placeholders created for entries the source did not return (plan.RefPlaceholder),
 	// with the parents created for them.
 	Placeholders int
-	// Withheld counts, per attribute, the values not written because a replication-conflict leftover shares them
-	// with another object and the target holds each once (plan.Withheld); WithheldWhy says why.
+	// Withheld counts, per attribute, the values not written because the target refuses them (plan.Withheld: a
+	// replication-conflict leftover shares them with another object, an SPN another object's covers through Samba's
+	// aliases); WithheldWhy counts them per "attribute: why".
 	Withheld    map[string]int
-	WithheldWhy string
+	WithheldWhy map[string]int
 	// NameTaken lists the entries not added because the target holds another entry under a name it takes as the
 	// same (Windows ignores width and kana type, Samba collapses spaces), each with the target's entry: writing them
 	// would have overwritten that one.
@@ -172,7 +174,7 @@ func (rep *Report) WriteSummary(w io.Writer) {
 		plan.WriteCounts(w, "ACEs left out (their trustee has no principal on the target; see the warnings)", rep.ACEsLeftOut)
 	}
 	if len(rep.Withheld) > 0 {
-		plan.WriteCounts(w, "values not written ("+rep.WithheldWhy+"; see the warnings)", rep.Withheld)
+		plan.WriteCounts(w, "values not written, the target refuses them (see the warnings)", rep.WithheldWhy)
 	}
 	if len(rep.NameTaken) > 0 {
 		fmt.Fprintf(w, "not added, the target holds another entry under a name it takes as the same: %d\n", len(rep.NameTaken))
@@ -302,7 +304,7 @@ func Run(ctx context.Context, src, dst directory.Directory, job plan.Job, opt Op
 		r.refuse(e.DN, e.Why)
 	}
 	if len(withheld.Values) > 0 {
-		r.report.Withheld, r.report.WithheldWhy = map[string]int{}, withheld.Why
+		r.report.Withheld, r.report.WithheldWhy = map[string]int{}, map[string]int{}
 	}
 	if !opt.Native {
 		r.sdOn = job.Translated()
@@ -752,6 +754,13 @@ func (r *runner) upsert(ctx context.Context, e directory.Entry, account profile.
 	names := make([]string, 0, len(desired.Attrs))
 	for n := range desired.Attrs {
 		names = append(names, n)
+	}
+	// An attribute all of whose values are withheld is compared too, so a value an earlier run wrote (before it was
+	// withheld: Samba's alias collision stopped that run) is taken off rather than left to be refused again.
+	for _, v := range r.withheld.ValuesOf(e.DN) {
+		if !slices.ContainsFunc(names, func(n string) bool { return strings.EqualFold(n, v.Attr) }) {
+			names = append(names, v.Attr)
+		}
 	}
 	if r.opt.Marker != nil {
 		extra = append(extra, r.opt.Marker.Attr)
@@ -1445,8 +1454,11 @@ func (r *runner) desired(e directory.Entry) (directory.Entry, error) {
 	if e, stripped = r.withheld.Strip(e); len(stripped) > 0 {
 		// Said of the entries this run writes, not of those an earlier one did (a run resumed after -time-limit).
 		for _, v := range r.withheld.ValuesOf(e.DN) {
-			r.count(func(rep *Report) { rep.Withheld[v.Attr]++ })
-			r.warn("not written: %s %s of %s: %s (%s)", v.Attr, v.Value, v.DN, r.withheld.Why, strings.Join(v.Others, "; "))
+			r.count(func(rep *Report) {
+				rep.Withheld[v.Attr]++
+				rep.WithheldWhy[v.Attr+": "+v.Why]++
+			})
+			r.warn("not written: %s %s of %s: %s (%s)", v.Attr, v.Value, v.DN, v.Why, strings.Join(v.Others, "; "))
 		}
 	}
 	out := directory.Entry{DN: e.DN, Attrs: map[string][]string{}}
