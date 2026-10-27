@@ -153,4 +153,14 @@ func (d *Dir) AddValues(ctx context.Context, entryDN, attr string, values []stri
 	return nil
 }
 
+func (d *Dir) DeleteValues(ctx context.Context, entryDN, attr string, values []string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.w.DeleteValues(entryDN, attr, values)
+	return nil
+}
+
 var _ directory.Directory = (*Dir)(nil)

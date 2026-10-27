@@ -67,6 +67,13 @@ type Directory interface {
 	AddValues(ctx context.Context, dn, attr string, values []string) error
 }
 
+// ValueDeleter is a Directory that takes values off an attribute. clone uses it only to undo what the server added by
+// itself: AD adds an account to its previous primary group's member when primaryGroupID changes. Kept apart from
+// Directory, which every reader implements, as clone writes nothing else this way.
+type ValueDeleter interface {
+	DeleteValues(ctx context.Context, dn, attr string, values []string) error
+}
+
 // Collect returns all results of Walk as a slice. It is meant only for small counts (tests, small lookups)
 // and is not used on paths with large data sets.
 func Collect(ctx context.Context, d Directory, base, filter string, attrs []string) ([]Entry, error) {

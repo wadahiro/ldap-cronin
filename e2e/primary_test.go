@@ -17,7 +17,8 @@ import (
 )
 
 // A user whose primary group is a group of another OU: on Samba the group is created with its own RID, the user
-// gets it as the primary group, and diff finds nothing; a re-run writes nothing.
+// gets it as the primary group, and diff finds nothing; a re-run writes nothing. Setting it makes Samba add the user
+// to Domain Users' member: kept for the one the source keeps there, taken off for the one the source took off.
 func TestThePrimaryGroupOnSamba(t *testing.T) {
 	runID := time.Now().UnixNano() % 1_000_000
 	ctx := context.Background()
@@ -42,8 +43,14 @@ func TestThePrimaryGroupOnSamba(t *testing.T) {
 	if !ok {
 		t.Fatal("the group has no RID")
 	}
-	must(src.AddValues(ctx, group, "member", []string{user}))
-	must(src.Replace(ctx, user, map[string][]string{"primaryGroupID": {rid}}))
+	off := "CN=Freelancer," + scope
+	must(src.Add(ctx, directory.Entry{DN: off, Attrs: map[string][]string{"objectClass": {"user"}, "sAMAccountName": {fmt.Sprintf("pf%06d", runID)}}}))
+	for _, u := range []string{user, off} {
+		must(src.AddValues(ctx, group, "member", []string{u}))
+		must(src.Replace(ctx, u, map[string][]string{"primaryGroupID": {rid}}))
+	}
+	users := "CN=Domain Users,CN=Users," + realmDN
+	must(src.DeleteValues(ctx, users, "member", []string{off}))
 	if e, _ := src.Get(ctx, group, []string{"member"}); e != nil {
 		t.Logf("the source group's member after the primary group is set: %v", e.Values("member"))
 	}
@@ -60,7 +67,7 @@ func TestThePrimaryGroupOnSamba(t *testing.T) {
 	if err != nil {
 		t.Fatalf("%v\n%s", err, log.String())
 	}
-	if rep.PrimaryGroups != 1 {
+	if rep.PrimaryGroups != 2 || rep.DefaultLeft != 1 {
 		t.Fatalf("%+v\n%s", rep, log.String())
 	}
 	dst := dial(t, dstURL)
@@ -76,6 +83,15 @@ func TestThePrimaryGroupOnSamba(t *testing.T) {
 		t.Fatalf("primaryGroupID %s, the target's group is %s (source %s)", got, trid, rid)
 	}
 	t.Logf("the target group's member: %v (source RID %s, target RID %s)", tg.Values("member"), rid, trid)
+	du, err := dst.Get(ctx, users, []string{"member"})
+	must(err)
+	in := map[string]bool{}
+	for _, m := range du.Values("member") {
+		in[strings.ToLower(m)] = true
+	}
+	if !in[strings.ToLower(user)] || in[strings.ToLower(off)] {
+		t.Fatalf("Domain Users' member on the target: %v", du.Values("member"))
+	}
 	var out bytes.Buffer
 	if code, err := s.Diff(ctx, app.DiffOutput{}, &out); err != nil || code != app.ExitSame {
 		t.Fatalf("right after the clone (%d, %v):\n%s", code, err, out.String())

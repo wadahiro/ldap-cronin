@@ -24,3 +24,7 @@ func (ReadOnly) Replace(_ context.Context, dn string, _ map[string][]string) err
 func (ReadOnly) AddValues(_ context.Context, dn, attr string, _ []string) error {
 	return fmt.Errorf("modify %s (%s): %w", dn, attr, ErrReadOnly)
 }
+
+func (ReadOnly) DeleteValues(_ context.Context, dn, attr string, _ []string) error {
+	return fmt.Errorf("modify %s (delete %s): %w", dn, attr, ErrReadOnly)
+}

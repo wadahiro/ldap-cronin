@@ -81,8 +81,9 @@ type Report struct {
 	NotCloned map[string]int
 	// Unwritten counts the reference values clone could not write, per "attribute: why" (plan.Classifier.Why).
 	Unwritten map[string]int
-	// PrimaryGroups counts the accounts given their source's primary group (not their type's default).
-	PrimaryGroups int
+	// PrimaryGroups counts the accounts given their source's primary group (not their type's default); DefaultLeft
+	// those of them taken off their default group's member, which the server added them to on the change.
+	PrimaryGroups, DefaultLeft int
 	// OutsideGroups and BuiltinGroups count the groups outside the scope given the entries of it they hold
 	// (plan.Holder); Unheld counts those left as they are, per why.
 	OutsideGroups, BuiltinGroups int
@@ -160,6 +161,9 @@ func (rep *Report) WriteSummary(w io.Writer) {
 	}
 	if rep.PrimaryGroups > 0 {
 		fmt.Fprintf(w, "accounts given their primary group (not Domain Users or Domain Computers): %d\n", rep.PrimaryGroups)
+	}
+	if rep.DefaultLeft > 0 {
+		fmt.Fprintf(w, "  taken off Domain Users or Domain Computers again (the target adds them on the change; the source's lacks them): %d\n", rep.DefaultLeft)
 	}
 	if rep.OutsideGroups > 0 || rep.BuiltinGroups > 0 {
 		fmt.Fprintf(w, "groups outside the scope given its entries they hold: %d (built-in: %d)\n", rep.OutsideGroups+rep.BuiltinGroups, rep.BuiltinGroups)
@@ -499,8 +503,8 @@ func (r *runner) created(values []string) []string {
 	return out
 }
 
-// primaryOf is an account whose primary group is not its type's default, by the source's RID.
-type primaryOf struct{ dn, rid string }
+// primaryOf is an account whose primary group is not its type's default, by the source's RID; def is that default.
+type primaryOf struct{ dn, rid, def string }
 
 // primaryGroups gives the accounts the primary group they have on the source, by its DN: the group is created
 // first when it is outside the scope (as a holder is), its RID on the target is read, the account is added to its
@@ -512,16 +516,15 @@ func (r *runner) primaryGroups(ctx context.Context, p *plan.Plan) error {
 		return nil
 	}
 	attr := pg.Attr()
-	var wellKnown map[string]string // the target's groups by RID, for the built-in ones
+	wellKnown, err := pg.Groups(ctx, r.dst, p.Root) // the target's groups by RID, for the built-in ones
+	if err != nil {
+		return err
+	}
+	left := &defaultGroups{src: map[string]map[string]bool{}, dst: map[string]map[string]bool{}}
 	for _, a := range r.primary {
 		var gdn string
 		var err error
 		if pg.WellKnown(a.rid) {
-			if wellKnown == nil {
-				if wellKnown, err = pg.Groups(ctx, r.dst, p.Root); err != nil {
-					return err
-				}
-			}
 			if gdn = wellKnown[a.rid]; gdn == "" {
 				r.notPrimary(a, "names a built-in group the target lacks")
 				continue
@@ -579,6 +582,10 @@ func (r *runner) primaryGroups(ctx context.Context, p *plan.Plan) error {
 			return err
 		}
 		if cur != nil && strings.TrimSpace(first(cur.Values(attr))) == rid {
+			// Set by an earlier run, which may have left the account in its default group.
+			if err := r.leaveDefault(ctx, p, a, wellKnown[a.def], left, false); err != nil {
+				return err
+			}
 			continue
 		}
 		if err := r.applyReference(ctx, gdn, "member", []string{a.dn}); err != nil {
@@ -589,8 +596,78 @@ func (r *runner) primaryGroups(ctx context.Context, p *plan.Plan) error {
 		}
 		r.count(func(rep *Report) { rep.PrimaryGroups++ })
 		r.logf("update %s (%s: %s)\n", a.dn, attr, gdn)
+		if err := r.leaveDefault(ctx, p, a, wellKnown[a.def], left, true); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+// defaultGroups caches, per normalized group DN, the members of the scope the source's default groups hold and the
+// members the target's hold, for leaveDefault.
+type defaultGroups struct{ src, dst map[string]map[string]bool }
+
+// leaveDefault takes the account off its type's default group on the target (target, Domain Users for a user) when
+// the source's group of that RID does not hold it: setting primaryGroupID makes the server add the account to its
+// previous primary group's member (measured on Windows Server 2019; Samba's samldb does the same), which the source
+// may lack. set says primaryGroupID was set just now, so the value is there; otherwise the target is read.
+func (r *runner) leaveDefault(ctx context.Context, p *plan.Plan, a primaryOf, target string, cache *defaultGroups, set bool) error {
+	if target == "" {
+		return nil
+	}
+	held, err := r.groupMembers(cache.src, target, func() ([]string, error) {
+		group, err := p.PrimaryGroupDN(ctx, a.def)
+		if err != nil || group == "" {
+			return nil, err // the source lacks the group: it holds no one
+		}
+		return p.HolderValues(ctx, plan.Holder{DN: group}, "member")
+	})
+	if err != nil || held[dn.Normalize(a.dn)] {
+		return err
+	}
+	has, err := r.groupMembers(cache.dst, target, func() ([]string, error) {
+		g, err := r.dst.Get(ctx, target, []string{"member"})
+		if err != nil || g == nil {
+			return nil, err
+		}
+		return g.Values("member"), nil
+	})
+	if err != nil {
+		return err
+	}
+	if !set && !has[dn.Normalize(a.dn)] {
+		return nil
+	}
+	deleter, ok := r.dst.(directory.ValueDeleter)
+	if !ok {
+		r.warn("%s stays in %s, which the target added it to on setting %s: the target cannot take a value off", a.dn, target, r.prof.PrimaryGroup.Attr())
+		return nil
+	}
+	if err := deleter.DeleteValues(ctx, target, "member", []string{a.dn}); err != nil {
+		return fmt.Errorf("%s: take it off %s, which the target added it to on setting its primary group: %w", a.dn, target, err)
+	}
+	delete(has, dn.Normalize(a.dn))
+	r.count(func(rep *Report) { rep.DefaultLeft++ })
+	r.logf("update %s (member: %s taken off, as the source's group lacks it)\n", target, a.dn)
+	return nil
+}
+
+// groupMembers is the cached set of members of group, read by read the first time.
+func (r *runner) groupMembers(cache map[string]map[string]bool, group string, read func() ([]string, error)) (map[string]bool, error) {
+	key := dn.Normalize(group)
+	if set, ok := cache[key]; ok {
+		return set, nil
+	}
+	values, err := read()
+	if err != nil {
+		return nil, err
+	}
+	set := map[string]bool{}
+	for _, v := range values {
+		set[dn.Normalize(dn.RefDN(v))] = true
+	}
+	cache[key] = set
+	return set, nil
 }
 
 // notPrimary counts an account left with its type's default primary group, and warns about it.
@@ -673,9 +750,9 @@ func (r *runner) notePrimary(e directory.Entry) {
 	if pg == nil {
 		return
 	}
-	if rid := strings.TrimSpace(first(e.Values(pg.Attr()))); rid != "" && rid != pg.Default(e) {
+	if rid, def := strings.TrimSpace(first(e.Values(pg.Attr()))), pg.Default(e); rid != "" && rid != def {
 		r.mu.Lock()
-		r.primary = append(r.primary, primaryOf{dn: e.DN, rid: rid})
+		r.primary = append(r.primary, primaryOf{dn: e.DN, rid: rid, def: def})
 		r.mu.Unlock()
 	}
 }

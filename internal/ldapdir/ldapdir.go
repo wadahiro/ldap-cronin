@@ -280,6 +280,20 @@ func (c *Client) AddValues(ctx context.Context, dn, attr string, values []string
 	return nil
 }
 
+func (c *Client) DeleteValues(ctx context.Context, dn, attr string, values []string) error {
+	conn, err := c.acquire(ctx)
+	if err != nil {
+		return err
+	}
+	defer c.release(conn)
+	req := ldap.NewModifyRequest(dn, nil)
+	req.Delete(attr, values)
+	if err := conn.Modify(req); err != nil {
+		return fmt.Errorf("modify %s (delete %s): %w", dn, attr, err)
+	}
+	return nil
+}
+
 // convert aligns attribute names with the requested spelling and, for attributes retrieved in ranges, fetches the remainder and merges it.
 func convert(conn *ldap.Conn, e *ldap.Entry, requested []string, rangeSize int) (directory.Entry, error) {
 	canon := make(map[string]string, len(requested))

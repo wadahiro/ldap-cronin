@@ -319,6 +319,11 @@ func (n *Native) AddValues(ctx context.Context, dn, attr string, values []string
 	return err
 }
 
+func (n *Native) DeleteValues(ctx context.Context, dn, attr string, values []string) error {
+	_, err := n.call(ctx, map[string]any{"op": "delete_values", "dn": dn, "attr": attr, "values": encodeAttrs(map[string][]string{attr: values})[attr]})
+	return err
+}
+
 func mapExists(err error) error {
 	var ne *NativeError
 	if errors.As(err, &ne) && ne.Code == ldbEntryExists {

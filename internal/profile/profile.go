@@ -202,8 +202,8 @@ type UniqueRules struct {
 	SPNAliases map[string]string
 	AliasWhy   string
 	// PrimaryMembers is set where the target refuses a group's member value naming an account whose primaryGroupID
-	// is that group (Samba: "already set via primaryGroupID"; Windows, not measured, alike); PrimaryWhy is said of each
-	// value withheld so.
+	// is that group (Samba: "already set via primaryGroupID"; Windows: 0x528); PrimaryWhy is said of each value
+	// withheld so.
 	PrimaryMembers bool
 	PrimaryWhy     string
 	// Refuses, when set, says why the target refuses the entry (its name, a parent's, or a value it must hold), ""

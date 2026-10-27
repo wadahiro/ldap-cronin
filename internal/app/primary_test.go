@@ -210,3 +210,58 @@ func TestAWellKnownGroupMovedOnTheSourceIsTheTargetsOfItsRID(t *testing.T) {
 		t.Fatalf("diff (%d, %v):\n%s", code, err, out.String())
 	}
 }
+
+// Setting primaryGroupID makes the server add the account to its previous primary group (Domain Users), as both
+// Windows and Samba do: clone takes it off again where the source's Domain Users lacks it, keeps it where the source
+// has it, and a run after an earlier one that left it there takes it off too. diff then finds the same.
+func TestTheDefaultGroupTheTargetAddsOnTheChangeIsTheSources(t *testing.T) {
+	ctx := context.Background()
+	w := newWorld()
+	users := "CN=Domain Users,CN=Users," + domain
+	group := "CN=Staff,OU=Users," + base
+	keep := "CN=Keep,OU=Users," + base // the source keeps it in Domain Users
+	user := []string{"top", "person", "organizationalPerson", "user"}
+	w.src.Put("CN=Users,"+domain, map[string][]string{"objectClass": {"top", "container"}, "cn": {"Users"}})
+	w.src.Put(users, map[string][]string{"objectClass": {"top", "group"}, "cn": {"Domain Users"}, "isCriticalSystemObject": {"TRUE"},
+		"objectSid": {fakedir.SID("S-1-5-21-1-2-3-513")}, "member": {keep}})
+	w.src.Put(group, map[string][]string{"objectClass": {"top", "group"}, "cn": {"Staff"}, "sAMAccountName": {"staff"},
+		"objectSid": {fakedir.SID("S-1-5-21-1-2-3-1300")}})
+	w.src.Lookup(alice).Attrs["primaryGroupID"] = []string{"1300"}
+	w.src.Put(keep, map[string][]string{"objectClass": user, "cn": {"Keep"}, "sAMAccountName": {"keep"}, "userAccountControl": {"512"},
+		"primaryGroupID": {"1300"}, "memberOf": {users}})
+	w.dst.SIDs = "7-8-9"
+	w.dst.PrimaryGroups = true
+	w.dst.Put("CN=Users,"+domain, map[string][]string{"objectClass": {"top", "container"}, "cn": {"Users"}})
+	w.dst.Put(users, map[string][]string{"objectClass": {"top", "group"}, "cn": {"Domain Users"}, "isCriticalSystemObject": {"TRUE"},
+		"objectSid": {fakedir.SID("S-1-5-21-7-8-9-513")}})
+	for _, d := range []*fakedir.Dir{w.src, w.dst} { // the schema pairing memberOf with member: what finds the holders
+		withClasses(d, nil)
+		for name, link := range map[string]string{"member": "2", "memberOf": "3"} {
+			d.Put("CN="+name+","+schemaNC, map[string][]string{"objectClass": {"attributeSchema"}, "cn": {name}, "lDAPDisplayName": {name},
+				"attributeID": {"1.9." + name}, "attributeSyntax": {"2.5.5.1"}, "linkID": {link}})
+		}
+	}
+	s := w.open(t, "mode = \"off\"")
+
+	var log bytes.Buffer
+	rep, err := s.Clone(ctx, false, &log, &log)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, log.String())
+	}
+	if got := w.dst.Lookup(users).Values("member"); len(got) != 1 || got[0] != keep || rep.PrimaryGroups != 2 || rep.DefaultLeft != 1 {
+		t.Fatalf("Domain Users' members: %v, %+v\n%s", got, rep, log.String())
+	}
+	var out bytes.Buffer
+	if code, err := s.Diff(ctx, DiffOutput{}, &out); err != nil || code != ExitSame {
+		t.Fatalf("diff (%d, %v):\n%s", code, err, out.String())
+	}
+	// What an earlier version left: alice in Domain Users, her primary group set.
+	w.dst.Lookup(users).Attrs["member"] = []string{keep, alice}
+	log.Reset()
+	if rep, err := s.Clone(ctx, false, &log, &log); err != nil || rep.DefaultLeft != 1 {
+		t.Fatalf("a second run: %v %+v\n%s", err, rep, log.String())
+	}
+	if got := w.dst.Lookup(users).Values("member"); len(got) != 1 || got[0] != keep {
+		t.Fatalf("Domain Users' members after the second run: %v\n%s", got, log.String())
+	}
+}

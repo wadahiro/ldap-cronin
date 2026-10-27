@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -450,6 +451,20 @@ func (h *fakeHelper) handle(req map[string]any) map[string]any {
 		_ = json.Unmarshal(raw, &vals)
 		e := h.entries[strings.ToLower(dn)]
 		e[name] = append(e[name], vals...)
+		return map[string]any{"ok": true}
+	case "delete_values":
+		name, _ := req["attr"].(string)
+		var vals []string
+		raw, _ := json.Marshal(req["values"])
+		_ = json.Unmarshal(raw, &vals)
+		e := h.entries[strings.ToLower(dn)]
+		var kept []string
+		for _, v := range e[name] {
+			if !slices.Contains(vals, v) {
+				kept = append(kept, v)
+			}
+		}
+		e[name] = kept
 		return map[string]any{"ok": true}
 	case "search":
 		var entries []map[string]any

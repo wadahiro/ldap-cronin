@@ -298,6 +298,11 @@ def op_add_values(req):
     return ok()
 
 
+def op_delete_values(req):
+    db.modify(message(req["dn"], {req["attr"]: req["values"]}, ldb.FLAG_MOD_DELETE))
+    return ok()
+
+
 # The journal of a run done in slices (clone -time-limit): the keys of the objects done and the largest RID imported,
 # in the lab's volume so that a snapshot carries exactly the progress its data has. Its first line is the
 # fingerprint of the source and config it is valid for.
@@ -386,7 +391,7 @@ def bump_rid(maximum):
 
 
 OPS = {"hello": op_hello, "get": op_get, "search": op_search, "add": op_add, "replace": op_replace,
-       "add_values": op_add_values, "finish": op_finish, "journal_load": op_journal_load,
+       "add_values": op_add_values, "delete_values": op_delete_values, "finish": op_finish, "journal_load": op_journal_load,
        "journal_add": op_journal_add, "journal_clear": op_journal_clear}
 
 

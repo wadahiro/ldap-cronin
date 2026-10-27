@@ -45,9 +45,10 @@ type Dir struct {
 	// EchoDN makes Get answer with the DN asked for, the entry's own in distinguishedName, as Windows does for a
 	// name it takes as another's.
 	EchoDN bool
-	// PrimaryGroups makes the fake keep AD's primary groups: a member value naming an account whose primaryGroupID
-	// is the group's RID is refused (Samba: "already set via primaryGroupID"), and setting primaryGroupID drops the
-	// account's member value from that group, which it must hold first.
+	// PrimaryGroups makes the fake keep AD's primary groups (measured on Windows Server 2019; Samba's samldb does the
+	// same): a member value naming an account whose primary group (primaryGroupID, else its type's default) is the
+	// group is refused, and setting primaryGroupID drops the account's member value from the new group, which it
+	// must hold first, and adds one to the previous group.
 	PrimaryGroups bool
 }
 
@@ -367,13 +368,48 @@ func (d *Dir) AddValues(ctx context.Context, dnStr, attr string, values []string
 		}
 		have[dn.Normalize(v)] = true
 		if d.PrimaryGroups && strings.EqualFold(attr, "member") {
-			if m := d.Entries[d.key(v)]; m != nil && strings.Join(m.Values("primaryGroupID"), "") == rid(*e) {
+			if m := d.Entries[d.key(v)]; m != nil && isADUser(*m) && primaryRID(*m) == rid(*e) {
 				return fmt.Errorf("modify %s: member %s already set via primaryGroupID %s: %w", dnStr, v, rid(*e), directory.ErrExists)
 			}
 		}
 	}
 	e.Attrs[attr] = append(e.Attrs[attr], values...)
 	d.Ops = append(d.Ops, "addvalues "+attr+" "+dnStr)
+	return nil
+}
+
+// DeleteValues refuses a value that is not there (noSuchAttribute), as a real server does.
+func (d *Dir) DeleteValues(ctx context.Context, dnStr, attr string, values []string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	e, ok := d.Entries[d.key(dnStr)]
+	if !ok {
+		return fmt.Errorf("modify %s: no such object", dnStr)
+	}
+	gone := map[string]bool{}
+	for _, v := range values {
+		gone[dn.Normalize(v)] = true
+	}
+	var kept []string
+	for _, v := range e.Values(attr) {
+		if gone[dn.Normalize(v)] {
+			delete(gone, dn.Normalize(v))
+			continue
+		}
+		kept = append(kept, v)
+	}
+	if len(gone) > 0 {
+		return fmt.Errorf("modify %s: no such %s value", dnStr, attr)
+	}
+	for n := range e.Attrs {
+		if strings.EqualFold(n, attr) {
+			e.Attrs[n] = kept
+		}
+	}
+	d.Ops = append(d.Ops, "deletevalues "+attr+" "+dnStr)
 	return nil
 }
 
@@ -547,26 +583,57 @@ func hasClassFold(e directory.Entry, class string) bool {
 	return false
 }
 
-// setPrimary checks that the account at account is a member of the group of RID r, and drops that member value, as
-// AD does when primaryGroupID is set.
+// setPrimary checks that the account at account is a member of the group of RID r, drops that member value and adds
+// one to its previous primary group, as AD does when primaryGroupID is set.
 func (d *Dir) setPrimary(account, r string) error {
+	var group, previous *directory.Entry
+	prev := ""
+	if a := d.Entries[d.key(account)]; a != nil {
+		prev = primaryRID(*a)
+	}
 	for _, g := range d.Entries {
-		if !hasClassFold(*g, "group") || rid(*g) != r {
-			continue
-		}
-		var kept []string
-		for _, m := range g.Values("member") {
-			if dn.Normalize(m) != dn.Normalize(account) {
-				kept = append(kept, m)
+		if hasClassFold(*g, "group") {
+			switch rid(*g) {
+			case r:
+				group = g
+			case prev:
+				previous = g
 			}
 		}
-		if len(kept) == len(g.Values("member")) {
-			return fmt.Errorf("modify %s: primaryGroupID %s: not a member of %s", account, r, g.DN)
-		}
-		g.Attrs["member"] = kept
-		return nil
 	}
-	return fmt.Errorf("modify %s: primaryGroupID %s: no such group", account, r)
+	if group == nil {
+		return fmt.Errorf("modify %s: primaryGroupID %s: no such group", account, r)
+	}
+	var kept []string
+	for _, m := range group.Values("member") {
+		if dn.Normalize(m) != dn.Normalize(account) {
+			kept = append(kept, m)
+		}
+	}
+	if len(kept) == len(group.Values("member")) {
+		return fmt.Errorf("modify %s: primaryGroupID %s: not a member of %s", account, r, group.DN)
+	}
+	group.Attrs["member"] = kept
+	if previous != nil && previous != group {
+		previous.Attrs["member"] = append(previous.Attrs["member"], account)
+	}
+	return nil
+}
+
+// primaryRID is an account's primary group: its primaryGroupID, else its type's default (a workstation's Domain
+// Computers, a server's Domain Controllers, a user's Domain Users).
+func primaryRID(e directory.Entry) string {
+	if v := strings.Join(e.Values("primaryGroupID"), ""); v != "" {
+		return v
+	}
+	uac, _ := strconv.Atoi(strings.Join(e.Values("userAccountControl"), ""))
+	switch {
+	case uac&0x2000 != 0:
+		return "516"
+	case uac&0x1000 != 0:
+		return "515"
+	}
+	return "513"
 }
 
 // rid is the RID of e's objectSid, "" when it has none.

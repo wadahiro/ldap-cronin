@@ -113,6 +113,14 @@ func (w Writer) Deferred(dn string, attrs map[string][]string, why string) {
 	fmt.Fprintln(w.W)
 }
 
+func (w Writer) DeleteValues(dn, attr string, values []string) {
+	fmt.Fprintln(w.W, Line("dn", dn))
+	fmt.Fprintln(w.W, "changetype: modify")
+	fmt.Fprintf(w.W, "delete: %s\n", attr)
+	w.attrs(map[string][]string{attr: values})
+	fmt.Fprintln(w.W)
+}
+
 func (w Writer) AddValues(dn, attr string, values []string) {
 	fmt.Fprintln(w.W, Line("dn", dn))
 	fmt.Fprintln(w.W, "changetype: modify")
