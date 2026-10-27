@@ -89,6 +89,28 @@ func (c *Client) acquire(ctx context.Context) (*ldap.Conn, error) {
 
 func (c *Client) release(l *ldap.Conn) { c.pool <- l }
 
+// retryWaits are the pauses before each new attempt of a write the server answered Busy or Unavailable, about half a
+// minute in all.
+var retryWaits = []time.Duration{100 * time.Millisecond, 250 * time.Millisecond, 500 * time.Millisecond, time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 15 * time.Second}
+
+// retry runs op again while the server answers Busy or Unavailable, which RFC 4511 makes transient and which leave
+// nothing done: Windows answers Busy (data -1102, an ESE write conflict) when the transactions of parallel workers
+// touch the same record, and the same write goes through once the other has committed. Stopping the run there, or
+// writing with one worker only, was rejected: the conflict is rare and the next attempt resolves it.
+func retry(ctx context.Context, op func() error) error {
+	for i := 0; ; i++ {
+		err := op()
+		if i == len(retryWaits) || !(ldap.IsErrorWithCode(err, ldap.LDAPResultBusy) || ldap.IsErrorWithCode(err, ldap.LDAPResultUnavailable)) {
+			return err
+		}
+		select {
+		case <-time.After(retryWaits[i]):
+		case <-ctx.Done():
+			return err
+		}
+	}
+}
+
 func dialOne(c ConnConfig) (*ldap.Conn, error) {
 	tlsCfg := &tls.Config{InsecureSkipVerify: c.InsecureSkipVerify} //nolint:gosec // enabled only when explicitly set in the config, for self-signed lab environments
 	// Unlike ldaps://, StartTLS does not set ServerName from the target host name automatically.
@@ -232,7 +254,7 @@ func (c *Client) Add(ctx context.Context, e directory.Entry, controls ...directo
 	for _, name := range sortedKeys(e.Attrs) {
 		req.Attribute(name, e.Attrs[name])
 	}
-	if err := conn.Add(req); err != nil {
+	if err := retry(ctx, func() error { return conn.Add(req) }); err != nil {
 		if ldap.IsErrorWithCode(err, ldap.LDAPResultEntryAlreadyExists) {
 			return directory.ErrExists
 		}
@@ -260,7 +282,7 @@ func (c *Client) Replace(ctx context.Context, dn string, attrs map[string][]stri
 	for _, name := range sortedKeys(attrs) {
 		req.Replace(name, attrs[name])
 	}
-	if err := conn.Modify(req); err != nil {
+	if err := retry(ctx, func() error { return conn.Modify(req) }); err != nil {
 		return fmt.Errorf("modify %s (%s): %w", dn, strings.Join(sortedKeys(attrs), ","), err)
 	}
 	return nil
@@ -274,7 +296,7 @@ func (c *Client) AddValues(ctx context.Context, dn, attr string, values []string
 	defer c.release(conn)
 	req := ldap.NewModifyRequest(dn, nil)
 	req.Add(attr, values)
-	if err := conn.Modify(req); err != nil {
+	if err := retry(ctx, func() error { return conn.Modify(req) }); err != nil {
 		return fmt.Errorf("modify %s (add %s): %w", dn, attr, err)
 	}
 	return nil
@@ -288,7 +310,7 @@ func (c *Client) DeleteValues(ctx context.Context, dn, attr string, values []str
 	defer c.release(conn)
 	req := ldap.NewModifyRequest(dn, nil)
 	req.Delete(attr, values)
-	if err := conn.Modify(req); err != nil {
+	if err := retry(ctx, func() error { return conn.Modify(req) }); err != nil {
 		return fmt.Errorf("modify %s (delete %s): %w", dn, attr, err)
 	}
 	return nil
