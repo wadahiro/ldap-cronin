@@ -2,13 +2,9 @@ package app
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 
 	"github.com/wadahiro/ldap-cronin/internal/clone"
@@ -228,28 +224,4 @@ func reverseDNs(in []string) []string {
 		out[len(in)-1-i] = v
 	}
 	return out
-}
-
-// journalFingerprint identifies the dump and the config a native import's journal is valid for: what an earlier
-// run finished is done only for the same entries written the same way. A server may change between runs, so it
-// has none (ok=false). The fixed password is left out, the config being hashed as a whole.
-func (s *Session) journalFingerprint() (string, bool) {
-	m, ok := s.dumpMeta()
-	if !ok {
-		return "", false
-	}
-	cfg := *s.Cfg
-	cfg.Accounts.FixedPassword = ""
-	b, err := json.Marshal(cfg)
-	if err != nil {
-		return "", false
-	}
-	h := sha256.New()
-	h.Write(b)
-	size := int64(-1)
-	if st, err := os.Stat(s.Cfg.Source.LDIF); err == nil {
-		size = st.Size()
-	}
-	fmt.Fprintf(h, "\n%s\n%s\n%d\n%d", m.Server, m.DumpedAt, m.Entries, size)
-	return hex.EncodeToString(h.Sum(nil)), true
 }

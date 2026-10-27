@@ -75,6 +75,7 @@ base_dn = "OU=IDM,DC=ad,DC=example,DC=com"
 
 [run]
 workers = 8                          # parallel connections to the target, for clone and diff (1 = sequential). Default 8
+# journal = "config.toml.journal"    # clone from a dump: what it finished, skipped by the run after an interrupted one (default: the config file's path + ".journal")
 
 [mapping]                            # how diff tells which source object a target object was cloned from (renames, moves)
 # mode = "auto"                      # auto (default): marker on AD, preserve on generic LDAP | preserve | marker | file | off

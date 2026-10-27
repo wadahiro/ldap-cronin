@@ -51,6 +51,7 @@ func (s *Session) Clone(ctx context.Context, dryRun bool, out, log io.Writer) (*
 		fmt.Fprintln(log, "note: the LDIF carries the fixed password of the cloned users; keep it where the password may be")
 	}
 	job := s.Job
+	var journal *fileJournal
 	if !dryRun {
 		var err error
 		if opt.UserPassword, err = s.secrets.UserPassword(); err != nil {
@@ -76,9 +77,19 @@ func (s *Session) Clone(ctx context.Context, dryRun bool, out, log io.Writer) (*
 				fmt.Fprintf(s.Warn, "warning: %s\n", warning)
 			}
 		}
+		if journal, err = s.openJournal(ctx, dst, job, log); err != nil {
+			return nil, err
+		}
 		// Asked last, after the notes and warnings above, which only read.
 		if err := s.confirmWrite(ctx, dst, "clone adds and updates entries under base_dn on the target"); err != nil {
 			return nil, err
+		}
+		if journal != nil {
+			if err := journal.start(); err != nil {
+				return nil, err
+			}
+			defer journal.Close() // after a failure before the run; the run's end closes it otherwise
+			opt.Journal = journal
 		}
 		if mode == config.MappingFile {
 			header, err := s.mappingHeader(ctx)
@@ -96,6 +107,19 @@ func (s *Session) Clone(ctx context.Context, dryRun bool, out, log io.Writer) (*
 	if opt.Mapping != nil {
 		if cerr := opt.Mapping.Close(); cerr != nil && err == nil {
 			err = fmt.Errorf("write mapping file: %w", cerr)
+		}
+	}
+	if journal != nil {
+		// Kept after a failure, an interruption or the time limit: what it records is done, and the next run skips
+		// it. Removed once the clone is complete, so the next one compares everything again.
+		jerr := journal.Flush(context.WithoutCancel(ctx))
+		if jerr == nil && err == nil {
+			jerr = journal.Remove()
+		} else if cerr := journal.Close(); jerr == nil {
+			jerr = cerr
+		}
+		if jerr != nil && err == nil {
+			err = jerr
 		}
 	}
 	return report, err

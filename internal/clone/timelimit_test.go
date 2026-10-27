@@ -243,3 +243,27 @@ func TestAResumedRunWritesAValueNamingAMovedWellKnownGroup(t *testing.T) {
 		t.Fatalf("Team's members: %v\n%s", got, log.String())
 	}
 }
+
+// An entry left out, its name taken on the target by another, is not journaled as done: a resumed run, skipping it,
+// would not know it was left out, and would write the values naming it.
+func TestAnEntryLeftOutIsNotJournaled(t *testing.T) {
+	ctx := context.Background()
+	src := seedSource()
+	parent := dn.Parent(alice)
+	one, two := "CN=Lee Ann,"+parent, "CN=Lee  Ann,"+parent // two spaces: a name the target takes as the one above
+	user := []string{"top", "person", "organizationalPerson", "user"}
+	src.Put(one, map[string][]string{"objectClass": user, "cn": {"Lee Ann"}, "sAMAccountName": {"lee1"}, "userAccountControl": {"512"}})
+	src.Put(two, map[string][]string{"objectClass": user, "cn": {"Lee  Ann"}, "sAMAccountName": {"lee2"}, "userAccountControl": {"512"}})
+	dst := fakedir.New(domain)
+	dst.Fold = func(k string) string { return strings.Join(strings.Fields(k), " ") }
+	journal := memJournal{}
+	var log bytes.Buffer
+	rep, err := Run(ctx, src, dst, options(t, "ou", "group", "user"), Options{UserPassword: "pw", Workers: 1, Journal: journal}, &log)
+	if err != nil || len(rep.NameTaken) != 1 {
+		t.Fatalf("%v %+v\n%s", err, rep.NameTaken, log.String())
+	}
+	left, added := rep.NameTaken[0].DN, rep.NameTaken[0].TargetDN
+	if journal["object "+dn.Normalize(left)] || !journal["object "+dn.Normalize(added)] {
+		t.Fatalf("journal: %v", journal)
+	}
+}

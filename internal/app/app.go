@@ -84,7 +84,8 @@ type Session struct {
 	// Progress, when set, is told how far clone and diff are.
 	Progress *progress.Bar
 	// TimeLimit, when set, stops clone before the first object it would start after it (clone.ErrTimeLimit), so
-	// a session that ends after a while (a cloud shell) runs it in slices; a native import resumes where it stopped.
+	// a session that ends after a while (a cloud shell) runs it in slices; from a dump, the next run resumes where it
+	// stopped (a native import's journal, or a clone's over LDAP).
 	TimeLimit time.Duration
 	// Backup, when set, is a directory CloneLab keeps the lab's latest snapshot in: taken after the clone (also one
 	// stopped at TimeLimit), and restored from when the lab does not exist, so a session that lost the lab goes on.

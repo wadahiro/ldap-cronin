@@ -312,6 +312,8 @@ done
 - Taking a backup stops Samba and writes the volumes (compressed): count it in the time a session has. A cloud
   shell's home holds 1 GB; see how large the lab's volumes are first.
 
+- A clone over LDAP into the lab (`native = false`) keeps its journal in a local file instead
+  ([operations.md](operations.md#resuming-a-clone-from-a-dump)); what follows is of a native import.
 - From a dump (`[source] ldif`), the import keeps a journal in the lab's volume of the objects it finished (and
   of their references), and the next run skips them without reading the lab again: its summary says how many
   (`skipped, done by an earlier run`). Being in the volume, a snapshot carries exactly the journal of its data,

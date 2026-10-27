@@ -741,6 +741,14 @@ func (r *runner) leaf(ctx context.Context, k *plan.Kind, e directory.Entry) erro
 	if err := r.writeLeaf(ctx, k, e); err != nil {
 		return err
 	}
+	// One left out (its name taken on the target, a reference it requires not writable) is not done: skipped from
+	// the journal, the next run would not know it was left out, and would write the values naming it.
+	r.mu.Lock()
+	skipped := r.skipped[dn.Normalize(e.DN)]
+	r.mu.Unlock()
+	if skipped {
+		return nil
+	}
 	return r.mark(ctx, key)
 }
 

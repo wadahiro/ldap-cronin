@@ -63,8 +63,32 @@ or a dry-run, which goes through the same phases without writing.
 
 ## Stopping a run and hung servers
 
-- **Ctrl-C** (or SIGTERM) stops `clone` and `diff` at their next LDAP operation; what is already sent finishes. A mapping file (`mode = "file"`) is still written, so a re-run continues where `clone` stopped (it is idempotent). An interrupted `diff` prints no summary, since a partial comparison would read as "no differences" in the part it did not reach. A second Ctrl-C ends the process at once. The exit code is 2.
+- **Ctrl-C** (or SIGTERM) stops `clone` and `diff` at their next LDAP operation; what is already sent finishes. A mapping file (`mode = "file"`) is still written, and a re-run continues where `clone` stopped (it is idempotent; from a dump it skips what is done, [below](#resuming-a-clone-from-a-dump)). An interrupted `diff` prints no summary, since a partial comparison would read as "no differences" in the part it did not reach. A second Ctrl-C ends the process at once. The exit code is 2.
+- **Busy** (LDAP result 51) or **Unavailable** (52) from the target is retried with growing pauses, about half a minute in all, before the run stops. Windows answers Busy (`problem 5001 (BUSY), data -1102`, a write conflict) when the writes of parallel workers touch the same record, and the retry goes through.
 - **`timeout`** in `[source]` / `[target]` (default `2m`, `"0"` for none) bounds every LDAP operation, so a server that stops answering fails the run instead of blocking it. It is generous because one modify of a large group on Samba can take seconds.
+
+### Resuming a clone from a dump
+
+A clone over LDAP from a dump (`[source] ldif`) records each object it finished, and each entry whose references
+it wrote, in a journal: the file `[run] journal`, by default the config file's path with `.journal` appended
+(`lab.toml.journal`). A run after an interrupted one (Ctrl-C, a lost session, an error, `-time-limit`) says
+`resuming: the journal ... holds N objects ...` and skips them without reading the target, so it goes on where the
+other stopped instead of comparing every object again. A complete run removes the journal, and the one after it
+compares everything.
+
+- The journal is valid for the same dump and the same config (but `[run]`: another number of workers goes on), and
+  the same target: it records the target's domain `objectGUID` and, as it goes, the root DSE's
+  `highestCommittedUSN`. A target made anew (another GUID), or restored to an earlier point (`lab restore`: a
+  smaller USN), drops it, as do another dump and another config: `note: the journal ... is dropped, and every
+  object is compared`.
+- From a server there is no journal (it may change between runs): the next run compares every object again. Nor
+  on a target that says neither (generic LDAP).
+- Done means done for the target: do not write the cloned objects between an interrupted run and the next (a test
+  run, a hand edit), or remove the journal first, as the next run does not compare what it records.
+- The last object an interrupted run started may be half done: it is not in the journal, and the next run
+  completes it. An entry not added (its name taken on the target) is never journaled, so the next run leaves it out
+  again, with the values naming it.
+- The journal holds the DNs of the cloned objects; it is written with the permissions 0600, as the mapping file is.
 
 ## Performance figures (measured with Samba4 as the target)
 

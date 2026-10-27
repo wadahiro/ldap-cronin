@@ -157,6 +157,9 @@ type Scope struct {
 // Run holds the run-time settings shared by clone and diff.
 type Run struct {
 	Workers int `toml:"workers"` // number of parallel target connections; 1 means sequential
+	// Journal is the file a clone over LDAP from a dump records what it finished in, so a run after an interrupted
+	// one skips it. Empty: the config file's path with ".journal" appended.
+	Journal string `toml:"journal"`
 }
 
 // Accounts is how clone gives the cloned users and computers a password, as their hashes are never copied.

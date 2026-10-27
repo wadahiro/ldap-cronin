@@ -240,6 +240,15 @@ type MarkerChecker interface {
 // Domain identifies a source domain for a native import.
 type Domain struct{ Root, Realm, NetBIOS, SID, GUID string }
 
+// GenerationReader reads which target it is and how far its history has gone, for the journal a clone keeps of
+// what it finished: a run resumed against another target, or against this one restored to an earlier point (a
+// snapshot), would skip objects it lacks.
+type GenerationReader interface {
+	// Generation returns the identifier of the target's naming context root, which a target made anew does not
+	// share, and a number every write raises, which a target restored to an earlier point has smaller.
+	Generation(ctx context.Context, d directory.Directory, root string) (id string, usn int64, err error)
+}
+
 type Profile struct {
 	Name  string
 	Kinds []KindSpec
@@ -326,6 +335,9 @@ type Profile struct {
 	Native NativeSupport
 	// Unique is nil where a target enforces nothing a source may break (generic LDAP).
 	Unique Uniqueness
+	// Generation is nil where a target cannot be told apart from another one, or from itself at an earlier point:
+	// clone over LDAP then keeps no journal. See GenerationReader.
+	Generation GenerationReader
 	// DNAttr is the attribute holding an entry's own DN (AD: distinguishedName), "" for none. A read of a DN may
 	// return the DN asked for though the entry holds another name the server takes as the same (Windows echoes it),
 	// and this attribute says which entry it is.

@@ -2,6 +2,7 @@ package profile
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"strconv"
 	"strings"
@@ -177,6 +178,7 @@ var AD = Profile{
 	Descriptors:  adDescriptors{},
 	Native:       adNative{},
 	Unique:       adUnique{},
+	Generation:   adGeneration{},
 	DNAttr:       "distinguishedName",
 }
 
@@ -391,6 +393,34 @@ func (adRoot) Root(_ context.Context, _ directory.Directory, baseDN string) (str
 		return root, nil
 	}
 	return "", fmt.Errorf("base_dn %q has no DC= components, which every AD naming context has", baseDN)
+}
+
+// adGeneration is the domain's objectGUID and the root DSE's highestCommittedUSN, which Windows and Samba both
+// publish. The invocationId, which Windows changes on a restore from backup, was rejected: a lab restored from a
+// snapshot of its volumes keeps it.
+type adGeneration struct{}
+
+func (adGeneration) Generation(ctx context.Context, d directory.Directory, root string) (string, int64, error) {
+	e, err := d.Get(ctx, root, []string{"objectGUID"})
+	if err != nil {
+		return "", 0, err
+	}
+	if e == nil || first(e.Values("objectGUID")) == "" {
+		return "", 0, fmt.Errorf("cannot read objectGUID from the target's domain root %s", root)
+	}
+	dse, err := d.Get(ctx, "", []string{"highestCommittedUSN"})
+	if err != nil {
+		return "", 0, err
+	}
+	var usn string
+	if dse != nil {
+		usn = first(dse.Values("highestCommittedUSN"))
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(usn), 10, 64)
+	if err != nil {
+		return "", 0, fmt.Errorf("cannot read highestCommittedUSN from the target's root DSE: %q", usn)
+	}
+	return hex.EncodeToString([]byte(first(e.Values("objectGUID")))), n, nil
 }
 
 type adNative struct{}
