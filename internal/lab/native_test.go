@@ -171,6 +171,28 @@ func TestNativeJournalOutlivesASliceAndOnlyForItsFingerprint(t *testing.T) {
 	must(t, n.Close(ctx))
 }
 
+// With dbcheck skipped, the end of a complete import advances the RIDs without it, and removes the journal as one
+// that passed it does: the import is complete.
+func TestNativeFinishWithoutDBCheckCompletesTheImport(t *testing.T) {
+	ctx := context.Background()
+	fx := newLabFixture(t)
+	fx.up("ad.example.com")
+	n, err := fx.l.OpenNative(ctx, NativeOptions{SkipDBCheck: true})
+	must(t, err)
+	j, err := n.Journal(ctx, "fp-1")
+	must(t, err)
+	must(t, j.Mark(ctx, "object cn=a"))
+	must(t, j.Flush(ctx))
+	res, err := n.Finish(ctx)
+	if err != nil || res.MaxRID != 1234 || res.DBCheck != "" || strings.Contains(res.Summary(), "dbcheck") {
+		t.Fatalf("%+v %v", res, err)
+	}
+	if fx.d.helper.journalKeys != nil {
+		t.Fatalf("the journal is kept: %v", fx.d.helper.journalKeys)
+	}
+	must(t, n.Close(ctx))
+}
+
 func TestNativeRestartsTheLabWhenTheSelfCheckFails(t *testing.T) {
 	fx := newLabFixture(t)
 	fx.up("ad.example.com")

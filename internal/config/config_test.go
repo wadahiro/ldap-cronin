@@ -75,6 +75,8 @@ func TestParseRejectsInvalid(t *testing.T) {
 		"a dump as the target":       strings.Replace(valid, "[target]", "[target]\nldif = \"prod.ldif\"", 1),
 		"a lab as the source":        strings.Replace(valid, "[target]", "[source.lab]\n[target]", 1),
 		"fast_password over LDAP":    strings.Replace(valid, "[scope]", "[target.lab]\nfast_password = true\n[scope]", 1),
+		"dbcheck over LDAP":          strings.Replace(valid, "[scope]", "[target.lab]\ndbcheck = \"skip\"\n[scope]", 1),
+		"an unknown dbcheck":         strings.Replace(valid, "[scope]", "[target.lab]\nnative = true\ndbcheck = \"no\"\n[scope]", 1),
 		"native with configuration_refs": strings.Replace(valid, "[scope]",
 			"[target.lab]\nnative = true\n[scope]\nconfiguration_refs = \"clone\"", 1),
 		"an EC2 key on docker":    strings.Replace(valid, "[scope]", "[target.lab]\nregion = \"ap-northeast-1\"\n[scope]", 1),
@@ -111,11 +113,11 @@ func TestTargetLabSaysWhichLabAndHowItIsWritten(t *testing.T) {
 	if c.Target.Lab == nil || c.Target.Lab.Instance != "dev2" || c.NativeLab() != nil {
 		t.Fatalf("a lab cloned over LDAP: %+v", c.Target.Lab)
 	}
-	c, err = Parse([]byte(strings.Replace(valid, "[scope]", "[target.lab]\nnative = true\nfast_password = true\n[scope]", 1)))
+	c, err = Parse([]byte(strings.Replace(valid, "[scope]", "[target.lab]\nnative = true\nfast_password = true\ndbcheck = \"skip\"\n[scope]", 1)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if l := c.NativeLab(); l == nil || !l.FastPassword {
+	if l := c.NativeLab(); l == nil || !l.FastPassword || l.DBCheck != DBCheckSkip {
 		t.Fatalf("a native lab: %+v", c.Target.Lab)
 	}
 	if c, _ := Parse([]byte(valid)); c.Target.Lab != nil || c.NativeLab() != nil {

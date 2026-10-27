@@ -130,7 +130,12 @@ func (s *Session) Native(ctx context.Context, l *lab.Lab, opts lab.NativeOptions
 	}
 	// Said before: dbcheck prints nothing until it ends, and on a large domain it reads every object for minutes,
 	// tens of them on a small CPU, which looked like a run that hung.
-	fmt.Fprintln(out, "native: updating the RIDs and checking the lab with dbcheck (minutes on a large domain; an interruption keeps the journal)")
+	if opts.SkipDBCheck {
+		fmt.Fprintln(out, "native: updating the RIDs; dbcheck is skipped ([target.lab] dbcheck = \"skip\")")
+		fmt.Fprintf(s.Warn, "note: the lab was not checked with dbcheck, which catches what the import's relaxed checks let through; check it when there is time: docker exec %s samba-tool dbcheck --cross-ncs\n", l.Name())
+	} else {
+		fmt.Fprintln(out, "native: updating the RIDs and checking the lab with dbcheck (minutes on a large domain; an interruption keeps the journal)")
+	}
 	// Finish removes the journal once dbcheck has passed: removed before, an interrupted dbcheck made the next run
 	// compare every object again.
 	res, err := n.Finish(ctx)

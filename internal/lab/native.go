@@ -41,6 +41,8 @@ type NativeOptions struct {
 	// ACL gives the lab's objects the source's owner, group and DACL (written by the caller after the import,
 	// through Replace; the helper replaces those three parts only).
 	ACL bool
+	// SkipDBCheck leaves dbcheck out of Finish (see there).
+	SkipDBCheck bool
 }
 
 // NativeInfo is the information about the lab's Samba and domain reported by the helper.
@@ -105,6 +107,7 @@ type Native struct {
 	wasUp    bool       // whether the lab was running before the start; Close resumes it
 	closed   bool
 	finished bool
+	opts     NativeOptions
 }
 
 var _ directory.Directory = (*Native)(nil)
@@ -164,7 +167,7 @@ func (l *Lab) OpenNative(ctx context.Context, opts NativeOptions) (*Native, erro
 	if err != nil {
 		return nil, err
 	}
-	n := &Native{l: l, wasUp: state != "exited"}
+	n := &Native{l: l, wasUp: state != "exited", opts: opts}
 	if n.wasUp {
 		l.logf("Stopping lab %s (only for the duration of the import; it resumes afterwards)", name)
 		if _, err := l.docker(ctx, "stop", "-t", stopTimeoutSec, name); err != nil {
@@ -333,10 +336,16 @@ func mapExists(err error) error {
 }
 
 // Finish performs the post-import cleanup. It advances the RID allocation past the largest imported RID (otherwise
-// users created over LDAP after the import would collide with imported RIDs), checks consistency with dbcheck, and
-// then removes the journal: the import is complete. Call it only when the import succeeded.
+// users created over LDAP after the import would collide with imported RIDs), checks consistency with dbcheck
+// (unless NativeOptions.SkipDBCheck), and then removes the journal: the import is complete. Call it only when the
+// import succeeded.
 func (n *Native) Finish(ctx context.Context) (NativeFinish, error) {
-	resp, err := n.call(ctx, map[string]any{"op": "finish"})
+	req := map[string]any{"op": "finish"}
+	if n.opts.SkipDBCheck {
+		// The import is complete all the same: the journal is removed, as after a dbcheck that passed.
+		req["dbcheck"], req["complete"] = false, true
+	}
+	resp, err := n.call(ctx, req)
 	if err != nil {
 		return NativeFinish{}, err
 	}
@@ -450,7 +459,10 @@ func (n *Native) restart(ctx context.Context) error {
 
 // Summary describes the post-import result in one line.
 func (f NativeFinish) Summary() string {
-	parts := []string{"dbcheck: " + strings.TrimSpace(f.DBCheck)}
+	var parts []string
+	if d := strings.TrimSpace(f.DBCheck); d != "" {
+		parts = append(parts, "dbcheck: "+d)
+	}
 	if f.MaxRID > 0 {
 		parts = append(parts, fmt.Sprintf("largest imported RID=%d (next allocation=%d)", f.MaxRID, f.RIDNext))
 	}

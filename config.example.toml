@@ -23,6 +23,7 @@ insecure_skip_verify = true
 # native = true                # Samba only: write its database directly, keeping objectGUID and objectSid
 # fast_password = true         # with native: the fixed password's NT hash written directly, ~3x faster, no Kerberos AES keys
 # acl = "source"               # with native: the source's ACLs (owner, group, DACL), the domain root's included; default "lab"
+# dbcheck = "skip"             # with native: no samba-tool dbcheck after the import, where it takes too long; default "run"
 # server_attributes = "lab"    # with native: the lab's own whenCreated, logon times, lockout and sIDHistory instead of the source's (the default)
 # platform = "ec2"             # a Windows Server domain controller on Amazon EC2 instead (the aws command; lab up,
 #                              # snapshot, restore, down, reset take --config; docs/lab.md). It needs region, subnet, instance_profile;

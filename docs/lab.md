@@ -43,6 +43,7 @@ image = "ldap-cronin/samba-ad:local"     # what lab up --config creates it from 
 # fast_password = true
 # server_attributes = "lab"              # native: the lab's own whenCreated, logons and lockout instead of the source's
 # acl = "source"                         # native: the source's ACLs, the domain root's included (default: the lab's own)
+# dbcheck = "skip"                       # native: no dbcheck after the import (default "run"; see below)
 ```
 
 ```sh
@@ -274,6 +275,11 @@ ldap-cronin diff -config config.toml      # matches objects by objectGUID direct
 - `clone` names the lab and lists what it will do before stopping it (`-y` skips the question). The lab container is stopped only during the import and resumed afterwards, also on failure. If the lab's domain (root DN, SID, GUID) differs from the source, it refuses without writing anything.
 - It has no dry-run: nothing goes over LDAP, so there is no LDIF.
 - After the import it runs `dbcheck` (Samba's database check) and fails on errors. It also advances the RID allocation so RIDs of users created over LDAP later do not collide with imported ones.
+- `dbcheck = "skip"` leaves `dbcheck` out, for a machine on which it takes too long: it reads the whole database,
+  minutes on a large domain and tens of them on a small CPU. The RIDs are advanced all the same, and the import is
+  complete (its journal removed). What `dbcheck` would catch, an inconsistency the import's relaxed checks let
+  through, then goes unnoticed: clone says so, with the command to check the lab later
+  (`docker exec <lab> samba-tool dbcheck --cross-ncs`, while the lab runs).
 - It can be re-run: an object that already exists with the same `objectGUID` gets only its attribute differences updated. **If an object with a different `objectGUID` exists at the same DN, it fails without rewriting** (`objectGUID` cannot be changed).
 - It writes no marker and no mapping file: neither is needed when the `objectGUID` is the same.
 - `fast_password = true` makes it about 3 times faster: 5,000 users and 50 groups took 24s instead of 75s (an LDAP `clone`
@@ -318,8 +324,9 @@ done
   of their references), and the next run skips them without reading the lab again: its summary says how many
   (`skipped, done by an earlier run`). Being in the volume, a snapshot carries exactly the journal of its data,
   so a lab restored from an older snapshot resumes from that snapshot's progress. The journal is valid for the same
-  dump and the same config only; with another it is dropped and every object is compared. It is removed when an
-  import completes, after `dbcheck` passes.
+  dump and the same config only (but `[run]` and `dbcheck`, which do not change what is written); with another it
+  is dropped and every object is compared. It is removed when an import completes, after `dbcheck` passes (or
+  without it, `dbcheck = "skip"`).
 - From a server there is no journal (it may change between runs): the next run compares every object again.
 - The end of a slice advances the RID allocation (the lab can be used and snapshotted as it is); `dbcheck`, which
   reads the whole database, runs once, at the end of the slice that completes the import. So do the ACLs

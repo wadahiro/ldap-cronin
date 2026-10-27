@@ -474,6 +474,9 @@ func (h *fakeHelper) handle(req map[string]any) map[string]any {
 		return map[string]any{"ok": true, "entries": entries}
 	case "finish":
 		if req["dbcheck"] == false {
+			if req["complete"] == true {
+				h.journalFP, h.journalKeys = "", nil // dbcheck skipped: the import is complete all the same
+			}
 			return map[string]any{"ok": true, "max_rid": 1234, "rid_next": 1235, "dbcheck": ""}
 		}
 		h.journalFP, h.journalKeys = "", nil // complete: the helper removes the journal once dbcheck passes

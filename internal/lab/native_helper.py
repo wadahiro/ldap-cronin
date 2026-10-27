@@ -371,6 +371,9 @@ def op_finish(req):
     if max_rid:
         bumped = bump_rid(max_rid)
     if req.get("dbcheck") is False:
+        if req.get("complete"):
+            # dbcheck left out by [target.lab] dbcheck = "skip": the import is complete all the same.
+            op_journal_clear(req)
         return ok(max_rid=max_rid, rid_next=bumped, dbcheck="", fast_passwords=fast_count, server_attributes=server_count)
     proc = subprocess.run(["samba-tool", "dbcheck", "--cross-ncs"], capture_output=True, text=True)
     out = (proc.stdout + proc.stderr).strip().splitlines()

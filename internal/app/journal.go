@@ -22,9 +22,10 @@ import (
 
 // journalFingerprint identifies the dump and the config a journal is valid for: what an earlier run finished is
 // done only for the same entries written the same way. A server may change between runs, so it has none
-// (ok=false). The fixed password is left out, the config being hashed as a whole, and so is [run]: the workers and
-// where the journal is kept do not change what is written, and a run after one stopped by a busy server may well
-// take fewer workers.
+// (ok=false). The fixed password is left out, the config being hashed as a whole, and so are [run] and [target.lab]
+// dbcheck: the workers, where the journal is kept and whether the lab is checked at the end do not change what is
+// written, and a run after one stopped by a busy server may well take fewer workers, the last slice of an import
+// skip a dbcheck that would take too long.
 func (s *Session) journalFingerprint() (string, bool) {
 	m, ok := s.dumpMeta()
 	if !ok {
@@ -33,6 +34,11 @@ func (s *Session) journalFingerprint() (string, bool) {
 	cfg := *s.Cfg
 	cfg.Accounts.FixedPassword = ""
 	cfg.Run = config.Run{}
+	if cfg.Target.Lab != nil {
+		l := *cfg.Target.Lab
+		l.DBCheck = ""
+		cfg.Target.Lab = &l
+	}
 	b, err := json.Marshal(cfg)
 	if err != nil {
 		return "", false

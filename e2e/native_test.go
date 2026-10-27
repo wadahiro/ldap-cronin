@@ -381,14 +381,19 @@ func TestNativeImportKeepsObjectGUIDAndObjectSid(t *testing.T) {
 	_, err = app.Dump(context.Background(), app.DumpOptions{From: dumpPath, Out: maskedPath, MaskValue: config.DefaultMaskValue,
 		Masked: []string{"displayName"}, Version: "e2e"}, func() (string, error) { return "", errors.New("no password for a dump of a dump") }, &bytes.Buffer{})
 	must(err)
+	// And without dbcheck ([target.lab] dbcheck = "skip"): the import is complete all the same, its journal removed.
 	maskedCfg := *sliceCfg
 	maskedCfg.Source.LDIF = maskedPath
+	maskedLab := *sliceCfg.Target.Lab
+	maskedLab.DBCheck = config.DBCheckSkip
+	maskedCfg.Target.Lab = &maskedLab
 	remasked, err := app.Open(context.Background(), &maskedCfg, app.Secrets{SourceBind: pw, TargetBind: pw, UserPassword: func() (string, error) { return fixed, nil }}, app.LDAP, &bytes.Buffer{})
 	must(err)
 	defer remasked.Close()
 	var remaskLog bytes.Buffer
 	remaskRep, err := remasked.CloneLab(context.Background(), dstLab, &remaskLog, &remaskLog)
-	if err != nil || remaskRep.Added != 0 || remaskRep.Updated != 5 {
+	if err != nil || remaskRep.Added != 0 || remaskRep.Updated != 5 || !strings.Contains(remaskLog.String(), "dbcheck is skipped") ||
+		strings.Contains(remaskLog.String(), "dbcheck: ") || journal() {
 		t.Fatalf("the import from the masked dump: %v %+v\n%s", err, remaskRep, remaskLog.String())
 	}
 	labConn, err := dialAs(dstLDAPS, admin, password)

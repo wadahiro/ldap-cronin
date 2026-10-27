@@ -70,6 +70,9 @@ type Lab struct {
 	// the containers above base_dn theirs, so the inherited ACEs are the source's too; "lab" (the default) leaves the
 	// lab's own. Off by default: few tests read ACLs, and the domain root's changes the whole lab.
 	ACL string `toml:"acl"`
+	// DBCheck (native only): "run" (the default) checks the lab with samba-tool dbcheck after a complete import and
+	// fails on an error; "skip" leaves it out, for a machine on which it takes too long to wait for.
+	DBCheck string `toml:"dbcheck"`
 
 	// platform = "ec2": where and how the instance runs. The aws command's own configuration (credentials, profile)
 	// applies; Region overrides its region.
@@ -109,6 +112,12 @@ const (
 const (
 	ServerAttributesSource = "source"
 	ServerAttributesLab    = "lab"
+)
+
+// The [target.lab] dbcheck settings.
+const (
+	DBCheckRun  = "run"
+	DBCheckSkip = "skip"
 )
 
 // OnEC2 is whether the lab runs on Amazon EC2.
@@ -439,6 +448,14 @@ func (c *Config) validate() error {
 		case "", ServerAttributesSource, ServerAttributesLab:
 		default:
 			return fmt.Errorf("[target.lab] acl must be %q or %q, got %q", ServerAttributesSource, ServerAttributesLab, l.ACL)
+		}
+		switch l.DBCheck {
+		case "", DBCheckRun, DBCheckSkip:
+		default:
+			return fmt.Errorf("[target.lab] dbcheck must be %q or %q, got %q", DBCheckRun, DBCheckSkip, l.DBCheck)
+		}
+		if l.DBCheck != "" && !l.Native {
+			return errors.New("[target.lab] dbcheck is for native = true: a clone over LDAP goes through Samba's checks as it writes")
 		}
 		if l.ACL != "" && !l.Native {
 			return fmt.Errorf("[target.lab] acl is for native = true; over LDAP, [attributes] acl = %q copies the ACLs", ACLCopy)

@@ -99,7 +99,7 @@ func (s *Session) CloneLab(ctx context.Context, l *lab.Lab, out, log io.Writer) 
 	var report *clone.Report
 	if lt := s.Cfg.Target.Lab; lt.Native {
 		report, err = s.Native(ctx, l, lab.NativeOptions{FastPassword: lt.FastPassword, ServerAttributes: lt.ServerAttributes != config.ServerAttributesLab,
-			ACL: lt.ACL == config.ServerAttributesSource}, out)
+			ACL: lt.ACL == config.ServerAttributesSource, SkipDBCheck: lt.DBCheck == config.DBCheckSkip}, out)
 	} else {
 		report, err = s.Clone(ctx, false, out, log)
 	}

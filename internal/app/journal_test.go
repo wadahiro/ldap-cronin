@@ -205,3 +205,18 @@ func TestAJournalTakesKeysFromEveryWorker(t *testing.T) {
 		t.Fatalf("read back %d keys", got.Len())
 	}
 }
+
+// Whether a native import ends with dbcheck does not change what it writes: the last slice of an import may skip a
+// dbcheck that would take too long and keep the journal of the slices before it. What is written does change it.
+func TestAJournalOutlivesSkippingDBCheck(t *testing.T) {
+	_, s, _ := journalWorld(t)
+	s.Cfg.Target.Lab = &config.Lab{Native: true}
+	checked, _ := s.journalFingerprint()
+	s.Cfg.Target.Lab = &config.Lab{Native: true, DBCheck: config.DBCheckSkip}
+	skipped, _ := s.journalFingerprint()
+	s.Cfg.Target.Lab = &config.Lab{Native: true, FastPassword: true}
+	other, _ := s.journalFingerprint()
+	if checked != skipped || checked == other || s.Cfg.Target.Lab.FastPassword != true {
+		t.Fatalf("checked %s, skipped %s, fast_password %s", checked, skipped, other)
+	}
+}
