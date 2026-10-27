@@ -327,7 +327,7 @@ func TestNativeImportKeepsObjectGUIDAndObjectSid(t *testing.T) {
 	must(src.Add(context.Background(), directory.Entry{DN: slice, Attrs: map[string][]string{"objectClass": {"organizationalUnit"}, "ou": {"Slice"}}}))
 	for i := range 5 {
 		must(src.Add(context.Background(), directory.Entry{DN: fmt.Sprintf("CN=Slice %d,%s", i, slice),
-			Attrs: map[string][]string{"objectClass": {"user"}, "sAMAccountName": {fmt.Sprintf("slice%d", i)}}}))
+			Attrs: map[string][]string{"objectClass": {"user"}, "sAMAccountName": {fmt.Sprintf("slice%d", i)}, "displayName": {fmt.Sprintf("Slice User %d", i)}}}))
 	}
 	var dumped bytes.Buffer
 	_, err = dump.Write(context.Background(), src, profile.AD, dump.Options{BaseDNs: []string{slice}, Server: "ldaps://source", Version: "e2e"}, &dumped)
@@ -375,6 +375,37 @@ func TestNativeImportKeepsObjectGUIDAndObjectSid(t *testing.T) {
 	if err != nil || againRep.Added != 0 || !strings.Contains(again.String(), "restoring it from the latest backup") {
 		t.Fatalf("after the lab was lost: %v %+v\n%s", err, againRep, again.String())
 	}
+	// A dump of that dump with displayName masked: importing again from it writes displayName alone, the objects
+	// keeping what they have (the import from a new dump drops the journal of the old, and compares every object).
+	maskedPath := filepath.Join(t.TempDir(), "slice-masked.ldif")
+	_, err = app.Dump(context.Background(), app.DumpOptions{From: dumpPath, Out: maskedPath, MaskValue: config.DefaultMaskValue,
+		Masked: []string{"displayName"}, Version: "e2e"}, func() (string, error) { return "", errors.New("no password for a dump of a dump") }, &bytes.Buffer{})
+	must(err)
+	maskedCfg := *sliceCfg
+	maskedCfg.Source.LDIF = maskedPath
+	remasked, err := app.Open(context.Background(), &maskedCfg, app.Secrets{SourceBind: pw, TargetBind: pw, UserPassword: func() (string, error) { return fixed, nil }}, app.LDAP, &bytes.Buffer{})
+	must(err)
+	defer remasked.Close()
+	var remaskLog bytes.Buffer
+	remaskRep, err := remasked.CloneLab(context.Background(), dstLab, &remaskLog, &remaskLog)
+	if err != nil || remaskRep.Added != 0 || remaskRep.Updated != 5 {
+		t.Fatalf("the import from the masked dump: %v %+v\n%s", err, remaskRep, remaskLog.String())
+	}
+	labConn, err := dialAs(dstLDAPS, admin, password)
+	must(err)
+	// The users were made without a password, disabled (546): a run sets the password again of an account that must
+	// change it, and the lab's setpassword enabled it, which every other run then undid.
+	must(labConn.Walk(context.Background(), slice, "(objectClass=user)", []string{"displayName", "userAccountControl"}, func(e directory.Entry) error {
+		if got := strings.Join(e.Values("displayName"), ""); got != config.DefaultMaskValue {
+			t.Errorf("%s: displayName %q", e.DN, got)
+		}
+		if got := strings.Join(e.Values("userAccountControl"), ""); got != "546" {
+			t.Errorf("%s: userAccountControl %s, the source's 546", e.DN, got)
+		}
+		return nil
+	}))
+	labConn.Close()
+
 	// The imports stopped and restarted the lab.
 	dst.Close()
 	dst, err = dialAs(dstLDAPS, admin, password)

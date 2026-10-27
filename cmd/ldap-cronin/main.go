@@ -38,6 +38,7 @@ const usage = `Usage: ldap-cronin <command> [flags]
 Commands, in the order they are used:
   dump          Read a source (read only) into one LDIF file that check, clone, diff and the rest take as [source]
                 ldif, so they never connect to production. Takes no config file: -url, -bind-dn, -base-dn, -o
+                (-from <dump> -o: the dump again, with more attributes masked)
   lab           Start an AD-compatible Samba4 on docker for verification, and take and restore snapshots (lab help)
   check         Say what clone would do, writing nothing: the attributes it would leave behind (with the
                 [attributes] line that copies them), what the target's schema lacks and refuses, the next steps.
@@ -58,7 +59,7 @@ Flags (clone/diff):
                    source and asks [y/N] first
   -time-limit <d>  (clone only) Stop before the first object after d (15m), exit 3; running again goes on. d counts
                    from the start of the run, reading the source included (the summary's time: line says how
-                   long that took). A native import from a dump keeps a journal in the lab and skips what is done
+                   long that took). From a dump, a journal of what is done lets the next run skip it
   -backup <dir>    (clone into a docker lab) Keep the lab's latest snapshot in dir: taken after the clone (also one
                    stopped at -time-limit), restored from when the lab does not exist (a new cloud shell session)
   -format <f>      (diff only) text (default), or json: JSON Lines, one object per difference, then the summary
@@ -77,6 +78,8 @@ Flags (dump):
                    Repeat it for several OUs (none below another), as [scope] base_dn lists them
   -o <file>        The dump (.gz: compressed). Written to a temporary file and renamed when complete
   -mask <a,b>      Attributes masked in the file itself (-mask-value, default ********)
+  -from <file>     Read a dump instead of a server and write it again to -o with the attributes -mask adds masked
+                   too: the same moment of production (its dumped-at), which a re-run of clone brings the target to
   -ca-file <file>, -insecure-skip-verify, -start-tls, -timeout <d>   The connection, as in [source]
 
 Flags (check):
@@ -219,7 +222,7 @@ func runClone(ctx context.Context, args []string, out io.Writer) error {
 	cfgPath := fs.String("config", "config.toml", "config file")
 	dryRun := fs.Bool("dry-run", false, "print LDIF instead of writing")
 	withPassword := fs.Bool("with-password", false, "with -dry-run: the LDIF carries the users' fixed password and what follows it, so ldapmodify alone completes them")
-	timeLimit := fs.Duration("time-limit", 0, "stop before the first object after this long from the start, reading the source included (exit 3); run again to go on: a native import from a dump skips what is done")
+	timeLimit := fs.Duration("time-limit", 0, "stop before the first object after this long from the start, reading the source included (exit 3); run again to go on: from a dump it skips what is done")
 	backup := fs.String("backup", "", "a directory to keep the docker lab's latest snapshot in: taken after the clone (also one stopped at -time-limit), restored from when the lab does not exist")
 	yes := yesFlag(fs)
 	progressMode := progressFlag(fs)
@@ -380,6 +383,7 @@ func runDump(ctx context.Context, args []string, log io.Writer) error {
 	var baseDNs listFlag
 	fs.Var(&baseDNs, "base-dn", "what to dump (repeat it for several)")
 	out := fs.String("o", "", "the dump file (.gz: compressed)")
+	from := fs.String("from", "", "a dump to read instead of a server, to write it again with more attributes masked (-mask)")
 	maskAttrs := fs.String("mask", "", "attributes masked in the dump, comma separated; kind:attribute masks it on that kind's entries only (user:mail)")
 	maskValue := fs.String("mask-value", config.DefaultMaskValue, "the value masked attributes get")
 	withCredentials := fs.Bool("with-credentials", false, "also dump the credentials the server returns (LAPS, shadow credentials, ...), for [attributes] credentials = \"copy\"")
@@ -391,8 +395,11 @@ func runDump(ctx context.Context, args []string, log io.Writer) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *url == "" || *bindDN == "" || len(baseDNs) == 0 || *out == "" {
-		return errors.New("dump needs -url, -bind-dn, -base-dn and -o")
+	switch {
+	case *from != "" && *out == "":
+		return errors.New("dump -from needs -o")
+	case *from == "" && (*url == "" || *bindDN == "" || len(baseDNs) == 0 || *out == ""):
+		return errors.New("dump needs -url, -bind-dn, -base-dn and -o (or -from and -o)")
 	}
 	mode, err := progress.ParseMode(*progressMode)
 	if err != nil {
@@ -404,11 +411,16 @@ func runDump(ctx context.Context, args []string, log io.Writer) error {
 			masked = append(masked, a)
 		}
 	}
-	display, bar := progress.Start(mode, os.Stderr, "dump ← "+*url)
+	what := *url
+	if *from != "" {
+		what = *from
+	}
+	display, bar := progress.Start(mode, os.Stderr, "dump ← "+what)
 	defer display.Stop()
 	_, err = app.Dump(ctx, app.DumpOptions{
 		Conn:    ldapdir.ConnConfig{URL: *url, BindDN: *bindDN, CAFile: *caFile, InsecureSkipVerify: *insecure, StartTLS: *startTLS, Timeout: *timeout},
 		BaseDNs: baseDNs, Out: *out, MaskValue: *maskValue, Masked: masked, Version: version, Progress: bar, Credentials: *withCredentials,
+		From: *from,
 	}, secrets.SourceBind, display.Writer(log))
 	return err
 }

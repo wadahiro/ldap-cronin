@@ -96,6 +96,32 @@ lines say what it is; LDIF tools skip them:
 - The file holds everything else of the entries, personal data included: keep it as you keep production's data
   (it is written readable by its owner only).
 
+## Masking more later (`-from`)
+
+An attribute let through by a dump (`displayName`, say) that should have been masked does not need production read
+again: `dump -from` reads a dump instead of a server and writes it again with the attributes `-mask` adds masked
+too, on every entry it holds (the ones outside the base DN included). No config file and no password:
+
+```sh
+ldap-cronin dump -from prod.ldif.gz -o prod-masked.ldif.gz -mask displayName
+```
+
+- The new dump is the one `dump` would have written then with those masks: the same entries, the same server and
+  `dumped-at` (the moment of production `diff` compares a target with), the masks of the first besides the new ones.
+  It is read as a dump of the server is, so a value folded over several lines or base64-encoded (a Japanese
+  display name) is masked whole.
+- **A target cloned from the first dump** (over LDAP, or a native import into a lab) **is brought to the new one by
+  running `clone` again** with `[source] ldif` set to it: the masked attributes are the only values that differ, so
+  they are the only ones written (the summary counts each entry holding one as updated), and `diff` against the
+  new dump then finds nothing. A journal of the first dump ([operations.md](operations.md#resuming-a-clone-from-a-dump))
+  is dropped, as of another dump.
+- `-base-dn` narrows it to a part of the first dump's base DNs; without it, the new dump has all of them.
+- `-mask-value` must be the first dump's when that masked anything: a dump has one value for every masked attribute.
+- Credentials the first dump carries (`-with-credentials`) are left out unless `-with-credentials` is given again.
+- A masked value cannot be unmasked: keep the first dump only where its values may be, or remove it.
+- A dump taken before dumps carried the groups outside the base DN that hold its entries is refused: dump the server
+  again. So is `-o` naming the file `-from` reads.
+
 ## Reading it
 
 - **Filters**: the kinds' filters, `[scope] filters` and the tool's own are evaluated as the server does for `&`, `|`,
