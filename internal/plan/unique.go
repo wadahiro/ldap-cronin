@@ -28,6 +28,30 @@ type Withheld struct {
 	Refused []RefusedEntry
 	refused map[string]string // normalized DN -> why, of Refused
 	refuses func(e directory.Entry) string
+	// PrimaryMembers are the member values the target refuses: a group's naming an account whose primary group it is
+	// (profile.UniqueRules.PrimaryMembers: Samba); PrimaryWhy says so.
+	PrimaryMembers []PrimaryMember
+	PrimaryWhy     string
+	primaryMember  map[string]bool // normalized group DN + "\x00" + normalized member DN
+	// MissingPrimary are the accounts whose primary group (not their type's default) the source lacks: a dump taken
+	// before primary groups outside its base DN were carried, or a group deleted. They keep their type's default.
+	// MissingWhy says why the source may lack them (MissingPrimaryWhy).
+	MissingPrimary []MissingPrimary
+	MissingWhy     string
+}
+
+// PrimaryMember is a member value of a group naming an account whose primary group the group is.
+type PrimaryMember struct{ Group, Member string }
+
+// MissingPrimary is an account whose primary group, by its RID, the source lacks.
+type MissingPrimary struct{ DN, RID string }
+
+// PrimaryMemberWhy says why the target refuses group's member value naming member, "" when it takes it.
+func (w *Withheld) PrimaryMemberWhy(group, member string) string {
+	if w == nil || !w.primaryMember[dn.Normalize(group)+"\x00"+dn.Normalize(member)] {
+		return ""
+	}
+	return w.PrimaryWhy
 }
 
 // RefusedEntry is a source entry the target refuses, and why.
@@ -150,9 +174,10 @@ func (w *Withheld) strip(e directory.Entry, later bool) (directory.Entry, []stri
 // unique finds, among the entries of the job's kinds, the values of rules' attributes that more than one holds: those a
 // leftover shares are withheld from it (from all but the first by DN when only leftovers hold it), the rest are
 // clashes. It is one more paged search, reading only those attributes.
-func unique(ctx context.Context, src directory.Directory, job Job, rules profile.UniqueRules) (*Withheld, []Clash, error) {
+func unique(ctx context.Context, src directory.Directory, job Job, root string, rules profile.UniqueRules) (*Withheld, []Clash, error) {
 	u := job.Profile.Unique
-	w := &Withheld{values: map[string]map[string]map[string]bool{}, Why: rules.Why, refuses: rules.Refuses, refused: map[string]string{}}
+	w := &Withheld{values: map[string]map[string]map[string]bool{}, Why: rules.Why, refuses: rules.Refuses, refused: map[string]string{},
+		PrimaryWhy: rules.PrimaryWhy, primaryMember: map[string]bool{}, MissingWhy: MissingPrimaryWhy(job)}
 	if u == nil || (len(rules.Attrs) == 0 && rules.Refuses == nil) {
 		return w, nil, nil
 	}
@@ -179,6 +204,15 @@ func unique(ctx context.Context, src directory.Directory, job Job, rules profile
 		}
 	}
 	attrs := append(append([]string{"objectClass"}, rules.Attrs...), u.Attrs()...)
+	pg := job.Profile.PrimaryGroup
+	if pg != nil {
+		attrs = append(attrs, pg.Attr())
+	}
+	// Each account's primary group (its RID: the source's primaryGroupID, else its type's default), for the member
+	// values Samba refuses, and those not by default, for the primary groups the source lacks.
+	primaries := map[string]string{}  // normalized account DN -> RID
+	accounts := map[string][]string{} // RID -> the DNs of the accounts it is the primary group of, not by default
+	defaults := map[string]string{}   // normalized account DN -> its type's default RID, of those in accounts
 	err := WalkBases(ctx, src, job.BaseDNs, "(|"+any.String()+")", attrs, func(e directory.Entry) error {
 		copied := all // a kind its classes do not tell (a filter of its own): what any kind writes
 		for i, k := range job.Kinds {
@@ -193,6 +227,19 @@ func unique(ctx context.Context, src directory.Directory, job Job, rules profile
 				w.Refused = append(w.Refused, RefusedEntry{DN: e.DN, Why: why})
 				w.refused[dn.Normalize(e.DN)] = why
 				return nil
+			}
+		}
+		if pg != nil {
+			if spec, ok := job.Profile.Kind(job.Profile.KindOf(e.Values("objectClass"))); ok && spec.Account {
+				def, rid := pg.Default(e), strings.TrimSpace(first(e.Values(pg.Attr())))
+				if rid == "" {
+					rid = def
+				}
+				primaries[dn.Normalize(e.DN)] = rid
+				if rid != def {
+					accounts[rid] = append(accounts[rid], e.DN)
+					defaults[dn.Normalize(e.DN)] = def
+				}
 			}
 		}
 		leftover := u.Leftover(e)
@@ -256,6 +303,11 @@ func unique(ctx context.Context, src directory.Directory, job Job, rules profile
 		}
 	}
 	w.withholdAliases(groups, rules)
+	if pg != nil && len(primaries) > 0 {
+		if err := w.primaryGroups(ctx, src, job, root, rules, primaries, accounts, defaults); err != nil {
+			return nil, nil, err
+		}
+	}
 	sort.Slice(w.Values, func(i, j int) bool {
 		if w.Values[i].DN != w.Values[j].DN {
 			return w.Values[i].DN < w.Values[j].DN
@@ -415,7 +467,7 @@ func Withholding(ctx context.Context, src, dst directory.Directory, job Job, roo
 	if err != nil {
 		return nil, nil, err
 	}
-	return unique(ctx, src, job, rules)
+	return unique(ctx, src, job, root, rules)
 }
 
 // TargetDN is the DN of e, read from a target by asked: a server may echo the DN asked for though the entry holds
@@ -454,4 +506,58 @@ func TargetDNAttrs(prof profile.Profile, asked string) []string {
 		out = append(out, typ)
 	}
 	return out
+}
+
+// primaryGroups finds, among the source's groups that are an account's primary group, the member values naming
+// such an account (where the target refuses them), and the accounts whose primary group, not their type's default,
+// the source lacks.
+func (w *Withheld) primaryGroups(ctx context.Context, src directory.Directory, job Job, root string, rules profile.UniqueRules,
+	primaries map[string]string, accounts map[string][]string, defaults map[string]string) error {
+	pg := job.Profile.PrimaryGroup
+	byRID, err := pg.Groups(ctx, src, root)
+	if err != nil {
+		return fmt.Errorf("read the groups: %w", err)
+	}
+	for rid, dns := range accounts {
+		if byRID[rid] == "" {
+			for _, d := range dns {
+				w.MissingPrimary = append(w.MissingPrimary, MissingPrimary{DN: d, RID: rid})
+				// It keeps its type's default on the target, whose member value the target refuses then.
+				primaries[dn.Normalize(d)] = defaults[dn.Normalize(d)]
+			}
+		}
+	}
+	sort.Slice(w.MissingPrimary, func(i, j int) bool {
+		return dn.Normalize(w.MissingPrimary[i].DN) < dn.Normalize(w.MissingPrimary[j].DN)
+	})
+	if !rules.PrimaryMembers {
+		return nil
+	}
+	rids := map[string]bool{}
+	for _, rid := range primaries {
+		rids[rid] = true
+	}
+	for rid := range rids {
+		group := byRID[rid]
+		if group == "" {
+			continue
+		}
+		e, err := src.Get(ctx, group, []string{"member"})
+		if err != nil {
+			return fmt.Errorf("read %s: %w", group, err)
+		}
+		if e == nil {
+			continue
+		}
+		for _, m := range e.Values("member") {
+			if primaries[dn.Normalize(m)] == rid {
+				w.PrimaryMembers = append(w.PrimaryMembers, PrimaryMember{Group: group, Member: m})
+				w.primaryMember[dn.Normalize(group)+"\x00"+dn.Normalize(m)] = true
+			}
+		}
+	}
+	sort.Slice(w.PrimaryMembers, func(i, j int) bool {
+		return dn.Normalize(w.PrimaryMembers[i].Group)+dn.Normalize(w.PrimaryMembers[i].Member) < dn.Normalize(w.PrimaryMembers[j].Group)+dn.Normalize(w.PrimaryMembers[j].Member)
+	})
+	return nil
 }

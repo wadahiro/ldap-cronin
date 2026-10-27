@@ -23,7 +23,11 @@ func (r *runner) checkHolders(ctx context.Context, dst directory.Directory, work
 			r.unheld(h.Why)
 			return nil
 		}
-		cur, err := dst.Get(ctx, h.DN, append([]string{"objectClass"}, h.Attrs...))
+		target := h.DN
+		if m, ok := r.moved[dn.Normalize(h.DN)]; ok && h.Builtin {
+			target = m.Target
+		}
+		cur, err := dst.Get(ctx, target, append([]string{"objectClass"}, h.Attrs...))
 		if err != nil {
 			return err
 		}
@@ -58,6 +62,7 @@ func (r *runner) checkHolders(ctx context.Context, dst directory.Directory, work
 			if err != nil {
 				return err
 			}
+			want = r.withoutPrimaryMembers(h.DN, name, want)
 			got := r.p.InScope(r.loc.translateBack(cur.Values(name)))
 			if !r.p.Equal(name, want, got) {
 				r.report(makeDifference(h.DN, name, want, got, r.p.Normalizer(name), true))

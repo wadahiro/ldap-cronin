@@ -209,3 +209,37 @@ func TestAValueWrittenLastSurvivesARunStoppedBeforeTheEnd(t *testing.T) {
 		t.Fatalf("the next run: %v, computer %v, the user's SPNs %v, later %d\n%s", err, dst.Lookup(pc) != nil, dst.Lookup(svc).Values("servicePrincipalName"), rep.Later, log.String())
 	}
 }
+
+// An entry whose references the journal holds is written again when a value names a well-known group the target
+// holds under another DN: an earlier version left that value out, as naming a built-in group the target lacks.
+func TestAResumedRunWritesAValueNamingAMovedWellKnownGroup(t *testing.T) {
+	ctx := context.Background()
+	src := seedSource()
+	moved := "CN=Domain Admins,OU=Admin Groups," + domain
+	admins := "CN=Domain Admins,CN=Users," + domain
+	team := "CN=Team,OU=Groups," + base
+	src.Put(moved, map[string][]string{"objectClass": {"top", "group"}, "cn": {"Domain Admins"}, "isCriticalSystemObject": {"TRUE"},
+		"objectSid": {fakedir.SID("S-1-5-21-1-2-3-512")}})
+	src.Put(team, map[string][]string{"objectClass": {"top", "group"}, "cn": {"Team"}, "sAMAccountName": {"team"}, "member": {moved}})
+	job := options(t, "ou", "group", "user")
+	dst := fakedir.New(domain)
+	dst.Put(admins, map[string][]string{"objectClass": {"top", "group"}, "cn": {"Domain Admins"}, "isCriticalSystemObject": {"TRUE"},
+		"objectSid": {fakedir.SID("S-1-5-21-7-8-9-512")}})
+	journal := memJournal{}
+	if _, err := Run(ctx, src, dst, job, Options{UserPassword: "pw", Workers: 1, Journal: journal}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	// What the earlier version left: the group's references done, without that value.
+	if !journal["references "+dn.Normalize(team)] {
+		t.Fatalf("the journal: %v", journal)
+	}
+	dst.Lookup(team).Attrs["member"] = nil
+
+	var log bytes.Buffer
+	if _, err := Run(ctx, src, dst, job, Options{UserPassword: "pw", Workers: 1, Journal: journal}, &log); err != nil {
+		t.Fatalf("%v\n%s", err, log.String())
+	}
+	if got := dst.Lookup(team).Values("member"); len(got) != 1 || got[0] != admins {
+		t.Fatalf("Team's members: %v\n%s", got, log.String())
+	}
+}

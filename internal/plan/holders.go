@@ -38,8 +38,18 @@ const (
 	WhyHolderConfig    = "is in the configuration partition"
 	WhyHolderOtherNC   = "is in another naming context (another domain of the forest)"
 	WhyHolderNoGroups  = "is a group, a kind [scope] objects leaves out"
-	WhyHolderMissing   = "is missing on the source (a dump taken before groups outside its base DN were carried: dump again)"
+	WhyHolderMissing   = "is missing on the source"
+	// WhyHolderMissingOld is WhyHolderMissing of a dump taken before the groups were carried (Job.OldDump).
+	WhyHolderMissingOld = WhyHolderMissing + " (a dump taken before groups outside its base DN were carried: dump again)"
 )
+
+// MissingPrimaryWhy says why the source may lack an account's primary group (Withheld.MissingPrimary).
+func MissingPrimaryWhy(job Job) string {
+	if job.OldDump {
+		return "a dump taken before the groups outside its base DN were carried: dump again"
+	}
+	return "no group of the source has its RID: deleted, or one the source does not return"
+}
 
 // HolderLinks are the back links whose values name holders (memberOf), with the forward link of each, for those
 // forward links the group kind's allow list names; empty when the schema pairs none or groups are not cloned.
@@ -135,12 +145,18 @@ func (p *Plan) classifyHolder(ctx context.Context, h *Holder) error {
 	if prof.SystemAttr != "" {
 		attrs = append(attrs, prof.SystemAttr)
 	}
+	if prof.PrimaryGroup != nil {
+		attrs = append(attrs, "objectSid")
+	}
 	e, err := p.src.Get(ctx, h.DN, attrs)
 	if err != nil {
 		return err
 	}
 	if e == nil {
 		h.Why = WhyHolderMissing
+		if p.job.OldDump {
+			h.Why = WhyHolderMissingOld
+		}
 		return nil
 	}
 	classes := e.Values("objectClass")
@@ -149,7 +165,14 @@ func (p *Plan) classifyHolder(ctx context.Context, h *Holder) error {
 		return nil
 	}
 	h.Kind = group
-	if prof.SystemAttr != "" && strings.EqualFold(first(e.Values(prof.SystemAttr)), "TRUE") {
+	// A well-known RID is the domain's built-in group whatever the flag says: created, it would clash with the
+	// target's own by name.
+	wellKnown := false
+	if pg := prof.PrimaryGroup; pg != nil {
+		rid, ok := pg.RID(*e)
+		wellKnown = ok && pg.WellKnown(rid)
+	}
+	if wellKnown || prof.SystemAttr != "" && strings.EqualFold(first(e.Values(prof.SystemAttr)), "TRUE") {
 		h.Builtin = true
 		if p.job.BuiltinGroups == BuiltinGroupsSkip {
 			h.Why = WhyBuiltinSkipped
@@ -181,6 +204,36 @@ func containsFold(list []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// Moved is a well-known group the target holds under another DN than the source: the source's DN and the target's.
+type Moved struct{ Source, Target string }
+
+// WellKnownMoves maps each well-known group of the source (profile.PrimaryGrouper.WellKnown: Domain Admins, ...)
+// that dst holds under another DN, by normalized source DN, to both DNs. A domain has each at its RID wherever
+// an administrator moved it, so the target's own of that RID is the source's: told by its DN, a Domain Admins moved
+// out of CN=Users would be a built-in group the target lacks. The source's groups are read once (PrimaryGroupDN),
+// dst's on each call: a session clones and then diffs, so the caller keeps the result for its run.
+func (p *Plan) WellKnownMoves(ctx context.Context, dst directory.Directory) (map[string]Moved, error) {
+	pg := p.job.Profile.PrimaryGroup
+	if pg == nil || dst == nil {
+		return nil, nil
+	}
+	p.primaryOnce.Do(func() { p.primary, p.primaryErr = pg.Groups(ctx, p.src, p.Root) })
+	if p.primaryErr != nil {
+		return nil, p.primaryErr
+	}
+	theirs, err := pg.Groups(ctx, dst, p.Root)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]Moved{}
+	for rid, d := range p.primary {
+		if t := theirs[rid]; t != "" && pg.WellKnown(rid) && !dn.Equal(d, t) {
+			out[dn.Normalize(d)] = Moved{Source: d, Target: t}
+		}
+	}
+	return out, nil
 }
 
 // PrimaryGroupDN is the DN of the source group whose RID an account's primary group value (primaryGroupID) is, ""

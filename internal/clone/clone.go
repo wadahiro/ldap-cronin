@@ -231,6 +231,12 @@ type runner struct {
 	plan *plan.Plan
 	prof profile.Profile
 
+	// moved are the well-known groups the target holds under another DN than the source (plan.WellKnownMoves),
+	// read once.
+	movedOnce sync.Once
+	moved     map[string]plan.Moved
+	movedErr  error
+
 	mu      sync.Mutex // guards report, out and skipped
 	report  Report
 	skipped map[string]bool // normalized DNs not created (see upsert); the reference pass leaves them alone
@@ -311,6 +317,18 @@ func Run(ctx context.Context, src, dst directory.Directory, job plan.Job, opt Op
 	r.notAdded, r.told = map[string]string{}, map[string]bool{}
 	for _, e := range withheld.Refused {
 		r.refuse(e.DN, e.Why)
+	}
+	if n := len(withheld.MissingPrimary); n > 0 {
+		// Said before anything is written: the primary groups are written last, after hours of a large run.
+		shown := make([]string, 0, 4)
+		for _, m := range withheld.MissingPrimary[:min(n, 3)] {
+			shown = append(shown, m.DN+" ("+m.RID+")")
+		}
+		if n > 3 {
+			shown = append(shown, "...")
+		}
+		r.warn("%d accounts name a primary group the source lacks (%s); they keep their type's default: %s",
+			n, withheld.MissingWhy, strings.Join(shown, "; "))
 	}
 	if len(withheld.Values) > 0 {
 		r.report.Withheld, r.report.WithheldWhy = map[string]int{}, map[string]int{}
@@ -409,10 +427,22 @@ func (r *runner) holders(ctx context.Context, p *plan.Plan, hs []plan.Holder) er
 		if why := r.notAddedWhy(h.DN); why != "" {
 			return r.unheld(h, "is not added: "+why)
 		}
+		// The DN written to: a built-in group's is the target's own of its RID, wherever either side keeps it. What
+		// is keyed by the source (the values withheld, the counts) stays on h.DN.
+		target := h.DN
 		switch {
 		case h.Builtin && r.opt.DryRun:
 		case h.Builtin || h.Existing:
-			cur, err := r.dst.Get(ctx, h.DN, []string{"objectClass"})
+			if h.Builtin {
+				var err error
+				if target, err = r.wellKnownDN(ctx, h.DN); err != nil {
+					return err
+				}
+				if target != h.DN {
+					r.warn("%s is the target's %s, the group of that well-known RID: it is given the members there", h.DN, target)
+				}
+			}
+			cur, err := r.dst.Get(ctx, target, []string{"objectClass"})
 			if err != nil {
 				return err
 			}
@@ -440,9 +470,9 @@ func (r *runner) holders(ctx context.Context, p *plan.Plan, hs []plan.Holder) er
 			if err != nil {
 				return err
 			}
-			values = r.created(values)
-			if err := r.applyReference(ctx, h.DN, name, values); err != nil {
-				return fmt.Errorf("%s: add %s values: %w", h.DN, name, err)
+			values = r.withoutPrimaryMembers(h.DN, name, r.created(values))
+			if err := r.applyReference(ctx, target, name, values); err != nil {
+				return fmt.Errorf("%s: add %s values: %w", target, name, err)
 			}
 		}
 		r.count(func(rep *Report) {
@@ -503,7 +533,15 @@ func (r *runner) primaryGroups(ctx context.Context, p *plan.Plan) error {
 			r.notPrimary(a, "names a RID no group of the source has")
 			continue
 		}
-		if !p.Scope.Has(gdn) {
+		switch {
+		case pg.WellKnown(a.rid):
+			// Found on the target by its RID: the source's own may be elsewhere (moved), so it is not classified by
+			// that DN, which would find it missing on the source.
+			if r.plan.Job().BuiltinGroups == plan.BuiltinGroupsSkip {
+				r.notPrimary(a, "names a group that "+plan.WhyBuiltinSkipped)
+				continue
+			}
+		case !p.Scope.Has(gdn):
 			h, err := p.Holder(ctx, gdn)
 			if err != nil {
 				return err
@@ -1096,7 +1134,13 @@ func (r *runner) references(ctx context.Context, p *plan.Plan) error {
 				return nil
 			}
 			key := "references " + dn.Normalize(e.DN)
-			if r.skip(key) {
+			// One naming a well-known group the target holds elsewhere is written again though the journal holds
+			// it: an earlier version left that value out as naming a built-in group the target lacks.
+			moved, err := r.namesMoved(ctx, e, names)
+			if err != nil {
+				return err
+			}
+			if !moved && r.skip(key) {
 				return nil
 			}
 			for _, name := range names {
@@ -1136,6 +1180,10 @@ func (r *runner) references(ctx context.Context, p *plan.Plan) error {
 					// After what the value names was created: it may have been left out just now (its name taken).
 					if why := r.notAddedWhy(dn.RefDN(v)); why != "" {
 						r.notWritten(name, e.DN, v, "names an entry not added: "+why)
+						continue
+					}
+					if why := r.primaryMemberWhy(e.DN, name, v); why != "" {
+						r.notWritten(name, e.DN, v, why)
 						continue
 					}
 					usable = append(usable, v)
@@ -1189,6 +1237,60 @@ func (r *runner) taken(d string, cur *directory.Entry) bool {
 	}
 	r.nameTakenAt(d, actual, true)
 	return true
+}
+
+// wellKnownDN is the target's DN of the source's group at d when it is a well-known one the target holds under
+// another DN (plan.WellKnownMoves), d otherwise. A dry-run has no target to ask.
+func (r *runner) wellKnownDN(ctx context.Context, d string) (string, error) {
+	if r.opt.DryRun {
+		return d, nil
+	}
+	r.movedOnce.Do(func() { r.moved, r.movedErr = r.plan.WellKnownMoves(ctx, r.dst) })
+	if r.movedErr != nil {
+		return "", r.movedErr
+	}
+	if m, ok := r.moved[dn.Normalize(d)]; ok {
+		return m.Target, nil
+	}
+	return d, nil
+}
+
+// namesMoved reports whether a value of e's names names a well-known group the target holds under another DN.
+func (r *runner) namesMoved(ctx context.Context, e directory.Entry, names []string) (bool, error) {
+	if _, err := r.wellKnownDN(ctx, ""); err != nil || len(r.moved) == 0 {
+		return false, err
+	}
+	for _, name := range names {
+		for _, v := range e.Values(name) {
+			if _, ok := r.moved[dn.Normalize(dn.RefDN(v))]; ok {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+// primaryMemberWhy says why the target refuses group's value v of name (a member naming an account whose primary
+// group the group is: Samba), "" when it takes it. The primary groups pass writes such a value on purpose, before
+// it sets primaryGroupID, and does not ask.
+func (r *runner) primaryMemberWhy(group, name, v string) string {
+	if !strings.EqualFold(name, "member") {
+		return ""
+	}
+	return r.withheld.PrimaryMemberWhy(group, dn.RefDN(v))
+}
+
+// withoutPrimaryMembers is values of group's name without those primaryMemberWhy refuses, each counted.
+func (r *runner) withoutPrimaryMembers(group, name string, values []string) []string {
+	var out []string
+	for _, v := range values {
+		if why := r.primaryMemberWhy(group, name, v); why != "" {
+			r.notWritten(name, group, v, why)
+			continue
+		}
+		out = append(out, v)
+	}
+	return out
 }
 
 // notAddedWhy says why the source entry at d was not added, "" when it was (or is yet to be).
@@ -1269,8 +1371,16 @@ func (r *runner) applyReference(ctx context.Context, target, name string, values
 	if cur != nil {
 		have = cur.Values(name)
 	}
+	// Compared as the target holds them: a value naming a well-known group it holds elsewhere is its DN there, and
+	// a second run would add it again (refused as existing) if compared as the source's.
+	held := make([]string, len(values))
+	for i, v := range values {
+		if held[i], err = r.refs.Target(ctx, v); err != nil {
+			return err
+		}
+	}
 	if r.plan.RefSingle(name) {
-		if r.plan.Equal(name, have, values) {
+		if r.plan.Equal(name, have, held) {
 			return nil
 		}
 		w, err := r.writeForm(ctx, values)
@@ -1284,8 +1394,8 @@ func (r *runner) applyReference(ctx context.Context, target, name string, values
 		haveSet[dn.NormalizeRef(v)] = true
 	}
 	var missing []string
-	for _, v := range values {
-		if !haveSet[dn.NormalizeRef(v)] {
+	for i, v := range values {
+		if !haveSet[dn.NormalizeRef(held[i])] {
 			missing = append(missing, v)
 		}
 	}

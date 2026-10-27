@@ -3,9 +3,13 @@ package app
 import (
 	"bytes"
 	"context"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
+	"github.com/wadahiro/ldap-cronin/internal/config"
 	"github.com/wadahiro/ldap-cronin/internal/dump"
 	"github.com/wadahiro/ldap-cronin/internal/fakedir"
 	"github.com/wadahiro/ldap-cronin/internal/plan"
@@ -137,6 +141,56 @@ func TestADryRunGivesTheBuiltinGroupItsMembers(t *testing.T) {
 	for _, want := range []string{"dn: " + admins + "\nchangetype: modify\nadd: member\nmember: " + alice, "dn: " + vpn + "\nchangetype: add\n"} {
 		if !strings.Contains(ldif.String(), want) {
 			t.Errorf("the LDIF lacks %q:\n%s", want, ldif.String())
+		}
+	}
+}
+
+// A group the source lacks calls for dumping again only from a dump whose header says it was taken before the
+// groups outside its base DN were carried: from a newer dump the group is gone from the source, and the hint would
+// send one to dump again for nothing.
+func TestOnlyAnOldDumpIsToldToDumpAgain(t *testing.T) {
+	ctx := context.Background()
+	w := newWorld()
+	w.src.Lookup(alice).Attrs["objectCategory"] = []string{"CN=Person," + schemaNC}
+	w.src.Lookup(alice).Attrs["memberOf"] = []string{"CN=Gone,OU=Groups," + domain}
+	for _, d := range []*fakedir.Dir{w.src, w.dst} {
+		withClasses(d, nil)
+		for name, link := range map[string]string{"member": "2", "memberOf": "3"} {
+			d.Put("CN="+name+","+schemaNC, map[string][]string{"objectClass": {"attributeSchema"}, "cn": {name}, "lDAPDisplayName": {name},
+				"attributeID": {"1.9." + name}, "attributeSyntax": {"2.5.5.1"}, "linkID": {link}})
+		}
+	}
+	var dumped bytes.Buffer
+	if _, err := dump.Write(ctx, w.src, profile.AD, dump.Options{BaseDNs: []string{base}, Server: "ldaps://src:636", Version: "test"}, &dumped); err != nil {
+		t.Fatal(err)
+	}
+	for name, old := range map[string]bool{"new": false, "old": true} {
+		text := dumped.String()
+		if old {
+			text = regexp.MustCompile(`(?m)^# holders:.*\n`).ReplaceAllString(text, "")
+		}
+		path := filepath.Join(t.TempDir(), name+".ldif")
+		if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := config.Parse([]byte("[source]\nldif = \"" + path + "\"\n[target]\nurl = \"ldaps://dst:636\"\nbind_dn = \"CN=a\"\n" +
+			"[scope]\nprofile = \"ad\"\nbase_dn = \"" + base + "\"\n[mapping]\nmode = \"off\"\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		s, err := Open(ctx, cfg, w.secrets(), w.dial, &bytes.Buffer{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var log bytes.Buffer
+		rep, err := s.Clone(ctx, false, &log, &log)
+		s.Close()
+		if err != nil {
+			t.Fatalf("%s: %v\n%s", name, err, log.String())
+		}
+		want := map[bool]string{false: plan.WhyHolderMissing, true: plan.WhyHolderMissingOld}[old]
+		if rep.Unheld[want] != 1 {
+			t.Fatalf("%s: unheld %+v\n%s", name, rep.Unheld, log.String())
 		}
 	}
 }

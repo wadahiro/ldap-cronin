@@ -242,6 +242,7 @@ siblings a Samba target cannot (consecutive spaces).
 | A `servicePrincipalName` value another object holds | refused (19) | refused: 8647 (0x21C7) |
 | A `userPrincipalName` equal to the `sAMAccountName@<realm>` of an account without one | **refused** ("implied by sAMAccountName") | taken |
 | A `servicePrincipalName` another object holds under an alias of `sPNMappings` (`HOST/` against `HTTP/`, `CIFS/` against `HOST/`) | **refused** for `HOST/X` when another object holds `http/X` (19, "failed alias uniqueness check"); `http/X` when another holds `HOST/X` taken from one who may write that object (the Administrator, the system), so the order decides | taken |
+| A group's `member` value naming an account whose `primaryGroupID` is that group's RID | **refused** (68, "already set via primaryGroupID") | not measured (clone withholds it there too) |
 
 Samba's checks are in samldb, which every write goes through; only writing the partition's database file without
 the modules gives a second object such a value, which leaves its replication metadata without it (dbcheck reports

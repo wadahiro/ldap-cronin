@@ -61,6 +61,10 @@ type Classifier struct {
 	wellKnownOnce    sync.Once
 	wellKnownRefused bool // the target refuses a well-known principal in a cloned group (profile.WellKnownRefused)
 	wellKnownErr     error
+	// moved are the well-known groups dst holds under another DN (Plan.WellKnownMoves), read once.
+	movedOnce sync.Once
+	moved     map[string]Moved
+	movedErr  error
 
 	mu   sync.Mutex
 	seen map[string]*refCheck
@@ -70,7 +74,7 @@ type refCheck struct {
 	once  sync.Once
 	class RefClass
 	kind  *Kind  // RefReferenced
-	write string // RefPrincipal
+	write string // RefPrincipal; RefExisting: the target's DN of a well-known group it holds elsewhere
 	why   string // RefUnreproducible: what the value names, so the summaries can say what to do about it
 	err   error
 }
@@ -139,8 +143,24 @@ func (c *Classifier) Write(ctx context.Context, v string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if chk.class == RefPrincipal {
+	switch {
+	case chk.class == RefPrincipal:
 		return chk.write, nil
+	case chk.write != "":
+		return dn.RewrapRef(v, chk.write), nil
+	}
+	return v, nil
+}
+
+// Target is v as the target holds it once written: v, or the target's DN of a well-known group it holds elsewhere
+// (Plan.WellKnownMoves). A principal's form (<SID=...>) is not one: the target holds the DN it is resolved to.
+func (c *Classifier) Target(ctx context.Context, v string) (string, error) {
+	chk, err := c.check(ctx, v)
+	if err != nil {
+		return "", err
+	}
+	if chk.class == RefExisting && chk.write != "" {
+		return dn.RewrapRef(v, chk.write), nil
 	}
 	return v, nil
 }
@@ -190,6 +210,18 @@ func (c *Classifier) classify(ctx context.Context, v string, chk *refCheck) erro
 	mode := job.References
 	if mode == "" {
 		mode = RefsClone
+	}
+	if mode != RefsSkip {
+		// A well-known group the target holds under another DN (moved on either side) is the target's own of its
+		// RID: written there, neither missing nor created again.
+		c.movedOnce.Do(func() { c.moved, c.movedErr = c.p.WellKnownMoves(ctx, c.dst) })
+		if c.movedErr != nil {
+			return c.movedErr
+		}
+		if m, ok := c.moved[dn.Normalize(v)]; ok {
+			chk.class, chk.write = RefExisting, m.Target
+			return nil
+		}
 	}
 	switch mode {
 	case RefsClone:

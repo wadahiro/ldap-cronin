@@ -179,6 +179,14 @@ func Run(ctx context.Context, src, dst directory.Directory, job plan.Job, o Opti
 	bar.Phase("OUs and parents", len(p.Containers))
 	r.loc = &locator{scheme: job.Profile.Identity, prof: job.Profile, dst: dst, domain: p.Root, res: o.Resolver,
 		targetOf: map[string]string{}, found: plan.NewScope(), renamedBack: map[string]string{}}
+	// A well-known group the target holds under another DN is the source's (clone writes there): its values are
+	// translated back, and a holder is read there.
+	if r.moved, err = p.WellKnownMoves(ctx, dst); err != nil {
+		return r.sum, err
+	}
+	for _, m := range r.moved {
+		r.loc.noteRenamed(m.Source, m.Target)
+	}
 	// Containers and parent leaves go shallowest first: to know the expected parent DN of a child, where its parent
 	// lives on the target (whether it moved) must already be known.
 	if err := p.EachLevel(ctx, o.Workers, func(ctx context.Context, n plan.Node) error {
@@ -255,6 +263,8 @@ func Run(ctx context.Context, src, dst directory.Directory, job plan.Job, o Opti
 // runner is the state of one comparison. Workers share it, so everything that changes is behind a mutex.
 type runner struct {
 	job plan.Job
+	// moved are the well-known groups the target holds under another DN (plan.WellKnownMoves).
+	moved map[string]plan.Moved
 	// dstGroups maps the RID of each target group to its DN, for the primary groups (readGroups).
 	dstGroups map[string]string
 	ctx       context.Context // the run's, for the source's groups read on the first primary group that needs them
@@ -379,6 +389,11 @@ func (r *runner) check(ctx context.Context, want directory.Entry, names []string
 		return nil
 	}
 	want = r.withoutRefused(want)
+	if vs := want.Values("member"); len(vs) > 0 {
+		if kept := r.withoutPrimaryMembers(want.DN, "member", vs); len(kept) < len(vs) {
+			want = withValues(want, "member", kept)
+		}
+	}
 	if kind != nil {
 		var stripped []string
 		// The values written last are on the target once clone is done: compared.
@@ -540,4 +555,42 @@ func (r *runner) isNameTaken(d string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.nameTaken[dn.Normalize(d)]
+}
+
+// withoutPrimaryMembers is group's values of name without the member values naming an account whose primary group
+// the group is, where the target refuses them (Samba): clone leaves them out, the account being a member through
+// primaryGroupID on both sides. Each is counted as not compared.
+func (r *runner) withoutPrimaryMembers(group, name string, values []string) []string {
+	if !strings.EqualFold(name, "member") {
+		return values
+	}
+	var out []string
+	for _, v := range values {
+		if why := r.withheld.PrimaryMemberWhy(group, dn.RefDN(v)); why != "" {
+			r.mu.Lock()
+			r.sum.NotCompared[name]++
+			r.sum.NotComparedWhy[name+": "+why]++
+			r.mu.Unlock()
+			continue
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
+// withValues is e with name's values replaced (a copy; e is shared).
+func withValues(e directory.Entry, name string, values []string) directory.Entry {
+	c := directory.Entry{DN: e.DN, Attrs: make(map[string][]string, len(e.Attrs))}
+	for k, v := range e.Attrs {
+		c.Attrs[k] = v
+	}
+	for k := range c.Attrs {
+		if strings.EqualFold(k, name) {
+			delete(c.Attrs, k)
+		}
+	}
+	if len(values) > 0 {
+		c.Attrs[name] = values
+	}
+	return c
 }

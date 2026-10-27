@@ -33,8 +33,13 @@ func (adUnique) Leftover(e directory.Entry) bool {
 }
 
 func (adUnique) Rules(ctx context.Context, dst directory.Directory, root string) (UniqueRules, error) {
+	// samldb refuses a member value naming an account whose primary group the group is ("member ... already set via
+	// primaryGroupID", 68), and stops the run. Windows is not measured: withheld there too, as the account is a member
+	// through primaryGroupID either way and diff leaves the value out, while a refusal would stop a long run.
 	r := UniqueRules{Attrs: []string{"userPrincipalName", "servicePrincipalName"},
-		Why: "a replication-conflict leftover holds a value another object has, which the target refuses to give twice"}
+		Why:            "a replication-conflict leftover holds a value another object has, which the target refuses to give twice",
+		PrimaryMembers: true,
+		PrimaryWhy:     "names an account whose primary group the group is, a member through primaryGroupID: the target refuses it"}
 	// Without a target (check -no-target) the strictest rules: Samba's.
 	samba := dst == nil
 	if dst != nil {

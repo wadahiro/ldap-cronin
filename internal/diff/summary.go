@@ -61,7 +61,7 @@ func WriteSummary(w io.Writer, job plan.Job, sum Summary, excluded []string) {
 		plan.WriteCounts(w, "not compared (of no kind, or built-in: clone does not copy it)", sum.NotCloned)
 	}
 	if len(sum.NotComparedWhy) > 0 {
-		plan.WriteCounts(w, "references not compared (clone cannot write them: the target lacks what they name)", sum.NotComparedWhy)
+		plan.WriteCounts(w, "references not compared (clone cannot write them)", sum.NotComparedWhy)
 	}
 	if len(sum.Withheld) > 0 {
 		plan.WriteCounts(w, "values not compared (clone does not write them: the target refuses them)", sum.WithheldWhy)

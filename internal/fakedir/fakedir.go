@@ -45,6 +45,10 @@ type Dir struct {
 	// EchoDN makes Get answer with the DN asked for, the entry's own in distinguishedName, as Windows does for a
 	// name it takes as another's.
 	EchoDN bool
+	// PrimaryGroups makes the fake keep AD's primary groups: a member value naming an account whose primaryGroupID
+	// is the group's RID is refused (Samba: "already set via primaryGroupID"), and setting primaryGroupID drops the
+	// account's member value from that group, which it must hold first.
+	PrimaryGroups bool
 }
 
 // key is where an entry of that DN is kept.
@@ -307,6 +311,13 @@ func (d *Dir) Replace(ctx context.Context, dnStr string, attrs map[string][]stri
 		return err
 	}
 	for n, v := range attrs {
+		if d.PrimaryGroups && strings.EqualFold(n, "primaryGroupID") && len(v) == 1 {
+			if err := d.setPrimary(dnStr, v[0]); err != nil {
+				return err
+			}
+		}
+	}
+	for n, v := range attrs {
 		e.Attrs[n] = d.principals(v)
 		d.Ops = append(d.Ops, "replace "+n+" "+dnStr)
 		if strings.EqualFold(n, "unicodePwd") && isADUser(*e) {
@@ -355,6 +366,11 @@ func (d *Dir) AddValues(ctx context.Context, dnStr, attr string, values []string
 			return fmt.Errorf("modify %s: %s value %s already exists", dnStr, attr, v)
 		}
 		have[dn.Normalize(v)] = true
+		if d.PrimaryGroups && strings.EqualFold(attr, "member") {
+			if m := d.Entries[d.key(v)]; m != nil && strings.Join(m.Values("primaryGroupID"), "") == rid(*e) {
+				return fmt.Errorf("modify %s: member %s already set via primaryGroupID %s: %w", dnStr, v, rid(*e), directory.ErrExists)
+			}
+		}
 	}
 	e.Attrs[attr] = append(e.Attrs[attr], values...)
 	d.Ops = append(d.Ops, "addvalues "+attr+" "+dnStr)
@@ -529,4 +545,35 @@ func hasClassFold(e directory.Entry, class string) bool {
 		}
 	}
 	return false
+}
+
+// setPrimary checks that the account at account is a member of the group of RID r, and drops that member value, as
+// AD does when primaryGroupID is set.
+func (d *Dir) setPrimary(account, r string) error {
+	for _, g := range d.Entries {
+		if !hasClassFold(*g, "group") || rid(*g) != r {
+			continue
+		}
+		var kept []string
+		for _, m := range g.Values("member") {
+			if dn.Normalize(m) != dn.Normalize(account) {
+				kept = append(kept, m)
+			}
+		}
+		if len(kept) == len(g.Values("member")) {
+			return fmt.Errorf("modify %s: primaryGroupID %s: not a member of %s", account, r, g.DN)
+		}
+		g.Attrs["member"] = kept
+		return nil
+	}
+	return fmt.Errorf("modify %s: primaryGroupID %s: no such group", account, r)
+}
+
+// rid is the RID of e's objectSid, "" when it has none.
+func rid(e directory.Entry) string {
+	sid := e.Values("objectSid")
+	if len(sid) == 0 || len(sid[0]) < 12 {
+		return ""
+	}
+	return fmt.Sprint(binary.LittleEndian.Uint32([]byte(sid[0][len(sid[0])-4:])))
 }

@@ -59,6 +59,10 @@ type Job struct {
 	// AllWritable is set when the allow lists are every attribute a client can write on the class of each kind
 	// ([attributes] mode = "all"), so the summaries count them instead of naming hundreds.
 	AllWritable bool
+	// OldDump is a source that is a dump taken before the groups outside its base DN were carried (its header says
+	// so; the primary groups outside it came later still, which the header does not tell). Only then does a group
+	// the source lacks call for dumping again: a hint said of a newer dump sends one to hours of dumping for nothing.
+	OldDump bool
 }
 
 // Translated is the SDValues the kinds copy, by lowercase name: the attributes a kind's list takes (credentials =

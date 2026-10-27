@@ -405,6 +405,28 @@ const maxWithheldShown = 20
 
 // writeWithheld lists the values clone will not write (plan.Withheld), each with the objects that keep it.
 func writeWithheld(out io.Writer, w *plan.Withheld) {
+	if len(w.PrimaryMembers) > 0 {
+		fmt.Fprintf(out, "member values clone will not write, the target refuses them: %d (each %s)\n", len(w.PrimaryMembers), w.PrimaryWhy)
+		for i, m := range w.PrimaryMembers {
+			if i == maxWithheldShown {
+				fmt.Fprintf(out, "  ... and %d more (clone warns of each)\n", len(w.PrimaryMembers)-i)
+				break
+			}
+			fmt.Fprintf(out, "  %s in %s\n", m.Member, m.Group)
+		}
+		fmt.Fprintln(out)
+	}
+	if len(w.MissingPrimary) > 0 {
+		fmt.Fprintf(out, "accounts whose primary group the source lacks: %d (%s); they keep their type's default\n", len(w.MissingPrimary), w.MissingWhy)
+		for i, m := range w.MissingPrimary {
+			if i == maxWithheldShown {
+				fmt.Fprintf(out, "  ... and %d more\n", len(w.MissingPrimary)-i)
+				break
+			}
+			fmt.Fprintf(out, "  %s (primaryGroupID %s)\n", m.DN, m.RID)
+		}
+		fmt.Fprintln(out)
+	}
 	if len(w.Refused) > 0 {
 		fmt.Fprintf(out, "entries clone will not add, the target refuses them: %d\n", len(w.Refused))
 		for i, e := range w.Refused {

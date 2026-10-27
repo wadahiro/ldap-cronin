@@ -394,7 +394,7 @@ referenced objects outside the scope compared: 3 (without their own references)
 not compared (of no kind, or built-in: clone does not copy it): 14
   msFVE-RecoveryInformation  12
   serviceConnectionPoint      2
-references not compared (clone cannot write them: the target lacks what they name): 2
+references not compared (clone cannot write them): 2
   member: names an entry of class foreignSecurityPrincipal, which no kind copies  2
 compared attributes:
   ...
