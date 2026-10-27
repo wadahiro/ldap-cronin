@@ -57,6 +57,10 @@ type WithheldValue struct {
 	Others          []string
 	// Why the target refuses it (the rule of the profile).
 	Why string
+	// Later is set for a value the target takes once Others hold Key (Samba's SPN alias, written after the SPN it is
+	// an alias of): clone writes it last instead of leaving it out, and diff compares it.
+	Later bool
+	Key   string
 }
 
 // Clash is a value of a unique attribute that more than one object of the source holds and none of them is a
@@ -84,14 +88,39 @@ func (w *Withheld) ValuesOf(d string) []WithheldValue {
 	return out
 }
 
-// Strip returns e without the values withheld from it, and the attributes it took values from.
-func (w *Withheld) Strip(e directory.Entry) (directory.Entry, []string) {
+// Strip returns e without the values withheld from it (those written later too), and the attributes it took values
+// from.
+func (w *Withheld) Strip(e directory.Entry) (directory.Entry, []string) { return w.strip(e, true) }
+
+// StripRefused is Strip leaving the values written later: what the target holds once clone is done.
+func (w *Withheld) StripRefused(e directory.Entry) (directory.Entry, []string) {
+	return w.strip(e, false)
+}
+
+// Later are the values written last.
+func (w *Withheld) Later() []WithheldValue {
+	if w == nil {
+		return nil
+	}
+	var out []WithheldValue
+	for _, v := range w.Values {
+		if v.Later {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+func (w *Withheld) strip(e directory.Entry, later bool) (directory.Entry, []string) {
 	if w == nil || len(w.values) == 0 {
 		return e, nil
 	}
 	held := w.values[dn.Normalize(e.DN)]
 	if held == nil {
 		return e, nil
+	}
+	if !later {
+		held = w.refusedOf(e.DN)
 	}
 	out := directory.Entry{DN: e.DN, Attrs: make(map[string][]string, len(e.Attrs))}
 	var stripped []string
@@ -238,10 +267,10 @@ func unique(ctx context.Context, src directory.Directory, job Job, rules profile
 	return w, clashes, nil
 }
 
-// withholdAliases withholds an SPN whose service class is an alias (http) of one another object's SPN of the same
+// withholdAliases holds back an SPN whose service class is an alias (http) of one another object's SPN of the same
 // rest has (host/X), where the target refuses the pair across objects (rules.SPNAliases: Samba). Samba refuses
-// host/X added after http/X and takes the reverse order, so which one fails depends on the order clone writes in;
-// the alias is the one left out, as host/X is what a computer is known by.
+// host/X added after http/X and takes the reverse order (from one who may write the other object), so the alias is
+// written last (Later), after every entry: both are then on the target, as on the source.
 func (w *Withheld) withholdAliases(groups map[string]*group, rules profile.UniqueRules) {
 	if len(rules.SPNAliases) == 0 {
 		return
@@ -250,8 +279,10 @@ func (w *Withheld) withholdAliases(groups map[string]*group, rules profile.Uniqu
 		class, rest, ok = strings.Cut(strings.ToLower(v), "/")
 		return
 	}
-	// The entries that will hold each SPN of a class aliases name (host/X), not those it is withheld from.
+	// The entries that will hold each SPN of a class aliases name (host/X), not those it is withheld from, and the
+	// value as they hold it.
 	keyHolders := map[string][]string{}
+	keyValue := map[string]string{}
 	for _, g := range groups {
 		if !strings.EqualFold(g.attr, "servicePrincipalName") {
 			continue
@@ -263,6 +294,7 @@ func (w *Withheld) withholdAliases(groups map[string]*group, rules profile.Uniqu
 		for _, h := range g.holders {
 			if h.explicit && !w.withheldFrom(h.dn, g.attr, g.value) {
 				keyHolders[class+"/"+rest] = append(keyHolders[class+"/"+rest], h.dn)
+				keyValue[class+"/"+rest] = g.value
 			}
 		}
 	}
@@ -287,10 +319,27 @@ func (w *Withheld) withholdAliases(groups map[string]*group, rules profile.Uniqu
 				}
 			}
 			if len(others) > 0 {
-				w.withhold(h.dn, g.attr, g.value, others, rules.AliasWhy)
+				v := w.withhold(h.dn, g.attr, g.value, others, rules.AliasWhy)
+				v.Later, v.Key = true, keyValue[key+"/"+rest]
 			}
 		}
 	}
+}
+
+// refusedOf is the values withheld from the entry at d and not written later, as values does (attribute -> value).
+func (w *Withheld) refusedOf(d string) map[string]map[string]bool {
+	out := map[string]map[string]bool{}
+	for _, v := range w.ValuesOf(d) {
+		if v.Later {
+			continue
+		}
+		la := strings.ToLower(v.Attr)
+		if out[la] == nil {
+			out[la] = map[string]bool{}
+		}
+		out[la][strings.ToLower(v.Value)] = true
+	}
+	return out
 }
 
 // withheldFrom reports whether value of attr is withheld from the entry at d.
@@ -310,7 +359,7 @@ type holder struct {
 	explicit, leftover bool
 }
 
-func (w *Withheld) withhold(entryDN, attr, value string, holders []holder, why string) {
+func (w *Withheld) withhold(entryDN, attr, value string, holders []holder, why string) *WithheldValue {
 	key := dn.Normalize(entryDN)
 	if w.values[key] == nil {
 		w.values[key] = map[string]map[string]bool{}
@@ -327,6 +376,7 @@ func (w *Withheld) withhold(entryDN, attr, value string, holders []holder, why s
 		}
 	}
 	w.Values = append(w.Values, v)
+	return &w.Values[len(w.Values)-1]
 }
 
 // ClashError says which values more than one real object of the source holds, and the ways out.

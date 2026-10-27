@@ -219,10 +219,11 @@ func TestWhatIsLongerThanWindowsTakesIsNotAddedThere(t *testing.T) {
 	}
 }
 
-// Samba refuses host/X on an object when another holds http/X (sPNMappings make host cover http), in whatever order
-// they would come: the alias is withheld from the user, the computer keeps host/X, check lists it, clone warns and
-// counts it, and diff does not compare it. Windows does not look at the aliases: both are written.
-func TestAnSPNCollidingThroughSambasAliasesIsWithheld(t *testing.T) {
+// Samba refuses host/X on an object when another holds http/X (sPNMappings make host cover http), and takes the
+// reverse order: the user's http/X is written last, after every entry, so both are on the target as on the source.
+// check lists it, the summary counts it, and diff finds nothing. Windows does not look at the aliases: both are
+// written with the entries.
+func TestAnSPNCollidingThroughSambasAliasesIsWrittenLast(t *testing.T) {
 	for name, c := range map[string]struct {
 		vendor   string
 		withheld bool
@@ -251,7 +252,7 @@ func TestAnSPNCollidingThroughSambasAliasesIsWithheld(t *testing.T) {
 			if _, err := s.Check(ctx, CheckOptions{Config: "c.toml"}, &out); err != nil {
 				t.Fatal(err)
 			}
-			listed := strings.Contains(out.String(), "servicePrincipalName http/pc1.ad.example.com of "+svc+" (kept by "+pc+"): Samba refuses")
+			listed := strings.Contains(out.String(), "servicePrincipalName http/pc1.ad.example.com of "+svc+", after "+pc+" holds HOST/pc1.ad.example.com")
 			if listed != c.withheld {
 				t.Fatalf("check:\n%s", out.String())
 			}
@@ -260,16 +261,16 @@ func TestAnSPNCollidingThroughSambasAliasesIsWithheld(t *testing.T) {
 			if err != nil {
 				t.Fatalf("%v\n%s", err, log.String())
 			}
-			want := "HTTP/web.ad.example.com"
-			if !c.withheld {
-				want = "http/pc1.ad.example.com,HTTP/web.ad.example.com"
+			want := "http/pc1.ad.example.com,HTTP/web.ad.example.com"
+			if c.withheld {
+				want = "HTTP/web.ad.example.com,http/pc1.ad.example.com" // the alias added last
 			}
 			if got := strings.Join(w.dst.Lookup(svc).Values("servicePrincipalName"), ","); got != want ||
 				strings.Join(w.dst.Lookup(pc).Values("servicePrincipalName"), "") != "HOST/pc1.ad.example.com" {
 				t.Fatalf("the user's SPNs %q, the computer's %v\n%s", got, w.dst.Lookup(pc).Values("servicePrincipalName"), log.String())
 			}
-			if (rep.Withheld["servicePrincipalName"] == 1) != c.withheld {
-				t.Fatalf("withheld %+v", rep.WithheldWhy)
+			if (rep.Later == 1) != c.withheld || rep.Withheld["servicePrincipalName"] != 0 {
+				t.Fatalf("later %d, withheld %+v", rep.Later, rep.WithheldWhy)
 			}
 			out.Reset()
 			if code, err := s.Diff(ctx, DiffOutput{}, &out); err != nil || code != ExitSame {
@@ -279,10 +280,10 @@ func TestAnSPNCollidingThroughSambasAliasesIsWithheld(t *testing.T) {
 	}
 }
 
-// A run stopped by the alias collision left the user's http/X on the target; the resumed run, withholding it, takes
-// it off (the user holds no other SPN, so the attribute is gone from what it writes) rather than leaving it there to
-// make Samba refuse the computer's HOST/X again.
-func TestAResumedRunTakesOffAnSPNItNowWithholds(t *testing.T) {
+// A run of an earlier version stopped at the alias collision: the user holds http/X on the target, the computer is
+// missing. The resumed run takes http/X off the user (the computer does not hold HOST/X yet, which Samba would then
+// refuse), adds the computer, and writes http/X back last; a run after it writes nothing.
+func TestARunStoppedAtTheAliasCollisionEndsWithBoth(t *testing.T) {
 	ctx := context.Background()
 	w := newWorld()
 	config := "CN=Configuration," + domain
@@ -298,13 +299,19 @@ func TestAResumedRunTakesOffAnSPNItNowWithholds(t *testing.T) {
 	if _, err := s.Clone(ctx, false, &log, &log); err != nil {
 		t.Fatalf("%v\n%s", err, log.String())
 	}
-	// The earlier run, before the value was withheld.
-	w.dst.Lookup(svc).Attrs["servicePrincipalName"] = []string{"http/pc1.ad.example.com"}
+	// What the earlier version left.
+	w.dst.Delete(pc)
 	log.Reset()
-	if _, err := s.Clone(ctx, false, &log, &log); err != nil {
+	rep, err := s.Clone(ctx, false, &log, &log)
+	if err != nil {
 		t.Fatalf("%v\n%s", err, log.String())
 	}
-	if got := w.dst.Lookup(svc).Values("servicePrincipalName"); len(got) != 0 {
-		t.Fatalf("the user's SPNs: %v\n%s", got, log.String())
+	if w.dst.Lookup(pc) == nil || strings.Join(w.dst.Lookup(svc).Values("servicePrincipalName"), "") != "http/pc1.ad.example.com" || rep.Later != 1 ||
+		!strings.Contains(log.String(), "update "+svc+"\n") {
+		t.Fatalf("the computer %v, the user's SPNs %v, later %d\n%s", w.dst.Lookup(pc) != nil, w.dst.Lookup(svc).Values("servicePrincipalName"), rep.Later, log.String())
+	}
+	log.Reset()
+	if rep, err := s.Clone(ctx, false, &log, &log); err != nil || rep.Added+rep.Updated+rep.Later != 0 {
+		t.Fatalf("a run after it writes nothing: %v %+v\n%s", err, rep, log.String())
 	}
 }

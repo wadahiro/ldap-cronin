@@ -95,8 +95,13 @@ first. A leftover is one whose RDN holds `\nCNF:` or whose `sAMAccountName` begi
   `sAMAccountName@<realm>` (samldb's "implied by sAMAccountName"), so a leftover's value equal to that is not written
   either; Windows does not check it. Samba also refuses `HOST/X` on an object when another holds an alias of it
   (`http/X`, `cifs/X`, ...: the target's `sPNMappings`), and takes the reverse order, so which one fails depends on
-  the order clone writes in: on a Samba target the alias is withheld (from any object, a leftover or not), the
-  computer keeping `HOST/X`, which it is known by. Windows does not look at the aliases (both measured).
+  the order clone writes in: on a Samba target the alias (on any object, a leftover or not) is written last, after
+  every entry, once the computer holds `HOST/X`, so both are there as on the source and `diff` finds nothing;
+  `check` lists such values, the summary counts them (`values written last`). One the target still refuses is
+  warned of and counted with the values not written. The run that writes them is the one that writes every entry:
+  a run stopped by `-time-limit` before the end holds them back again and the next writes them; an entry holding
+  one is written again though the journal holds it, so the value an earlier version wrote (and was stopped by)
+  comes off until the computer is in. Windows does not look at the aliases (both measured).
 - `check` lists each value clone will not write with the objects that keep it (without the target, `-no-target` or a
   lab not made yet, by Samba's rules); `clone` warns of each and counts them
   per attribute in its summary; `diff` does not compare them and counts them; a second `clone` writes nothing.

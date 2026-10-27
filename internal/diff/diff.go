@@ -381,12 +381,16 @@ func (r *runner) check(ctx context.Context, want directory.Entry, names []string
 	want = r.withoutRefused(want)
 	if kind != nil {
 		var stripped []string
-		if want, stripped = r.withheld.Strip(want); len(stripped) > 0 {
+		// The values written last are on the target once clone is done: compared.
+		if want, stripped = r.withheld.StripRefused(want); len(stripped) > 0 {
 			r.mu.Lock()
 			if r.sum.Withheld == nil {
 				r.sum.Withheld, r.sum.WithheldWhy = map[string]int{}, map[string]int{}
 			}
 			for _, v := range r.withheld.ValuesOf(want.DN) {
+				if v.Later {
+					continue
+				}
 				r.sum.Withheld[v.Attr]++
 				r.sum.WithheldWhy[v.Attr+": "+v.Why]++
 			}

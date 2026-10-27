@@ -416,16 +416,34 @@ func writeWithheld(out io.Writer, w *plan.Withheld) {
 		}
 		fmt.Fprintln(out)
 	}
-	if len(w.Values) == 0 {
-		return
-	}
-	fmt.Fprintf(out, "values clone will not write, the target refuses them: %d\n", len(w.Values))
-	for i, v := range w.Values {
-		if i == maxWithheldShown {
-			fmt.Fprintf(out, "  ... and %d more (clone warns of each)\n", len(w.Values)-i)
-			break
+	var refused, later []plan.WithheldValue
+	for _, v := range w.Values {
+		if v.Later {
+			later = append(later, v)
+		} else {
+			refused = append(refused, v)
 		}
-		fmt.Fprintf(out, "  %s %s of %s (kept by %s): %s\n", v.Attr, v.Value, v.DN, strings.Join(v.Others, "; "), v.Why)
 	}
-	fmt.Fprintln(out)
+	if len(refused) > 0 {
+		fmt.Fprintf(out, "values clone will not write, the target refuses them: %d\n", len(refused))
+		for i, v := range refused {
+			if i == maxWithheldShown {
+				fmt.Fprintf(out, "  ... and %d more (clone warns of each)\n", len(refused)-i)
+				break
+			}
+			fmt.Fprintf(out, "  %s %s of %s (kept by %s): %s\n", v.Attr, v.Value, v.DN, strings.Join(v.Others, "; "), v.Why)
+		}
+		fmt.Fprintln(out)
+	}
+	if len(later) > 0 {
+		fmt.Fprintf(out, "values clone writes last, after the entries holding what they are aliases of: %d\n", len(later))
+		for i, v := range later {
+			if i == maxWithheldShown {
+				fmt.Fprintf(out, "  ... and %d more\n", len(later)-i)
+				break
+			}
+			fmt.Fprintf(out, "  %s %s of %s, after %s holds %s (%s)\n", v.Attr, v.Value, v.DN, strings.Join(v.Others, "; "), v.Key, v.Why)
+		}
+		fmt.Fprintln(out)
+	}
 }

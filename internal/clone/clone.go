@@ -102,6 +102,9 @@ type Report struct {
 	// aliases); WithheldWhy counts them per "attribute: why".
 	Withheld    map[string]int
 	WithheldWhy map[string]int
+	// Later counts the values written last, after the entries holding what they are aliases of (Samba's SPN
+	// aliases: http/X once another object holds host/X).
+	Later int
 	// NameTaken lists the entries not added because the target holds another entry under a name it takes as the
 	// same (Windows ignores width and kana type, Samba collapses spaces), each with the target's entry: writing them
 	// would have overwritten that one.
@@ -176,6 +179,9 @@ func (rep *Report) WriteSummary(w io.Writer) {
 	if len(rep.Withheld) > 0 {
 		plan.WriteCounts(w, "values not written, the target refuses them (see the warnings)", rep.WithheldWhy)
 	}
+	if rep.Later > 0 {
+		fmt.Fprintf(w, "values written last, after the entries holding what they are aliases of (Samba's SPN aliases): %d\n", rep.Later)
+	}
 	if len(rep.NameTaken) > 0 {
 		fmt.Fprintf(w, "not added, the target holds another entry under a name it takes as the same: %d\n", len(rep.NameTaken))
 		for i, n := range rep.NameTaken {
@@ -230,11 +236,14 @@ type runner struct {
 	skipped map[string]bool // normalized DNs not created (see upsert); the reference pass leaves them alone
 	// notAdded says why an entry of the source was not added (normalized DN): the values naming it are not written.
 	notAdded map[string]string
-	unwrote  map[string]bool // attribute and normalized DN of each value warned about as not written
-	primary  []primaryOf     // the accounts whose primary group is not their type's default (guarded by mu)
-	acls     []string        // the DNs of the objects to give the source's ACL (ACLTranslated; guarded by mu)
-	aclOn    bool
-	leftOut  map[string]bool // the SIDs warned about as left out of the ACEs
+	// told are the entries the journal holds yet written again (values are withheld from them): an earlier run
+	// warned of their values, so this one does not again (normalized DN; guarded by mu).
+	told    map[string]bool
+	unwrote map[string]bool // attribute and normalized DN of each value warned about as not written
+	primary []primaryOf     // the accounts whose primary group is not their type's default (guarded by mu)
+	acls    []string        // the DNs of the objects to give the source's ACL (ACLTranslated; guarded by mu)
+	aclOn   bool
+	leftOut map[string]bool // the SIDs warned about as left out of the ACEs
 	// sdOn are the attributes written last with the target's SIDs (plan.Job.Translated), by lowercase name; sdValues
 	// the values to write (guarded by mu).
 	sdOn       map[string]string
@@ -299,7 +308,7 @@ func Run(ctx context.Context, src, dst directory.Directory, job plan.Job, opt Op
 		aclOn: job.ACL == plan.ACLTranslated && !opt.Native, leftOut: map[string]bool{}, withheld: withheld,
 		phase: "reading the source", since: started}
 	defer r.lap("")
-	r.notAdded = map[string]string{}
+	r.notAdded, r.told = map[string]string{}, map[string]bool{}
 	for _, e := range withheld.Refused {
 		r.refuse(e.DN, e.Why)
 	}
@@ -358,6 +367,10 @@ func (r *runner) run(ctx context.Context, p *plan.Plan) error {
 		}); err != nil {
 			return err
 		}
+	}
+	r.lap("values written last")
+	if err := r.writeLater(ctx); err != nil {
+		return err
 	}
 	r.lap("references")
 	if err := r.references(ctx, p); err != nil {
@@ -595,7 +608,14 @@ func (r *runner) leaf(ctx context.Context, k *plan.Kind, e directory.Entry) erro
 		return nil
 	}
 	key := "object " + dn.Normalize(e.DN)
-	if r.skip(key) {
+	// An entry some values are withheld from is written again though the journal holds it: an earlier version may
+	// have written those values (a journal outlives an upgrade, its key being the dump and the config), and left
+	// there they make the target refuse another entry (Samba's SPN aliases). They are few, so this costs little.
+	if len(r.withheld.ValuesOf(e.DN)) > 0 && r.opt.Journal != nil && r.opt.Journal.Has(key) {
+		r.mu.Lock()
+		r.told[dn.Normalize(e.DN)] = true
+		r.mu.Unlock()
+	} else if r.skip(key) {
 		r.withACL(e.DN)
 		r.withSDValues(e)
 		if k.Account {
@@ -774,6 +794,11 @@ func (r *runner) upsert(ctx context.Context, e directory.Entry, account profile.
 		return false, nil, err
 	}
 	if cur != nil {
+		if desired, err = r.keepLater(ctx, e.DN, desired, *cur); err != nil {
+			return false, nil, err
+		}
+	}
+	if cur != nil {
 		// The target answered for another name it takes as the same: this entry renamed (by the program under test,
 		// to a name equal to it there), or another entry, which an update would overwrite.
 		if actual := plan.TargetDN(r.prof, e.DN, *cur); !dn.Equal(actual, e.DN) {
@@ -843,6 +868,75 @@ func (r *runner) sameObject(e, cur directory.Entry) (same, known bool) {
 		}
 	}
 	return false, false
+}
+
+// keepLater adds back to desired the values written last that cur already holds once the entries they are aliases
+// of hold what they alias: taken off, they would only be written again at the end of every run. Where those entries
+// do not hold it yet (a run an earlier version stopped at the collision), the value goes, so they can be added.
+func (r *runner) keepLater(ctx context.Context, d string, desired, cur directory.Entry) (directory.Entry, error) {
+	for _, v := range r.withheld.ValuesOf(d) {
+		if !v.Later || !containsFold(cur.Values(v.Attr), v.Value) {
+			continue
+		}
+		held, err := r.keyHeld(ctx, v)
+		if err != nil {
+			return desired, err
+		}
+		if held {
+			desired.Attrs[v.Attr] = append(append([]string(nil), desired.Attrs[v.Attr]...), v.Value)
+		}
+	}
+	return desired, nil
+}
+
+// keyHeld reports whether every entry v is an alias of holds v.Key on the target.
+func (r *runner) keyHeld(ctx context.Context, v plan.WithheldValue) (bool, error) {
+	for _, other := range v.Others {
+		e, err := r.dst.Get(ctx, other, []string{v.Attr})
+		if err != nil {
+			return false, err
+		}
+		if e == nil || !containsFold(e.Values(v.Attr), v.Key) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// writeLater writes the values held back until every entry is written (Samba's SPN aliases, which it takes once
+// the entries they are aliases of hold what they alias). One the target still refuses is warned of and counted
+// with the values not written; the run goes on.
+func (r *runner) writeLater(ctx context.Context) error {
+	for _, v := range r.withheld.Later() {
+		if r.notAddedWhy(v.DN) != "" {
+			continue
+		}
+		cur, err := r.dst.Get(ctx, v.DN, []string{v.Attr})
+		if err != nil {
+			return err
+		}
+		if cur == nil || containsFold(cur.Values(v.Attr), v.Value) {
+			continue
+		}
+		if err := r.dst.AddValues(ctx, v.DN, v.Attr, []string{v.Value}); err != nil {
+			if ctx.Err() != nil {
+				return err
+			}
+			r.count(func(rep *Report) {
+				rep.Withheld[v.Attr]++
+				rep.WithheldWhy[v.Attr+": "+v.Why+", also after "+strings.Join(v.Others, "; ")+" got "+v.Key]++
+			})
+			r.warn("not written: %s %s of %s: the target refused it also after %s got %s: %v", v.Attr, v.Value, v.DN, strings.Join(v.Others, "; "), v.Key, err)
+			continue
+		}
+		r.count(func(rep *Report) { rep.Later++ })
+		r.logf("update %s (%s: %s, after %s)\n", v.DN, v.Attr, v.Value, strings.Join(v.Others, "; "))
+	}
+	return nil
+}
+
+func containsFold(list []string, s string) bool {
+	return slices.ContainsFunc(list, func(v string) bool { return strings.EqualFold(v, s) })
 }
 
 // hasRefs reports whether e holds any DN reference value. A schema violation of an entry without one is not about
@@ -1453,7 +1547,13 @@ func (r *runner) desired(e directory.Entry) (directory.Entry, error) {
 	var stripped []string
 	if e, stripped = r.withheld.Strip(e); len(stripped) > 0 {
 		// Said of the entries this run writes, not of those an earlier one did (a run resumed after -time-limit).
+		r.mu.Lock()
+		told := r.told[dn.Normalize(e.DN)]
+		r.mu.Unlock()
 		for _, v := range r.withheld.ValuesOf(e.DN) {
+			if v.Later || told {
+				continue // written last (writeLater), or warned of by the run that wrote it first
+			}
 			r.count(func(rep *Report) {
 				rep.Withheld[v.Attr]++
 				rep.WithheldWhy[v.Attr+": "+v.Why]++

@@ -5,14 +5,18 @@ package e2e
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/go-ldap/ldap/v3"
 
 	"github.com/wadahiro/ldap-cronin/internal/app"
 	"github.com/wadahiro/ldap-cronin/internal/config"
@@ -223,8 +227,10 @@ func TestNamesSambaTakesAsTheSameAreNotOverwritten(t *testing.T) {
 }
 
 // Samba refuses HOST/X on an object when another holds http/X (sPNMappings), and takes the reverse order. The source
-// is given them in that order; clone writes users before computers, so without withholding the user's http/X the
-// computer's HOST/X would be refused. The computer keeps HOST/X, the user its other SPNs, and diff finds nothing.
+// is given them in that order; clone writes users before computers, so the user's http/X is written last, after the
+// computer's HOST/X: both are on the target, and diff finds nothing. Then the state an earlier version left when
+// the collision stopped it (the user holding http/X, the computer missing): clone takes http/X off the user, adds
+// the computer and writes http/X back.
 func TestAnSPNCollidingThroughSambasAliasesDoesNotStopClone(t *testing.T) {
 	runID := time.Now().UnixNano() % 1_000_000
 	ctx := context.Background()
@@ -257,18 +263,43 @@ func TestAnSPNCollidingThroughSambasAliasesDoesNotStopClone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("%v\n%s", err, log.String())
 	}
-	if rep.Withheld["servicePrincipalName"] != 1 {
-		t.Fatalf("withheld %+v\n%s", rep.WithheldWhy, log.String())
+	if rep.Later != 1 || rep.Withheld["servicePrincipalName"] != 0 {
+		t.Fatalf("later %d, withheld %+v\n%s", rep.Later, rep.WithheldWhy, log.String())
 	}
-	for d, want := range map[string]string{pc: strings.ToLower(host), svc: strings.ToLower(other)} {
-		e, err := dst.Get(ctx, d, []string{"servicePrincipalName"})
-		must(err)
-		if e == nil || strings.ToLower(strings.Join(e.Values("servicePrincipalName"), ",")) != want {
-			t.Fatalf("%s on the target: %+v, want %s", d, e, want)
+	both := func() {
+		t.Helper()
+		for d, want := range map[string][]string{pc: {host}, svc: {alias, other}} {
+			e, err := dst.Get(ctx, d, []string{"servicePrincipalName"})
+			must(err)
+			if e == nil || len(e.Values("servicePrincipalName")) != len(want) {
+				t.Fatalf("%s on the target: %+v, want %v\n%s", d, e, want, log.String())
+			}
+			for _, w := range want {
+				if !slices.ContainsFunc(e.Values("servicePrincipalName"), func(v string) bool { return strings.EqualFold(v, w) }) {
+					t.Fatalf("%s on the target lacks %s: %v\n%s", d, w, e.Values("servicePrincipalName"), log.String())
+				}
+			}
+		}
+		var out bytes.Buffer
+		if code, err := s.Diff(ctx, app.DiffOutput{}, &out); err != nil || code != app.ExitSame {
+			t.Fatalf("diff: %d %v\n%s", code, err, out.String())
 		}
 	}
-	var out bytes.Buffer
-	if code, err := s.Diff(ctx, app.DiffOutput{}, &out); err != nil || code != app.ExitSame {
-		t.Fatalf("diff: %d %v\n%s", code, err, out.String())
+	both()
+
+	// The state an earlier version left: the computer missing, the user holding http/X (its other SPN with it).
+	conn, err := ldap.DialURL(dstURL, ldap.DialWithTLSConfig(&tls.Config{InsecureSkipVerify: true}))
+	must(err)
+	defer conn.Close()
+	must(conn.Bind(adminDN, adminPw))
+	must(conn.Del(ldap.NewDelRequest(pc, nil)))
+	log.Reset()
+	if rep, err = s.Clone(ctx, false, &log, &log); err != nil || rep.Later != 1 {
+		t.Fatalf("the resumed clone: %v %+v\n%s", err, rep, log.String())
+	}
+	both()
+	log.Reset()
+	if rep, err = s.Clone(ctx, false, &log, &log); err != nil || rep.Added+rep.Updated+rep.Later != 0 {
+		t.Fatalf("a clone after it writes nothing: %v %+v\n%s", err, rep, log.String())
 	}
 }
