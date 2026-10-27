@@ -132,12 +132,11 @@ func (s *Session) Native(ctx context.Context, l *lab.Lab, opts lab.NativeOptions
 			return report, err
 		}
 	}
-	// Complete: the next import compares everything again (the source may have been dumped anew).
-	if journal != nil {
-		if err := journal.Clear(ctx); err != nil {
-			return report, err
-		}
-	}
+	// Said before: dbcheck prints nothing until it ends, and on a large domain it reads every object for minutes,
+	// tens of them on a small CPU, which looked like a run that hung.
+	fmt.Fprintln(out, "native: updating the RIDs and checking the lab with dbcheck (minutes on a large domain; an interruption keeps the journal)")
+	// Finish removes the journal once dbcheck has passed: removed before, an interrupted dbcheck made the next run
+	// compare every object again.
 	res, err := n.Finish(ctx)
 	if err != nil {
 		return report, fmt.Errorf("post-import cleanup (RID update, dbcheck) failed: %w", err)

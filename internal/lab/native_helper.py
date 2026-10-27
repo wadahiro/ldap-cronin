@@ -365,6 +365,10 @@ def op_finish(req):
     summary = out[-1] if out else ""
     if proc.returncode != 0 or ", 0 errors" not in summary and "(0 errors)" not in summary:
         return fail(1, "dbcheck reported an error (relax loosens the consistency checks, so this is the last line of defense): " + " / ".join(out[-5:]))
+    # The import is complete: the next one compares everything again (the source may have been dumped anew). Here,
+    # once dbcheck has passed, and not before it: an interrupted dbcheck then leaves the journal, and the next run
+    # skips every object. Here also because the helper ends after this answer.
+    op_journal_clear(req)
     return ok(max_rid=max_rid, rid_next=bumped, dbcheck=summary, fast_passwords=fast_count, server_attributes=server_count)
 
 

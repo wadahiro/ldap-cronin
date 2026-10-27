@@ -359,7 +359,8 @@ func TestNativeImportKeepsObjectGUIDAndObjectSid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("%v\n%s", err, resumed.String())
 	}
-	if sliceRep.Resumed < 1 || sliceRep.Added != 3 || !strings.Contains(resumed.String(), "resuming: the lab's journal holds") || journal() {
+	if sliceRep.Resumed < 1 || sliceRep.Added != 3 || !strings.Contains(resumed.String(), "resuming: the lab's journal holds") ||
+		!strings.Contains(resumed.String(), "native: updating the RIDs and checking the lab with dbcheck") || journal() {
 		t.Fatalf("the resumed import: %+v, journal left %v\n%s", sliceRep, journal(), resumed.String())
 	}
 	// A session that lost the lab (its container and volumes; the state directory, as a cloud shell's home, stays):

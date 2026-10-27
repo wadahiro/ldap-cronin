@@ -317,11 +317,13 @@ done
   (`skipped, done by an earlier run`). Being in the volume, a snapshot carries exactly the journal of its data,
   so a lab restored from an older snapshot resumes from that snapshot's progress. The journal is valid for the same
   dump and the same config only; with another it is dropped and every object is compared. It is removed when an
-  import completes.
+  import completes, after `dbcheck` passes.
 - From a server there is no journal (it may change between runs): the next run compares every object again.
 - The end of a slice advances the RID allocation (the lab can be used and snapshotted as it is); `dbcheck`, which
   reads the whole database, runs once, at the end of the slice that completes the import. So do the ACLs
-  (`[target.lab] acl = "source"`).
+  (`[target.lab] acl = "source"`). It prints nothing until it ends and takes minutes on a large domain, tens of
+  them on a small CPU, so clone says when it starts (`native: updating the RIDs and checking the lab with
+  dbcheck ...`). Interrupted there, the journal is kept: the next run skips every object and runs it again.
 - An interrupted import (Ctrl-C, a lost session) keeps the journal too, but its last object may be half done:
   the next run compares that one and completes it.
 - Done means done for the lab: do not write the lab between slices (a test run, a hand edit), or that object is

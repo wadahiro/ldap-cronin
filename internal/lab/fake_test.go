@@ -476,6 +476,7 @@ func (h *fakeHelper) handle(req map[string]any) map[string]any {
 		if req["dbcheck"] == false {
 			return map[string]any{"ok": true, "max_rid": 1234, "rid_next": 1235, "dbcheck": ""}
 		}
+		h.journalFP, h.journalKeys = "", nil // complete: the helper removes the journal once dbcheck passes
 		return map[string]any{"ok": true, "max_rid": 1234, "rid_next": 1235, "dbcheck": "Checked 3 objects (0 errors)"}
 	case "journal_load":
 		fp, _ := req["fingerprint"].(string)

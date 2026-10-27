@@ -333,8 +333,8 @@ func mapExists(err error) error {
 }
 
 // Finish performs the post-import cleanup. It advances the RID allocation past the largest imported RID (otherwise
-// users created over LDAP after the import would collide with imported RIDs), and checks consistency with dbcheck.
-// Call it only when the import succeeded.
+// users created over LDAP after the import would collide with imported RIDs), checks consistency with dbcheck, and
+// then removes the journal: the import is complete. Call it only when the import succeeded.
 func (n *Native) Finish(ctx context.Context) (NativeFinish, error) {
 	resp, err := n.call(ctx, map[string]any{"op": "finish"})
 	if err != nil {
