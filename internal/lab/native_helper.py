@@ -270,11 +270,23 @@ def set_password(dn, password):
         set_nt_hash(dn, nt_hashes[password])
         fast_count += 1
         return
+    # setpassword also enables the account and drops PASSWD_NOTREQD (measured on 4.19.5: 546 becomes 512), which a
+    # password set over LDAP leaves as it is. clone sets the password again on every run of an account that must
+    # change it (pwdLastSet 0) and compares userAccountControl with what it read before, so a disabled account came
+    # out enabled on every other run; it is put back as it was.
+    uac = read_uac(dn)
     db.setpassword("(distinguishedName=%s)" % ldb.binary_encode(dn), password, False)
+    if uac is not None and read_uac(dn) != uac:
+        db.modify(message(dn, {"userAccountControl": [b64e(uac)]}, ldb.FLAG_MOD_REPLACE))
     if FAST:
         nt_hash = read_nt_hash(dn)
         if nt_hash:
             nt_hashes[password] = nt_hash
+
+
+def read_uac(dn):
+    res = db.search(base=dn, scope=ldb.SCOPE_BASE, attrs=["userAccountControl"])
+    return res[0]["userAccountControl"][0] if "userAccountControl" in res[0] else None
 
 
 def read_nt_hash(dn):
