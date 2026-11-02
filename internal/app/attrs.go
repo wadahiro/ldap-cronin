@@ -31,7 +31,7 @@ type attrLine struct {
 // server manages). Nothing is left out: the attributes of the allow lists no entry holds follow, their names run
 // together per status (there are hundreds with mode = "all"), but one with a note gets a line of its own. With the
 // target's schema (targetHas, nil when not read) an attribute it lacks is noted, and so is one it refuses. writable
-// (per class, nil when the profile cannot tell) makes what no client can write never instead of not copied.
+// (per kind, nil when the profile cannot tell) makes what no client can write never instead of not copied.
 func (s *Session) writeAttrTable(out io.Writer, usage []plan.Usage, writable map[string]map[string]bool, targetHas map[string]bool, refused map[string]string) error {
 	_, marker, err := s.Cfg.MappingFor(s.Job.Profile)
 	if err != nil {
@@ -42,7 +42,7 @@ func (s *Session) writeAttrTable(out io.Writer, usage []plan.Usage, writable map
 		var lines []attrLine
 		noted := func(key string) (string, string) {
 			st, note := s.attrStatus(u.Kind.Name, allowed, key, marker)
-			if w := writable[u.Kind.Class]; st == attrNotCopied && w != nil && !w[key] {
+			if w := writable[u.Kind.Name]; st == attrNotCopied && w != nil && !w[key] {
 				st, note = attrNever, "only the server writes it"
 			}
 			if targetHas != nil && !targetHas[key] && st != attrNever {

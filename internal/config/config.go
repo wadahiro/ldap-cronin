@@ -312,7 +312,7 @@ func Parse(raw []byte) (*Config, error) {
 const (
 	// AttributesListed copies the attributes of the allow lists: the profile's defaults, include and extra_include.
 	AttributesListed = "allowlist"
-	// AttributesAll copies every attribute the source's schema lets a client write on the class of a kind, but
+	// AttributesAll copies every attribute the source's schema lets a client write on the entries of a kind, but
 	// exclude and what clone never copies; the profile resolves it against the source (app.Open).
 	AttributesAll = "all"
 )
@@ -330,9 +330,9 @@ const (
 )
 
 // AllFor reports whether the attributes of p's kinds are every attribute a client can write. That is the default
-// wherever the profile can read it from the schema (AD): the clone is there to look like production, and an allow
-// list leaves out silently what production holds and no list names (extensionAttributeN, an extension of one's own).
-// A profile that cannot (a generic server's subschema says nothing of who writes what) keeps its allow lists.
+// wherever the profile can read it from the schema (AD's systemOnly, a subschema's NO-USER-MODIFICATION): the clone
+// is there to look like production, and an allow list leaves out silently what production holds and no list names
+// (extensionAttributeN, an extension of one's own). A profile that cannot keeps its allow lists.
 func (c *Config) AllFor(p profile.Profile) bool {
 	switch c.Attributes.Mode {
 	case AttributesAll:

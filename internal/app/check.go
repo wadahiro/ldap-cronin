@@ -54,21 +54,17 @@ func (s *Session) Check(ctx context.Context, o CheckOptions, out io.Writer) (int
 	if err != nil {
 		return 0, err
 	}
-	// What a client can write on each kind's class, to keep out of the suggestion what only the server writes.
+	// What a client can write on each kind's entries, to keep out of the suggestion what only the server writes.
 	var writable map[string]map[string]bool
 	if prof.Writable != nil {
-		var classes []string
-		for _, k := range s.Job.Kinds {
-			classes = append(classes, k.Class)
-		}
-		byClass, ok, err := prof.Writable.Writable(ctx, s.Src, classes)
+		byKind, ok, err := s.writableByKind(ctx)
 		if err != nil {
 			return 0, err
 		}
 		if ok {
 			writable = map[string]map[string]bool{}
-			for class, names := range byClass {
-				writable[class] = profile.Set(names)
+			for kind, names := range byKind {
+				writable[kind] = profile.Set(names)
 			}
 		}
 	}
@@ -182,7 +178,7 @@ func (s *Session) Check(ctx context.Context, o CheckOptions, out io.Writer) (int
 			if st != attrNotCopied {
 				continue
 			}
-			if w := writable[u.Kind.Class]; writable != nil && !w[key] {
+			if w := writable[u.Kind.Name]; writable != nil && !w[key] {
 				managed++
 				continue
 			}
@@ -269,7 +265,7 @@ func (s *Session) Check(ctx context.Context, o CheckOptions, out io.Writer) (int
 	if len(clashes) > 0 {
 		fmt.Fprintf(out, "clone refuses to start: %v\n", plan.ClashError(clashes))
 	}
-	noteLeftOut(out, left)
+	s.noteLeftOut(out, left)
 	if warning != "" {
 		fmt.Fprintf(out, "warning: %s\n", warning)
 	}

@@ -156,14 +156,14 @@ func TestAutoProfileDefersAttributeRulesToTheResolvedProfile(t *testing.T) {
 	}
 }
 
-// AD copies every attribute a client can write unless mode = "allowlist"; a generic server keeps its allow lists.
-// Lists beside an "all" are refused rather than turning it into the lists.
+// Both profiles copy every attribute a client can write unless mode = "allowlist". Lists beside an "all" are refused
+// rather than turning it into the lists.
 func TestTheDefaultModeIsTheProfiles(t *testing.T) {
 	c, err := Parse([]byte(valid))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !c.AllFor(profile.AD) || c.AllFor(profile.LDAP) {
+	if !c.AllFor(profile.AD) || !c.AllFor(profile.LDAP) {
 		t.Fatalf("default: AD %v, LDAP %v", c.AllFor(profile.AD), c.AllFor(profile.LDAP))
 	}
 	for name, attrs := range map[string]string{
@@ -176,16 +176,18 @@ func TestTheDefaultModeIsTheProfiles(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
-		if _, err := c.JobFor(profile.AD); err == nil || !strings.Contains(err.Error(), `mode = "allowlist"`) {
-			t.Errorf("%s on AD: %v", name, err)
+		for _, p := range []profile.Profile{profile.AD, profile.LDAP} {
+			if _, err := c.JobFor(p); err == nil || !strings.Contains(err.Error(), `mode = "allowlist"`) {
+				t.Errorf("%s on %s: %v", name, p.Name, err)
+			}
 		}
 	}
-	c, err = Parse([]byte(valid + "\n[attributes]\nextra_include = [\"description\"]\n"))
+	c, err = Parse([]byte(valid + "\n[attributes]\nmode = \"allowlist\"\nextra_include = [\"description\"]\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := c.JobFor(profile.LDAP); err != nil {
-		t.Errorf("a generic server's default is the allow lists, which extra_include adds to: %v", err)
+		t.Errorf("mode = \"allowlist\" keeps a generic server's lists, which extra_include adds to: %v", err)
 	}
 	c, err = Parse([]byte(valid + "\n[attributes]\nmode = \"allowlist\"\nextra_include = [\"proxyAddresses\"]\n"))
 	if err != nil {

@@ -19,7 +19,7 @@ It is read-only.
 
 `diff` reads the same configuration file as clone and compares **only the attributes that are copied**.
 
-- What is compared is what clone copies per [kind](../README.md#kinds): on AD by default every attribute a client can write, without what `[attributes] exclude` names; with allow lists (`mode = "allowlist"`, and on a generic server) the lists after `include` / `extra_include` / `exclude`.
+- What is compared is what clone copies per [kind](../README.md#kinds): by default every attribute a client can write, without what `[attributes] exclude` names; with allow lists (`mode = "allowlist"`) the lists after `include` / `extra_include` / `exclude`.
   An attribute that is `exclude`d or not copied does not produce a difference even if its values differ (`ldap-cronin check -attrs` says what is copied).
 - **Masked attributes are not compared** (the target holds a fixed string, so the values are expected to differ). Password-related attributes (`unicodePwd`, `dBCSPwd`, `ntPwdHistory`, `lmPwdHistory`, `supplementalCredentials`) are not compared either (they cannot be read over LDAP).
 - **ACLs** are compared when clone copies them (`[attributes] acl = "copy"`, or `[target.lab] acl = "source"` with a native import): each object's owner, group, protected flag and explicit ACEs (`nTSecurityDescriptor`; not their order, and not the inherited ACEs, which are each server's). A difference names the ACEs only on one side, as `type;flags;mask;object type;inherited object type;SID`. With `acl = "copy"` the source's SIDs are first translated as clone translates them, and the ACEs clone leaves out are counted (under `ACEs not compared ...`) ([active-directory.md](active-directory.md#how-it-behaves)). The resource-based delegation, which clone writes over LDAP with the target's SIDs, is compared the same way (its differences as fingerprints: it is a credential).
@@ -292,7 +292,7 @@ not compared:
 
 - `compared objects`: objects compared, per kind.
 - `RENAMED` / `REPLACED` / `UNMARKED` appear only when objects are matched (`rename/move check: on`; `REPLACED` and `UNMARKED` only when there are any). `not listed` is the number of entries left out because they merely moved along with their parent OU. A line saying objects were found more than once means a marker (or, on OpenLDAP, an `entryUUID`) was copied onto another object; the first one found was used.
-- `compared attributes`: the attributes that were compared (excluding masked ones); when every attribute a client can write is compared (the default on AD), how many per kind (`check -attrs` names them), and the attributes left out because the target's schema lacks them are listed on standard error before the differences. `not compared`: what was not compared (masked, `exclude`d, the credentials, and with allow lists the attributes not in them).
+- `compared attributes`: the attributes that were compared (excluding masked ones); when every attribute a client can write is compared (the default), how many per kind (`check -attrs` names them), and the attributes left out because the target's schema lacks them are listed on standard error before the differences. `not compared`: what was not compared (masked, `exclude`d, the credentials, and with allow lists the attributes not in them).
 
 ## JSON output (`-format json`)
 

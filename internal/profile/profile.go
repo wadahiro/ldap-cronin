@@ -53,7 +53,8 @@ type KindSpec struct {
 	Role   Role
 	Filter string
 	// Class is the structural object class of the kind's entries, whose schema definition says which attributes
-	// they may hold ([attributes] mode = "all"); empty where a kind has several (generic LDAP).
+	// they may hold ([attributes] mode = "all"); empty where a kind has several (generic LDAP), whose entries in
+	// scope then say which classes they are.
 	Class string
 	// Default is the default attribute allow list (without the profile's Required attributes).
 	Default []string

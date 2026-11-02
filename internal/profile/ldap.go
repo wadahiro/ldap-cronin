@@ -64,6 +64,7 @@ var LDAP = Profile{
 	Operational: []string{"entryUUID", "createTimestamp", "modifyTimestamp", "creatorsName", "modifiersName", "structuralObjectClass"},
 	Refs:        subschema{},
 	SchemaAttrs: subschema{},
+	Writable:    subschema{},
 	Root:        namingContextRoot{},
 	Account:     ldapAccount{},
 }

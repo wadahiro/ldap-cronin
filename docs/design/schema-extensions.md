@@ -1,6 +1,7 @@
 # Schema extensions: carry them to the target, and copy every attribute
 
-Status: implemented (`ldap-cronin schema`, `[attributes] mode = "all"`; AD only).
+Status: implemented (`ldap-cronin schema`: AD only; `[attributes] mode = "all"`: AD, and generic LDAP from the
+classes the entries hold, [generic-ldap.md](../generic-ldap.md#how-it-behaves)).
 
 ## 1. Goal
 
@@ -50,5 +51,7 @@ Open:
 
 - An auxiliary class attached to single objects is not followed.
 - Attributes the server or the machine refresh (`msDS-SupportedEncryptionTypes`) are copied and may differ later.
-- Generic LDAP: the subschema has the same information (`MAY`, `MUST`, `NO-USER-MODIFICATION`, `USAGE`) but the
-  kinds there have several structural classes; neither feature exists for it yet.
+- Generic LDAP: `mode = "all"` takes, per kind, the classes its entries in scope hold (one more pass reading
+  `objectClass`), and resolves them against the subschema (`MAY`, `MUST`, `SUP`, without `NO-USER-MODIFICATION`
+  and operational usage), the kind's default list besides. Carrying schema definitions (`ldap-cronin schema`) does
+  not exist for it: a generic server takes its schema in its own configuration.

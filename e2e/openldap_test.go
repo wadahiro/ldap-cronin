@@ -15,6 +15,7 @@ import (
 
 	"github.com/go-ldap/ldap/v3"
 
+	"github.com/wadahiro/ldap-cronin/internal/app"
 	"github.com/wadahiro/ldap-cronin/internal/clone"
 	"github.com/wadahiro/ldap-cronin/internal/config"
 	"github.com/wadahiro/ldap-cronin/internal/diff"
@@ -324,4 +325,103 @@ base_dn = %q
 	if !renamed {
 		t.Fatalf("the rename of the parent leaf must be found: %+v", diffs)
 	}
+}
+
+// Through the commands' session, the default on a generic server copies every attribute a client can write on the
+// classes the entries hold: an inetOrgPerson's carLicense, which no allow list names, and what the auxiliary
+// posixAccount and shadowAccount allow; with [mapping] mode = "preserve" (the default) beside it, the source's
+// entryUUID and creation metadata, sent once in the Add, and memberOf left to the target's overlay. diff then finds
+// nothing, and a second clone writes nothing.
+func TestEveryAttributeOfOpenLDAPIsCopiedWithItsEntryUUID(t *testing.T) {
+	image := os.Getenv("E2E_LDAP_IMAGE")
+	if image == "" {
+		t.Skip("E2E_LDAP_IMAGE is not set (tests/e2e.sh builds it)")
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("no docker")
+	}
+	ctx := context.Background()
+	host := env("E2E_LAB_HOST", "localhost")
+	suffix := time.Now().UnixNano() % 1_000_000
+	srcName, dstName := fmt.Sprintf("olasrc%d", suffix), fmt.Sprintf("oladst%d", suffix)
+	srcPort, dstPort := startOpenLDAP(t, image, srcName, nil), startOpenLDAP(t, image, dstName, nil)
+	seed := exec.Command("docker", "exec", "-i", srcName, "ldapadd", "-x", "-H", "ldap://localhost", "-D", olAdmin, "-w", olPw)
+	seed.Stdin = strings.NewReader(`dn: ou=IDM,dc=example,dc=org
+objectClass: organizationalUnit
+ou: IDM
+
+dn: uid=carol,ou=IDM,dc=example,dc=org
+objectClass: inetOrgPerson
+objectClass: posixAccount
+objectClass: shadowAccount
+cn: Carol
+sn: C
+uid: carol
+carLicense: CAR-1
+uidNumber: 1001
+gidNumber: 1001
+homeDirectory: /home/carol
+loginShell: /bin/zsh
+shadowLastChange: 20000
+
+dn: cn=Ops,ou=IDM,dc=example,dc=org
+objectClass: groupOfNames
+cn: Ops
+member: uid=carol,ou=IDM,dc=example,dc=org
+`)
+	if out, err := seed.CombinedOutput(); err != nil {
+		t.Fatalf("seed: %v\n%s", err, out)
+	}
+	cfg, err := config.Parse([]byte(fmt.Sprintf("[source]\nurl = \"ldap://%s:%d\"\nbind_dn = %q\n[target]\nurl = \"ldap://%s:%d\"\nbind_dn = %q\n[scope]\nbase_dn = %q\n",
+		host, srcPort, olAdmin, host, dstPort, olAdmin, olClone)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pw := func() (string, error) { return olPw, nil }
+	s, err := app.Open(ctx, cfg, app.Secrets{SourceBind: pw, TargetBind: pw, UserPassword: func() (string, error) { return "Fixed-Passw0rd", nil }}, app.LDAP, &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+	if !s.Job.AllWritable {
+		t.Fatal("every attribute a client can write is the default on a generic server")
+	}
+	var log bytes.Buffer
+	if _, err := s.Clone(ctx, false, &log, &log); err != nil {
+		t.Fatalf("%v\n%s", err, log.String())
+	}
+	carol := "uid=carol," + olClone
+	src, dst := dialAt(t, host, srcPort), dialAt(t, host, dstPort)
+	attrs := []string{"carLicense", "uidNumber", "loginShell", "shadowLastChange", "entryUUID", "createTimestamp", "creatorsName", "memberOf"}
+	want, err := src.Get(ctx, carol, attrs)
+	if err != nil || want == nil {
+		t.Fatal(want, err)
+	}
+	got, err := dst.Get(ctx, carol, attrs)
+	if err != nil || got == nil {
+		t.Fatalf("carol: %v %v\n%s", got, err, log.String())
+	}
+	for _, a := range attrs {
+		if w, g := strings.Join(want.Values(a), "|"), strings.Join(got.Values(a), "|"); w == "" || w != g {
+			t.Errorf("%s: source %q, target %q", a, w, g)
+		}
+	}
+	var out bytes.Buffer
+	if code, err := s.Diff(ctx, app.DiffOutput{}, &out); err != nil || code != app.ExitSame {
+		t.Fatalf("diff: %d %v\n%s", code, err, out.String())
+	}
+	log.Reset()
+	if rep, err := s.Clone(ctx, false, &log, &log); err != nil || rep.Added != 0 || rep.Updated != 0 {
+		t.Fatalf("a second clone: %+v %v\n%s", rep, err, log.String())
+	}
+}
+
+func dialAt(t *testing.T, host string, port int) *ldapdir.Client {
+	t.Helper()
+	c, err := ldapdir.Dial(ldapdir.ConnConfig{URL: fmt.Sprintf("ldap://%s:%d", host, port), BindDN: olAdmin, Password: olPw}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(c.Close)
+	return c
 }

@@ -184,24 +184,20 @@ func openSource(ctx context.Context, cfg *config.Config, secrets Secrets, dial D
 	return d, nil
 }
 
-// writableAttrs gives each kind every attribute the source's schema lets a client write on its class
+// writableAttrs gives each kind every attribute the source's schema lets a client write on its entries
 // ([attributes] mode = "all"), but what clone never copies, the marker and exclude.
 func (s *Session) writableAttrs(ctx context.Context) error {
 	prof := s.Job.Profile
 	if prof.Writable == nil {
 		return fmt.Errorf("[attributes] mode = %q needs the schema to say what a client can write; the %s profile cannot, so list the attributes (mode = %q)", config.AttributesAll, prof.Name, config.AttributesListed)
 	}
-	var classes []string
-	for _, k := range s.Job.Kinds {
-		classes = append(classes, k.Class)
-	}
-	byClass, ok, err := prof.Writable.Writable(ctx, s.Src, classes)
+	byKind, ok, err := s.writableByKind(ctx)
 	if err != nil {
 		return err
 	}
 	if !ok && s.Cfg.Attributes.Mode == "" {
-		// A directory without a schema naming context is no AD server or dump (a test fake): the allow lists, as
-		// CheckMarker skips such a directory.
+		// A directory without a schema is no real server or dump (a test fake): the allow lists, as CheckMarker
+		// skips such a directory.
 		return nil
 	}
 	if !ok {
@@ -211,12 +207,19 @@ func (s *Session) writableAttrs(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// The identifier and the creation metadata are left to [mapping] mode = "preserve", which sends them once, in
+	// the Add; in the lists, clone would send them on every update, and diff compare them.
 	never := profile.Set(append(append([]string{prof.Identity.Attr(), marker}, prof.NeverClone...), prof.PasswordAttrs...))
+	if prof.Preserve != nil {
+		for _, a := range prof.Preserve.Operational {
+			never[strings.ToLower(a)] = true
+		}
+	}
 	s.Job.AllWritable = true
 	for i := range s.Job.Kinds {
 		k := &s.Job.Kinds[i]
 		var names []string
-		for _, n := range byClass[k.Class] {
+		for _, n := range byKind[k.Name] {
 			if !never[strings.ToLower(n)] {
 				names = append(names, n)
 			}
@@ -226,6 +229,77 @@ func (s *Session) writableAttrs(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// writableByKind gives, by kind name, what the source's schema lets a client write on the kind's entries: on the
+// kind's class (AD), or, where a kind has several (generic LDAP: an inetOrgPerson that is a posixAccount too, a
+// groupOfNames or a posixGroup), on the classes its entries in scope hold, read in one more pass over them. Those
+// kinds keep what of their default allow list the source's schema defines besides: an entry a reference brings in
+// from outside the scope may be of a kind no entry in scope is, and still needs what its class requires (an
+// inetOrgPerson's sn). ok=false when the schema cannot be read.
+func (s *Session) writableByKind(ctx context.Context) (map[string][]string, bool, error) {
+	classesOf := map[string][]string{}
+	var all []string
+	asked := map[string]bool{}
+	for _, k := range s.Job.Kinds {
+		classes := []string{k.Class}
+		if k.Class == "" {
+			var err error
+			if classes, err = s.heldClasses(ctx, k); err != nil {
+				return nil, false, err
+			}
+		}
+		classesOf[k.Name] = classes
+		for _, c := range classes {
+			if key := strings.ToLower(c); !asked[key] {
+				asked[key] = true
+				all = append(all, c)
+			}
+		}
+	}
+	byClass, ok, err := s.Job.Profile.Writable.Writable(ctx, s.Src, all)
+	if err != nil || !ok {
+		return nil, ok, err
+	}
+	var defined map[string]bool
+	if schema := s.Job.Profile.SchemaAttrs; schema != nil {
+		if defined, _, err = schema.Attributes(ctx, s.Src); err != nil {
+			return nil, false, err
+		}
+	}
+	out := map[string][]string{}
+	for _, k := range s.Job.Kinds {
+		var names []string
+		for _, a := range k.Default {
+			if k.Class == "" && defined[strings.ToLower(a)] {
+				names = append(names, a)
+			}
+		}
+		for _, c := range classesOf[k.Name] {
+			names = append(names, byClass[c]...)
+		}
+		out[k.Name] = names
+	}
+	return out, true, nil
+}
+
+// heldClasses is every object class the entries of k in scope hold, as the first entry names it.
+func (s *Session) heldClasses(ctx context.Context, k plan.Kind) ([]string, error) {
+	seen := map[string]bool{}
+	var classes []string
+	err := plan.WalkBases(ctx, s.Src, s.Job.BaseDNs, k.Filter, []string{"objectClass"}, func(e directory.Entry) error {
+		for _, c := range e.Values("objectClass") {
+			if key := strings.ToLower(c); !seen[key] {
+				seen[key] = true
+				classes = append(classes, c)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("read the object classes of %s: %w", k.Name, err)
+	}
+	return classes, nil
 }
 
 // leftOut is what targetHas takes out of the job for a target.
@@ -319,9 +393,14 @@ func (s *Session) targetRefusals(ctx context.Context, dst directory.Directory) (
 }
 
 // noteLeftOut lists, one per line, the attributes targetHas left out and why.
-func noteLeftOut(w io.Writer, l leftOut) {
+func (s *Session) noteLeftOut(w io.Writer, l leftOut) {
 	if len(l.missing) > 0 {
-		fmt.Fprintf(w, "not copied or compared: the target schema lacks %d attributes of the source's (ldap-cronin schema adds those of extensions):\n", len(l.missing))
+		// ldap-cronin schema carries AD's definitions only; a generic server takes its schema in its own configuration.
+		remedy := "ldap-cronin schema adds those of extensions"
+		if s.Job.Profile.SchemaCopy == nil {
+			remedy = "the target's configuration takes their schema; the OpenLDAP lab, lab up --schema-dir"
+		}
+		fmt.Fprintf(w, "not copied or compared: the target schema lacks %d attributes of the source's (%s):\n", len(l.missing), remedy)
 		for _, n := range l.missing {
 			fmt.Fprintf(w, "  %s\n", n)
 		}
