@@ -87,10 +87,16 @@ olcAccess: {1}to * by dn.exact="cn=cloner,dc=example,dc=org" manage by dn.exact=
 // image's /schema.d before the first start.
 func startOpenLDAP(t *testing.T, image, name string, ldifs map[string]string) int {
 	t.Helper()
+	return startOpenLDAPAt(t, image, name, olBase, ldifs)
+}
+
+// startOpenLDAPAt is startOpenLDAP with the database suffix given; its admin is cn=admin,<suffix>.
+func startOpenLDAPAt(t *testing.T, image, name, suffix string, ldifs map[string]string) int {
+	t.Helper()
 	port := freePort(t)
 	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", name).Run() })
 	out, err := exec.Command("docker", "create", "--name", name, "-p", fmt.Sprintf("%d:389", port),
-		"-e", "LDAP_SUFFIX="+olBase, "-e", "LDAP_ADMIN_PASSWORD="+olPw, image).CombinedOutput()
+		"-e", "LDAP_SUFFIX="+suffix, "-e", "LDAP_ADMIN_PASSWORD="+olPw, image).CombinedOutput()
 	if err != nil {
 		t.Fatalf("docker create: %v\n%s", err, out)
 	}
@@ -509,5 +515,89 @@ acmeEmployeeCode: E-42
 	log.Reset()
 	if err := s.Schema(ctx, false, &out, &log); err != nil || !strings.Contains(log.String(), "has every attribute and class") {
 		t.Fatalf("schema again: %v\n%s", err, log.String())
+	}
+}
+
+// A base_dn that is an o= database suffix, which no DC= run names, is its own root against real OpenLDAP: dump
+// writes the whole directory under it, clone from the server copies it, and diff against the server and the dump
+// finds nothing.
+func TestAnOSuffixIsItsOwnRoot(t *testing.T) {
+	image := os.Getenv("E2E_LDAP_IMAGE")
+	if image == "" {
+		t.Skip("E2E_LDAP_IMAGE is not set (tests/e2e.sh builds it)")
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("no docker")
+	}
+	const suffix = "o=acme"
+	admin := "cn=admin," + suffix
+	ctx := context.Background()
+	host := env("E2E_LAB_HOST", "localhost")
+	run := time.Now().UnixNano() % 1_000_000
+	srcName, dstName := fmt.Sprintf("olosrc%d", run), fmt.Sprintf("olodst%d", run)
+	srcPort, dstPort := startOpenLDAPAt(t, image, srcName, suffix, nil), startOpenLDAPAt(t, image, dstName, suffix, nil)
+	seed := exec.Command("docker", "exec", "-i", srcName, "ldapadd", "-x", "-H", "ldap://localhost", "-D", admin, "-w", olPw)
+	seed.Stdin = strings.NewReader(`dn: ou=People,o=acme
+objectClass: organizationalUnit
+ou: People
+
+dn: uid=erin,ou=People,o=acme
+objectClass: inetOrgPerson
+cn: Erin
+sn: E
+uid: erin
+mail: erin@example.org
+
+dn: cn=Ops,o=acme
+objectClass: groupOfNames
+cn: Ops
+member: uid=erin,ou=People,o=acme
+`)
+	if out, err := seed.CombinedOutput(); err != nil {
+		t.Fatalf("seed: %v\n%s", err, out)
+	}
+	pw := func() (string, error) { return olPw, nil }
+	secrets := app.Secrets{SourceBind: pw, TargetBind: pw, UserPassword: func() (string, error) { return "Fixed-Passw0rd", nil }}
+	target := fmt.Sprintf("[target]\nurl = \"ldap://%s:%d\"\nbind_dn = %q\n[scope]\nbase_dn = %q\n", host, dstPort, admin, suffix)
+	open := func(source string) *app.Session {
+		t.Helper()
+		cfg, err := config.Parse([]byte(source + target))
+		if err != nil {
+			t.Fatal(err)
+		}
+		s, err := app.Open(ctx, cfg, secrets, app.LDAP, &bytes.Buffer{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(s.Close)
+		return s
+	}
+
+	dumpPath := filepath.Join(t.TempDir(), "acme.ldif.gz")
+	c, err := app.Dump(ctx, app.DumpOptions{Conn: ldapdir.ConnConfig{URL: fmt.Sprintf("ldap://%s:%d", host, srcPort), BindDN: admin},
+		BaseDNs: []string{suffix}, Out: dumpPath, Version: "e2e"}, pw, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("dump -base-dn %s: %v", suffix, err)
+	}
+	if c.Base < 4 { // the suffix, the OU, the user and the group
+		t.Fatalf("the dump holds %+v", c)
+	}
+
+	s := open(fmt.Sprintf("[source]\nurl = \"ldap://%s:%d\"\nbind_dn = %q\n", host, srcPort, admin))
+	var log bytes.Buffer
+	rep, err := s.Clone(ctx, false, &log, &log)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, log.String())
+	}
+	if rep.Added != 3 {
+		t.Fatalf("the OU, the user and the group: %+v\n%s", rep, log.String())
+	}
+	var out bytes.Buffer
+	if code, err := s.Diff(ctx, app.DiffOutput{}, &out); err != nil || code != app.ExitSame {
+		t.Fatalf("diff against the server: %d %v\n%s", code, err, out.String())
+	}
+	out.Reset()
+	if code, err := open(fmt.Sprintf("[source]\nldif = %q\n", dumpPath)).Diff(ctx, app.DiffOutput{}, &out); err != nil || code != app.ExitSame {
+		t.Fatalf("diff against the dump: %d %v\n%s", code, err, out.String())
 	}
 }
