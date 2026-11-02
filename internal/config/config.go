@@ -730,11 +730,37 @@ func (c *Config) JobFor(p profile.Profile) (plan.Job, error) {
 		if !contains(c.objects(p), spec.Name) {
 			continue
 		}
+		filter := c.Scope.Filters[spec.Name]
+		if spec.Rest {
+			// Its attributes come from the classes of its entries: an allow list names none of an entry of any shape,
+			// whose required ones it would leave out, every add refused.
+			if !c.AllFor(p) {
+				if len(c.Scope.Objects) > 0 {
+					return plan.Job{}, fmt.Errorf("[scope] objects: %s takes entries of any class, whose attributes their classes say: it needs [attributes] mode = %q", spec.Name, AttributesAll)
+				}
+				continue
+			}
+			if filter == "" {
+				// The others' filters, the profile's and the configured: an entry a narrowed kind leaves out is not of
+				// this one either (an inetOrgPerson is a user, or left out), nor one of a kind left out of objects, and
+				// one a widened kind takes is that kind's.
+				var others []string
+				for _, o := range p.Kinds {
+					if !o.Rest {
+						others = append(others, o.Filter)
+						if f := c.Scope.Filters[o.Name]; f != "" {
+							others = append(others, f)
+						}
+					}
+				}
+				filter = profile.RestFilter(others...)
+			}
+		}
 		list, err := p.Attrs(spec.Name, c.override())
 		if err != nil {
 			return plan.Job{}, fmt.Errorf("[attributes] %s: %w", spec.Name, err)
 		}
-		job.Kinds = append(job.Kinds, plan.NewKind(p, spec, c.Scope.Filters[spec.Name], list))
+		job.Kinds = append(job.Kinds, plan.NewKind(p, spec, filter, list))
 	}
 	for _, o := range c.Scope.Objects {
 		if _, ok := p.Kind(o); !ok {

@@ -372,9 +372,11 @@ func newMasker(prof profile.Profile, o Options) (mask.Masker, []string, error) {
 	return mask.New(o.MaskValue, global).WithKinds(kinds), attrs, nil
 }
 
-// maskEntry masks e as an entry of the kind its object classes make it (as clone tells a referenced entry's).
+// maskEntry masks e as an entry of the kind its object classes make it (as clone tells a referenced entry's), one of
+// no kind as the kind that takes the rest: a dump reads no filter, so other:attribute masks what no other kind's
+// classes take.
 func maskEntry(prof profile.Profile, m mask.Masker, e directory.Entry) directory.Entry {
-	return m.ApplyIn(prof.KindOf(e.Values("objectClass")), e)
+	return m.ApplyIn(prof.MaskKind(e.Values("objectClass")), e)
 }
 
 // put writes e once.

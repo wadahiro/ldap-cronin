@@ -35,6 +35,8 @@ const (
 	KindUser     = "user"
 	KindComputer = "computer"
 	KindContact  = "contact"
+	// KindOther takes every entry no other kind does (a generic server's: a policy store's, an application's).
+	KindOther = "other"
 )
 
 // Role is what the tool does with entries of a kind. Only the role matters to the shared code, never the kind name.
@@ -67,6 +69,11 @@ type KindSpec struct {
 	Is func(objectClasses []string) bool
 	// ByClass says in words what Is takes, for list-attrs.
 	ByClass string
+	// Rest marks the kind of every entry under base_dn that no other kind takes, the root but: its filter is the
+	// negation of the others' (config.JobFor), and its attributes are what the entries' classes allow, so it is
+	// enabled with [attributes] mode = "all" only. Is is never true of it: a reference outside the scope to an
+	// entry of no kind is written as it is, not cloned.
+	Rest bool
 }
 
 // hasClass reports whether classes holds every name of want and none of not (case-insensitively).
@@ -360,6 +367,21 @@ func (p Profile) Kind(name string) (KindSpec, bool) {
 func (p Profile) KindOf(objectClasses []string) string {
 	for _, k := range p.Kinds {
 		if k.Is != nil && k.Is(objectClasses) {
+			return k.Name
+		}
+	}
+	return ""
+}
+
+// MaskKind is the kind whose [mask.kinds] (or dump -mask kind:attribute) masks an entry of these object classes: as
+// KindOf, else the kind that takes the rest, where the profile has one. Not KindOf itself, which a reference is told
+// by: an entry of no kind outside the scope stays a value written as it is.
+func (p Profile) MaskKind(objectClasses []string) string {
+	if k := p.KindOf(objectClasses); k != "" {
+		return k
+	}
+	for _, k := range p.Kinds {
+		if k.Rest {
 			return k.Name
 		}
 	}

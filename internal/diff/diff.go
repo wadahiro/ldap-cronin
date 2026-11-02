@@ -241,6 +241,9 @@ func Run(ctx context.Context, src, dst directory.Directory, job plan.Job, o Opti
 
 	for _, k := range job.Kinds {
 		err := plan.WalkBases(ctx, dst, job.BaseDNs, k.Filter, []string{"description"}, func(e directory.Entry) error {
+			if k.Rest && dn.Equal(e.DN, p.Root) { // the target's own (plan.walkKind)
+				return nil
+			}
 			// Entries matched by identifier are RENAMED (or already explained by a parent move), so they are not target-only.
 			if !p.Scope.Has(e.DN) && !r.loc.found.Has(e.DN) {
 				if plan.IsPlaceholder(e) { // where a reference names an entry the source did not return

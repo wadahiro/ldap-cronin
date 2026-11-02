@@ -491,6 +491,9 @@ func listAttrs(_ context.Context, args []string, out io.Writer) error {
 	}
 	for _, k := range p.Kinds {
 		fmt.Fprintf(out, "[%s]\n", k.Name)
+		if k.Rest {
+			fmt.Fprintf(out, "  (none: what the classes of its entries allow, with mode = %q only)\n", config.AttributesAll)
+		}
 		for _, name := range k.Default {
 			fmt.Fprintf(out, "  %s\n", name)
 		}

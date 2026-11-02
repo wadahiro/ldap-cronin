@@ -198,14 +198,11 @@ base_dn = %q
 	if err != nil {
 		t.Fatalf("clone: %v\n%s", err, out.String())
 	}
-	// 7 with the group under alice: a parent leaf, which a generic server allows. alice is cloned as the user she
-	// is (OpenLDAP refuses an inetOrgPerson without sn), and logs in with the fixed password below.
-	if rep.Added != 7 {
-		t.Fatalf("expected 7 objects: %+v\n%s", *rep, out.String())
-	}
-	// The application entry is of no kind: not cloned, and counted by its structuralObjectClass.
-	if fmt.Sprint(rep.NotCloned) != "map[applicationProcess:1]" {
-		t.Fatalf("not cloned: %v", rep.NotCloned)
+	// 8 with the group under alice: a parent leaf, which a generic server allows, and the application entry, of
+	// no other kind. alice is cloned as the user she is (OpenLDAP refuses an inetOrgPerson without sn), and logs in
+	// with the fixed password below.
+	if rep.Added != 8 || len(rep.NotCloned) != 0 {
+		t.Fatalf("expected 8 objects, none left: %+v\n%s", *rep, out.String())
 	}
 
 	diffs, err := runDiffWith(opt, src, dst, nil)
@@ -732,5 +729,105 @@ acmeLockFlag: 1
 	}
 	if flag() != "1" {
 		t.Fatal("acmeLockFlag after the restart")
+	}
+}
+
+// olPolicySchema is a policy store's schema, as a product that keeps its policies in the directory adds one.
+const olPolicySchema = `dn: cn=acmepolicy,cn=schema,cn=config
+objectClass: olcSchemaConfig
+cn: acmepolicy
+olcAttributeTypes: ( 1.3.6.1.4.1.99999.1.40 NAME 'acmeStoreId' EQUALITY caseIgnoreMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE )
+olcAttributeTypes: ( 1.3.6.1.4.1.99999.1.41 NAME 'acmeRuleId' EQUALITY caseIgnoreMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE )
+olcAttributeTypes: ( 1.3.6.1.4.1.99999.1.42 NAME 'acmeRuleText' EQUALITY caseExactMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 )
+olcAttributeTypes: ( 1.3.6.1.4.1.99999.1.43 NAME 'acmeRuleOwner' SUP distinguishedName )
+olcObjectClasses: ( 1.3.6.1.4.1.99999.2.40 NAME 'acmeStore' SUP top STRUCTURAL MUST acmeStoreId )
+olcObjectClasses: ( 1.3.6.1.4.1.99999.2.41 NAME 'acmeRule' SUP top STRUCTURAL MUST acmeRuleId MAY ( acmeRuleText $ acmeRuleOwner ) )
+`
+
+// Entries of no other kind against real OpenLDAP: a policy store of a schema of its own, nested under an OU, a rule
+// naming a user. schema -apply gives the target the schema; clone copies the store as it is (what the classes
+// allow, the reference), diff finds nothing, and a second clone writes nothing.
+func TestAPolicyStoreReachesOpenLDAP(t *testing.T) {
+	image := os.Getenv("E2E_LDAP_IMAGE")
+	if image == "" {
+		t.Skip("E2E_LDAP_IMAGE is not set (tests/e2e.sh builds it)")
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("no docker")
+	}
+	ctx := context.Background()
+	host := env("E2E_LAB_HOST", "localhost")
+	run := time.Now().UnixNano() % 1_000_000
+	srcName, dstName := fmt.Sprintf("olpsrc%d", run), fmt.Sprintf("olpdst%d", run)
+	srcPort := startOpenLDAP(t, image, srcName, map[string]string{"10-acmepolicy.ldif": olPolicySchema})
+	dstPort := startOpenLDAP(t, image, dstName, nil)
+	seed := exec.Command("docker", "exec", "-i", srcName, "ldapadd", "-x", "-H", "ldap://localhost", "-D", olAdmin, "-w", olPw)
+	seed.Stdin = strings.NewReader(`dn: ou=IDM,dc=example,dc=org
+objectClass: organizationalUnit
+ou: IDM
+
+dn: uid=hana,ou=IDM,dc=example,dc=org
+objectClass: inetOrgPerson
+cn: Hana
+sn: H
+uid: hana
+
+dn: ou=Policies,ou=IDM,dc=example,dc=org
+objectClass: organizationalUnit
+ou: Policies
+
+dn: acmeStoreId=main,ou=Policies,ou=IDM,dc=example,dc=org
+objectClass: acmeStore
+acmeStoreId: main
+
+dn: acmeRuleId=r1,acmeStoreId=main,ou=Policies,ou=IDM,dc=example,dc=org
+objectClass: acmeRule
+acmeRuleId: r1
+acmeRuleText: allow /app
+acmeRuleOwner: uid=hana,ou=IDM,dc=example,dc=org
+`)
+	if out, err := seed.CombinedOutput(); err != nil {
+		t.Fatalf("seed: %v\n%s", err, out)
+	}
+	cfg, err := config.Parse([]byte(fmt.Sprintf("[source]\nurl = \"ldap://%s:%d\"\nbind_dn = %q\n[target]\nurl = \"ldap://%s:%d\"\nbind_dn = %q\n[scope]\nbase_dn = %q\n",
+		host, srcPort, olAdmin, host, dstPort, olAdmin, olClone)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pw := func() (string, error) { return olPw, nil }
+	s, err := app.Open(ctx, cfg, app.Secrets{SourceBind: pw, TargetBind: pw, UserPassword: func() (string, error) { return "Fixed-Passw0rd", nil }}, app.LDAP, &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+	var out, log bytes.Buffer
+	if err := s.Schema(ctx, true, &out, &log); err != nil {
+		t.Fatalf("schema -apply: %v\n%s", err, log.String())
+	}
+	log.Reset()
+	rep, err := s.Clone(ctx, false, &log, &log)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, log.String())
+	}
+	if len(rep.NotCloned) != 0 {
+		t.Fatalf("not cloned: %v\n%s", rep.NotCloned, log.String())
+	}
+	rule := "acmeRuleId=r1,acmeStoreId=main,ou=Policies," + olClone
+	got, err := dialAt(t, host, dstPort).Get(ctx, rule, []string{"acmeRuleText", "acmeRuleOwner", "entryUUID"})
+	if err != nil || got == nil || strings.Join(got.Values("acmeRuleText"), "") != "allow /app" ||
+		!strings.EqualFold(strings.Join(got.Values("acmeRuleOwner"), ""), "uid=hana,"+olClone) {
+		t.Fatalf("the rule: %+v %v\n%s", got, err, log.String())
+	}
+	want, err := dialAt(t, host, srcPort).Get(ctx, rule, []string{"entryUUID"})
+	if err != nil || want == nil || strings.Join(want.Values("entryUUID"), "") != strings.Join(got.Values("entryUUID"), "") {
+		t.Fatalf("the rule's entryUUID: source %+v, target %+v", want, got)
+	}
+	var diffOut bytes.Buffer
+	if code, err := s.Diff(ctx, app.DiffOutput{}, &diffOut); err != nil || code != app.ExitSame {
+		t.Fatalf("diff: %d %v\n%s", code, err, diffOut.String())
+	}
+	log.Reset()
+	if rep, err := s.Clone(ctx, false, &log, &log); err != nil || rep.Added+rep.Updated != 0 {
+		t.Fatalf("a second clone: %+v %v\n%s", rep, err, log.String())
 	}
 }

@@ -318,3 +318,158 @@ func TestAnAttributeTheTargetsClassDoesNotAllowIsLeftOut(t *testing.T) {
 		t.Fatalf("diff: %d %v\n%s", code, err, out.String())
 	}
 }
+
+// policyStore gives d's subschema the classes of a policy store and of an application's entry, and, with entries,
+// d an OU holding a store, a rule under it naming a user, and an application entry beside them: entries of no kind.
+func policyStore(d *fakedir.Dir, entries bool) {
+	sub := d.Lookup("cn=Subschema").Attrs
+	sub["attributeTypes"] = append(sub["attributeTypes"],
+		"( 1.3.6.1.4.1.99999.1.40 NAME 'acmeStoreId' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE )",
+		"( 1.3.6.1.4.1.99999.1.41 NAME 'acmeStoreName' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 )",
+		"( 1.3.6.1.4.1.99999.1.42 NAME 'acmeRuleId' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE )",
+		"( 1.3.6.1.4.1.99999.1.43 NAME 'acmeRuleText' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 )",
+		"( 1.3.6.1.4.1.99999.1.44 NAME 'acmeRuleOwner' SUP distinguishedName )")
+	sub["objectClasses"] = append(sub["objectClasses"],
+		"( 1.3.6.1.4.1.99999.2.40 NAME 'acmeStore' SUP top STRUCTURAL MUST acmeStoreId MAY acmeStoreName )",
+		"( 1.3.6.1.4.1.99999.2.41 NAME 'acmeRule' SUP top STRUCTURAL MUST acmeRuleId MAY ( acmeRuleText $ acmeRuleOwner ) )",
+		"( 2.5.6.11 NAME 'applicationProcess' SUP top STRUCTURAL MUST cn MAY description )")
+	if !entries {
+		return
+	}
+	d.Put("ou=Policies,o=acme", map[string][]string{"objectClass": {"top", "organizationalUnit"}, "ou": {"Policies"}})
+	d.Put("acmeStoreId=s1,ou=Policies,o=acme", map[string][]string{"objectClass": {"top", "acmeStore"}, "acmeStoreId": {"s1"}, "acmeStoreName": {"Main"}})
+	d.Put("acmeRuleId=r1,acmeStoreId=s1,ou=Policies,o=acme", map[string][]string{"objectClass": {"top", "acmeRule"}, "acmeRuleId": {"r1"},
+		"acmeRuleText": {"allow /app"}, "acmeRuleOwner": {"uid=erin,ou=People,o=acme"}})
+	d.Put("cn=batch,o=acme", map[string][]string{"objectClass": {"top", "applicationProcess"}, "cn": {"batch"}, "description": {"nightly"}})
+}
+
+// Entries of no other kind (a policy store's, nested, and an application's) are cloned as they are by the kind that
+// takes the rest, with what their classes allow and their references; the root, of no kind either, is left as the
+// target has it; diff finds nothing, and a second clone writes nothing.
+func TestEntriesOfNoOtherKindAreCloned(t *testing.T) {
+	ctx := context.Background()
+	src, dst := acmeWorld(false)
+	policyStore(src, true)
+	policyStore(dst, false)
+	src.Lookup("o=acme").Attrs["description"] = []string{"the source's root"}
+	s := openGenericConfig(t, src, dst, "[source]\nurl = \"ldaps://src:636\"\nbind_dn = \"cn=a\"\n"+acmeTarget)
+	other, ok := s.Job.Kind(profile.KindOther)
+	if !ok || !profile.Set(other.Attrs)["acmeruletext"] || !profile.Set(other.Attrs)["acmeruleowner"] {
+		t.Fatalf("the rest's kind: %v %+v", ok, other)
+	}
+	var log bytes.Buffer
+	rep, err := s.Clone(ctx, false, &log, &log)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, log.String())
+	}
+	if len(rep.NotCloned) != 0 {
+		t.Fatalf("not cloned: %v\n%s", rep.NotCloned, log.String())
+	}
+	rule := dst.Lookup("acmeRuleId=r1,acmeStoreId=s1,ou=Policies,o=acme")
+	if rule == nil || strings.Join(rule.Values("acmeRuleText"), "") != "allow /app" || strings.Join(rule.Values("acmeRuleOwner"), "") != "uid=erin,ou=People,o=acme" ||
+		dst.Lookup("acmeStoreId=s1,ou=Policies,o=acme") == nil || dst.Lookup("cn=batch,o=acme") == nil {
+		t.Fatalf("the rule: %v\n%s", rule, log.String())
+	}
+	for _, op := range dst.Ops {
+		if strings.HasSuffix(op, " o=acme") {
+			t.Fatalf("the root was written: %s", op)
+		}
+	}
+	var out bytes.Buffer
+	if code, err := s.Diff(ctx, DiffOutput{}, &out); err != nil || code != ExitSame {
+		t.Fatalf("diff: %d %v\n%s", code, err, out.String())
+	}
+	log.Reset()
+	if rep, err := s.Clone(ctx, false, &log, &log); err != nil || rep.Added+rep.Updated != 0 {
+		t.Fatalf("a second clone: %+v %v\n%s", rep, err, log.String())
+	}
+}
+
+// The kind that takes the rest needs every attribute a client can write: left out of the allow lists by default,
+// refused when objects names it; and a user a narrowed filter leaves out is no entry of it.
+func TestTheRestKindNeedsModeAllAndKeepsToItsOwn(t *testing.T) {
+	src, dst := acmeWorld(false)
+	policyStore(src, true)
+	policyStore(dst, false)
+	src.Lookup("uid=erin,ou=People,o=acme").Attrs["employeeType"] = []string{"staff"}
+	// Named by no reference, which would clone it as the user it is.
+	src.Put("uid=gus,ou=People,o=acme", map[string][]string{"objectClass": {"top", "person", "organizationalPerson", "inetOrgPerson"},
+		"cn": {"Gus"}, "sn": {"G"}, "uid": {"gus"}, "employeeType": {"contractor"}})
+	head := "[source]\nurl = \"ldaps://src:636\"\nbind_dn = \"cn=a\"\n" + acmeTarget
+	s := openGenericConfig(t, src, dst, head+"[attributes]\nmode = \"allowlist\"\n")
+	if _, ok := s.Job.Kind(profile.KindOther); ok {
+		t.Fatal("the allow lists name no attribute of an entry of any class")
+	}
+	cfg, err := config.Parse([]byte(strings.Replace(head, "base_dn", "objects = [\"ou\", \"other\"]\nbase_dn", 1) + "[attributes]\nmode = \"allowlist\"\n"))
+	if err == nil {
+		_, err = cfg.JobFor(profile.LDAP)
+	}
+	if err == nil || !strings.Contains(err.Error(), `mode = "all"`) {
+		t.Fatalf("objects naming it with the allow lists: %v", err)
+	}
+
+	s = openGenericConfig(t, src, dst, strings.Replace(head, "base_dn", "filters = { user = \"(&(objectClass=inetOrgPerson)(employeeType=staff))\" }\nbase_dn", 1))
+	var log bytes.Buffer
+	if _, err := s.Clone(context.Background(), false, &log, &log); err != nil {
+		t.Fatalf("%v\n%s", err, log.String())
+	}
+	if dst.Lookup("uid=gus,ou=People,o=acme") != nil || dst.Lookup("uid=erin,ou=People,o=acme") == nil || dst.Lookup("cn=batch,o=acme") == nil {
+		t.Fatalf("gus, left out of the users, is no other entry:\n%s", log.String())
+	}
+}
+
+// A class of no other kind whose required attribute is a reference: the entry is created with it, as a group that
+// needs a member is, instead of stopping the run.
+func TestAnOtherEntryThatRequiresAReferenceIsCreatedWithIt(t *testing.T) {
+	src, dst := acmeWorld(false)
+	policyStore(src, true)
+	policyStore(dst, false)
+	dst.RequireAttr = map[string]string{"acmerule": "acmeRuleOwner"}
+	s := openGenericConfig(t, src, dst, "[source]\nurl = \"ldaps://src:636\"\nbind_dn = \"cn=a\"\n"+acmeTarget)
+	var log bytes.Buffer
+	if _, err := s.Clone(context.Background(), false, &log, &log); err != nil {
+		t.Fatalf("%v\n%s", err, log.String())
+	}
+	if e := dst.Lookup("acmeRuleId=r1,acmeStoreId=s1,ou=Policies,o=acme"); e == nil || len(e.Values("acmeRuleOwner")) != 1 {
+		t.Fatalf("the rule: %v\n%s", e, log.String())
+	}
+}
+
+// A secret an entry of no other kind holds (an agent's shared key in a policy store) is masked by a dump's -mask on
+// every entry, or on those of no other kind with other:attribute (description: an application entry's, not an OU's);
+// the dump holds no value of either, and a clone from the dump writes the mask.
+func TestADumpMasksAnAttributeOfOtherEntries(t *testing.T) {
+	ctx := context.Background()
+	src, dst := acmeWorld(false)
+	policyStore(src, true)
+	policyStore(dst, false)
+	var b bytes.Buffer
+	src.Lookup("ou=Policies,o=acme").Attrs["description"] = []string{"the policies"}
+	if _, err := dump.Write(ctx, src, profile.LDAP, dump.Options{BaseDNs: []string{"o=acme"}, MaskValue: "********", Masked: []string{"acmeRuleText", "other:description"},
+		Server: "ldaps://src:636", Version: "test"}, &b); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(b.String(), "allow /app") || !strings.Contains(b.String(), "acmeRuleText: ********") ||
+		strings.Contains(b.String(), "nightly") || !strings.Contains(b.String(), "description: the policies") {
+		t.Fatalf("the dump:\n%s", b.String())
+	}
+	path := filepath.Join(t.TempDir(), "masked.ldif")
+	if err := os.WriteFile(path, b.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := openGenericConfig(t, nil, dst, "[source]\nldif = \""+path+"\"\n"+acmeTarget)
+	var log bytes.Buffer
+	if _, err := s.Clone(ctx, false, &log, &log); err != nil {
+		t.Fatalf("%v\n%s", err, log.String())
+	}
+	if got := dst.Lookup("acmeRuleId=r1,acmeStoreId=s1,ou=Policies,o=acme").Values("acmeRuleText"); strings.Join(got, "") != "********" {
+		t.Fatalf("acmeRuleText: %v\n%s", got, log.String())
+	}
+	if got := dst.Lookup("cn=batch,o=acme").Values("description"); strings.Join(got, "") != "********" {
+		t.Fatalf("the application entry's description: %v", got)
+	}
+	var out bytes.Buffer
+	if code, err := s.Diff(ctx, DiffOutput{}, &out); err != nil || code != ExitSame {
+		t.Fatalf("diff against the masked dump: %d %v\n%s", code, err, out.String())
+	}
+}

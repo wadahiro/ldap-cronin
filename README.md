@@ -100,8 +100,8 @@ Details per server type: [docs/active-directory.md](docs/active-directory.md) an
 
 ## Kinds
 
-The tool sorts entries into **kinds**, its own categories of entries, not object classes: `ou`, `group`, `user`, and
-on AD `computer` and `contact`. The configuration names them (`[scope] objects`, `[scope.filters]`,
+The tool sorts entries into **kinds**, its own categories of entries, not object classes: `ou`, `group`, `user`, on
+AD `computer` and `contact`, and on a generic server `other`, every entry no other kind takes. The configuration names them (`[scope] objects`, `[scope.filters]`,
 `[attributes.include]`, `[mask.kinds]`), and so do the summaries. A kind fixes how its entries are
 handled: when they are created (containers first, top down, then the leaves in order; references once every entry
 exists), whether they are accounts (the fixed password), and its allow list.
@@ -113,7 +113,10 @@ exists), whether they are accounts (the fixed password), and its allow list.
   user), a `computer` is not a managed service account (they derive from computer); `[mask.kinds]` and `dump -mask
   kind:attribute` tell an entry's kind the same way.
 - **An entry of no kind** is not cloned, and the summaries count it per object class: what a lab should not hold
-  (BitLocker recovery information, password settings, managed service accounts, GPOs) is of none on purpose.
+  (BitLocker recovery information, password settings, managed service accounts, GPOs) is of none on purpose. On a
+  generic server, with every attribute a client can write (the default), `other` takes every entry under
+  `base_dn` but the root (a policy store's, an application's), with what its classes allow
+  ([generic-ldap.md](docs/generic-ldap.md#how-it-behaves)).
 
 `ldap-cronin list-attrs [-profile ad|ldap]` prints the kinds, how each is told, and their allow lists.
 

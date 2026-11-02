@@ -3,6 +3,7 @@ package profile
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/wadahiro/ldap-cronin/internal/directory"
 	"github.com/wadahiro/ldap-cronin/internal/dn"
@@ -31,6 +32,10 @@ var LDAP = Profile{
 			"physicalDeliveryOfficeName", "manager", "secretary", "preferredLanguage", "labeledURI",
 			"uidNumber", "gidNumber", "homeDirectory", "loginShell", "gecos",
 		}},
+		// A policy store (SiteMinder's), an application's entries: cloned as they are, shallowest first, as a
+		// directory of any shape may nest them.
+		{Name: KindOther, Role: RoleContainer, Rest: true, Is: func([]string) bool { return false }, ByClass: "none (under base_dn only)",
+			Filter: RestFilter("(objectClass=organizationalUnit)", "(|(objectClass=groupOfNames)(objectClass=groupOfUniqueNames)(objectClass=posixGroup))", "(objectClass=inetOrgPerson)")},
 	},
 	Required: []string{"objectClass", "cn", "ou"},
 	// dc and o name the naming-context-level ancestors that are not OUs (dc=example, o=acme).
@@ -69,6 +74,9 @@ var LDAP = Profile{
 	Root:        namingContextRoot{},
 	Account:     ldapAccount{},
 }
+
+// RestFilter is the filter of the entries none of filters takes.
+func RestFilter(filters ...string) string { return "(!(|" + strings.Join(filters, "") + "))" }
 
 // RelaxOID is the relax control (draft-zeilenga-ldap-relax).
 const RelaxOID = "1.3.6.1.4.1.4203.666.5.12"

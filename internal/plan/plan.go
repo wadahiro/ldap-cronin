@@ -322,7 +322,7 @@ func Build(ctx context.Context, src directory.Directory, job Job, read Read) (*P
 	for i := range p.job.Kinds {
 		k := &p.job.Kinds[i]
 		if k.Role == profile.RoleContainer {
-			err = WalkBases(ctx, src, job.BaseDNs, k.Filter, p.withRead(k.Attrs), func(e directory.Entry) error {
+			err = p.walkKind(ctx, k, k.Filter, p.withRead(k.Attrs), func(e directory.Entry) error {
 				p.Containers = append(p.Containers, Node{Entry: job.Masker.ApplyIn(k.Name, e), Kind: k})
 				p.Scope.Add(e.DN)
 				selected[dn.Normalize(e.DN)] = true
@@ -330,7 +330,7 @@ func Build(ctx context.Context, src directory.Directory, job Job, read Read) (*P
 				return nil
 			})
 		} else {
-			err = WalkBases(ctx, src, job.BaseDNs, k.Filter, []string{directory.NoAttrs}, func(e directory.Entry) error {
+			err = p.walkKind(ctx, k, k.Filter, []string{directory.NoAttrs}, func(e directory.Entry) error {
 				p.leaves[k.Name]++
 				p.Scope.Add(e.DN)
 				noteAncestors(e.DN)
@@ -642,7 +642,7 @@ func (p *Plan) WalkRefs(ctx context.Context, k *Kind, names []string, fn func(di
 	if len(names) == 0 {
 		return nil
 	}
-	return WalkBases(ctx, p.src, p.job.BaseDNs, refsFilter(k, names), names, fn)
+	return p.walkKind(ctx, k, refsFilter(k, names), names, fn)
 }
 
 // CountRefs counts the entries of k that have one of the DN reference attributes names, as WalkRefs streams them,
@@ -652,11 +652,23 @@ func (p *Plan) CountRefs(ctx context.Context, k *Kind, names []string) (int, err
 		return 0, nil
 	}
 	n := 0
-	err := WalkBases(ctx, p.src, p.job.BaseDNs, refsFilter(k, names), []string{directory.NoAttrs}, func(directory.Entry) error {
+	err := p.walkKind(ctx, k, refsFilter(k, names), []string{directory.NoAttrs}, func(directory.Entry) error {
 		n++
 		return nil
 	})
 	return n, err
+}
+
+// walkKind walks the entries of k that filter matches. The root is no entry of the kind that takes every other
+// (profile.KindSpec.Rest): it is the target's own, never created or changed, though its class is of no other kind
+// (o=acme, an organization).
+func (p *Plan) walkKind(ctx context.Context, k *Kind, filter string, attrs []string, fn func(directory.Entry) error) error {
+	return WalkBases(ctx, p.src, p.job.BaseDNs, filter, attrs, func(e directory.Entry) error {
+		if k.Rest && dn.Equal(e.DN, p.Root) {
+			return nil
+		}
+		return fn(e)
+	})
 }
 
 func refsFilter(k *Kind, names []string) string {
@@ -669,7 +681,7 @@ func refsFilter(k *Kind, names []string) string {
 
 // Walk streams the entries of k page by page with masking applied and what Read asks for added to names.
 func (p *Plan) Walk(ctx context.Context, k *Kind, names []string, fn func(directory.Entry) error) error {
-	return WalkBases(ctx, p.src, p.job.BaseDNs, k.Filter, p.withRead(names), func(e directory.Entry) error {
+	return p.walkKind(ctx, k, k.Filter, p.withRead(names), func(e directory.Entry) error {
 		return fn(p.job.Masker.ApplyIn(k.Name, e))
 	})
 }

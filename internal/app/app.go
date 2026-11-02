@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -203,7 +204,8 @@ func (s *Session) writableAttrs(ctx context.Context) error {
 	}
 	if !ok && s.Cfg.Attributes.Mode == "" {
 		// A directory without a schema is no real server or dump (a test fake): the allow lists, as CheckMarker
-		// skips such a directory.
+		// skips such a directory, without the kind whose attributes only the classes say.
+		s.Job.Kinds = slices.DeleteFunc(s.Job.Kinds, func(k plan.Kind) bool { return k.Rest })
 		return nil
 	}
 	if !ok {
