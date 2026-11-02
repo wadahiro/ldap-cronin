@@ -369,7 +369,8 @@ insecure_skip_verify = true             # the domain controller's certificate is
 platform = "ec2"
 region = "ap-northeast-1"
 subnet = "subnet-0123456789abcdef0"     # its instances must reach Systems Manager
-instance_profile = "ldap-cronin-lab"    # a role with AmazonSSMManagedInstanceCore
+instance_profile = "ldap-cronin-lab"    # a role with AmazonSSMManagedInstanceCore; left out, none is attached and
+                                        # lab up waits for someone to attach one (credentials without iam:PassRole)
 # instance_type = "t3.large"
 # windows = "2022"                      # 2016, 2019, 2022 or 2025
 # disk_size = 50                         # the root volume in GiB, gp3 (default: the image's, 30)
@@ -403,6 +404,12 @@ ldap-cronin lab reset --config config.toml -y     # terminates the lab's instanc
   and asks it through Systems Manager every 30 seconds until its user data says READY, showing the last line of its
   `C:\ldap-cronin\setup.log` meanwhile (45 minutes at most). It ends with the tunnel commands; the tunnels are
   yours to run, as long as the lab is used.
+- **Without `instance_profile`** the instance is launched with none, for credentials that may not pass a role
+  (`iam:PassRole`): lab up names the instance to attach one with `AmazonSSMManagedInstanceCore` to (the EC2
+  console: Actions > Security > Modify IAM role), and waits. The domain controller is made meanwhile; Systems
+  Manager knows the instance some minutes after the attach (restarting the instance makes it sooner). Past the
+  45 minutes, run lab up --config again: it finds the running instance and waits again. Keep the profile attached:
+  snapshot, restore and the tunnels go through Systems Manager too. Not verified on AWS.
 - **The password is in the user data**, written there by the user's choice, for a lab to test with: it is never an
   argument (the user data goes to `aws` in a file only its owner reads, removed right after) nor in a log or the
   dry-run (which shows `<the target password>`), but the instance's user data keeps it, which its metadata and

@@ -76,11 +76,13 @@ type Lab struct {
 
 	// platform = "ec2": where and how the instance runs. The aws command's own configuration (credentials, profile)
 	// applies; Region overrides its region.
-	Region          string `toml:"region"`
-	Subnet          string `toml:"subnet"`           // a subnet whose instances reach Systems Manager
-	InstanceType    string `toml:"instance_type"`    // default t3.large
-	Windows         string `toml:"windows"`          // Windows Server 2016, 2019, 2022 (default) or 2025
-	InstanceProfile string `toml:"instance_profile"` // with AmazonSSMManagedInstanceCore
+	Region       string `toml:"region"`
+	Subnet       string `toml:"subnet"`        // a subnet whose instances reach Systems Manager
+	InstanceType string `toml:"instance_type"` // default t3.large
+	Windows      string `toml:"windows"`       // Windows Server 2016, 2019, 2022 (default) or 2025
+	// InstanceProfile has AmazonSSMManagedInstanceCore. Empty launches the instance without one, for an account that
+	// may not pass a role (iam:PassRole): someone who may attaches one after it starts, which lab up waits for.
+	InstanceProfile string `toml:"instance_profile"`
 	// LDAPSName is one more DNS name of the lab's LDAPS certificate (its DC's and its domain's are always there).
 	LDAPSName string `toml:"ldaps_name"`
 	// LDAPPort (EC2) is the local port the instance's LDAP (389) is forwarded to too, for clients that do not use
@@ -423,7 +425,7 @@ func (c *Config) validate() error {
 			if l.Image != "" {
 				return errors.New("[target.lab] image is a docker image: on EC2 the lab is Windows Server (windows = \"2022\")")
 			}
-			for _, key := range []string{"region", "subnet", "instance_profile"} {
+			for _, key := range []string{"region", "subnet"} {
 				if ec2[key] == "" {
 					return fmt.Errorf("[target.lab] platform = %q needs %s", PlatformEC2, key)
 				}

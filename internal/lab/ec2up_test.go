@@ -170,3 +170,40 @@ func TestEC2ResetTerminatesTheLabsInstances(t *testing.T) {
 		t.Fatalf("calls %v", f.calls)
 	}
 }
+
+// Without instance_profile the instance is launched with none, for an account that may not pass a role: lab up names
+// what to attach, and waits until Systems Manager knows the instance; past the timeout it says to attach one and run
+// it again.
+func TestEC2UpWithoutAnInstanceProfileWaitsForOne(t *testing.T) {
+	notKnown := fakeAnswer{err: errors.New("aws ssm send-command: An error occurred (InvalidInstanceId)")}
+	f := &fakeAWS{answers: map[string][]fakeAnswer{
+		"ssm get-parameter":          {{out: "ami-0123\n"}},
+		"ec2 run-instances":          {{out: "i-0abc\n"}},
+		"ssm send-command":           {notKnown, notKnown, {out: "cmd-1\n"}},
+		"ssm get-command-invocation": {{out: "Success\tREADY\n"}},
+	}}
+	e := testEC2Lab()
+	e.InstanceProfile = ""
+	var log bytes.Buffer
+	if _, err := e.Up(context.Background(), run(f, &log), "It's-a-Passw0rd"); err != nil {
+		t.Fatalf("%v\n%s", err, log.String())
+	}
+	for _, c := range f.calls {
+		if strings.Join(c[:2], " ") == "ec2 run-instances" && strings.Contains(strings.Join(c, " "), "--iam-instance-profile") {
+			t.Fatalf("an instance profile was given: %v", c)
+		}
+	}
+	for _, want := range []string{"have one with AmazonSSMManagedInstanceCore attached to i-0abc", "attach it an instance profile", "i-0abc is ready"} {
+		if !strings.Contains(log.String(), want) {
+			t.Errorf("the log lacks %q:\n%s", want, log.String())
+		}
+	}
+
+	f = &fakeAWS{answers: map[string][]fakeAnswer{"ec2 describe-instances": {{out: "i-0abc\trunning\n"}}, "ssm send-command": {notKnown}}}
+	clock := time.Unix(0, 0)
+	r := EC2Run{AWS: f, Log: &bytes.Buffer{}, Timeout: time.Minute, Now: func() time.Time { return clock },
+		Sleep: func(d time.Duration) { clock = clock.Add(d) }}
+	if _, err := e.Up(context.Background(), r, "It's-a-Passw0rd"); err == nil || !strings.Contains(err.Error(), "run lab up --config again") {
+		t.Fatalf("past the timeout: %v", err)
+	}
+}

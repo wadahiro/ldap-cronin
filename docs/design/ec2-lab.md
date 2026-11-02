@@ -55,7 +55,7 @@ controller, and using the lab as a production copy.
   `ec2:StopInstances`, `ec2:CreateSnapshot`, `ec2:DescribeSnapshots`, `ec2:DeleteSnapshot`,
   `ec2:CreateReplaceRootVolumeTask`, `ec2:DescribeReplaceRootVolumeTasks`; `ssm:GetParameter` (the
   public image parameter), `ssm:SendCommand`, `ssm:GetCommandInvocation`, `ssm:StartSession` and `iam:PassRole` for
-  the instance profile.
+  the instance profile (not needed without `instance_profile`).
 - A target password Windows accepts: `Set-LocalUser` and `Install-ADDSForest` apply the local complexity rule
   before the domain exists (at least 8 characters, three of upper case, lower case, digits and symbols, and not the
   account name). The second phase relaxes the domain's policy for the cloned users only; a weaker password stops
@@ -65,7 +65,10 @@ controller, and using the lab as a production copy.
   address in a subnet that routes to an internet gateway only never registers, as a user's first lab up showed; without `public_ip` the instance has no public address even where the subnet
   assigns one: a domain controller is not put on the internet unasked).
 - `instance_profile`: a role with `AmazonSSMManagedInstanceCore`, for Systems Manager to run the readiness command
-  and the tunnels.
+  and the tunnels. Left out, the instance is launched without one, for credentials that may not pass a role:
+  someone who may attaches one after it starts (the console's Modify IAM role); the user data makes the domain
+  controller meanwhile, and lab up waits until the agent registers (it may take some minutes after the attach), or,
+  past its 45 minutes, says to attach one and run it again. Not verified on AWS.
 
 ## 5. Verified
 

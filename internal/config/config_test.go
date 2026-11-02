@@ -133,9 +133,14 @@ func TestTargetLabSaysWhichLabAndHowItIsWritten(t *testing.T) {
 	if l := c.Target.Lab; !l.OnEC2() || l.Region != "ap-northeast-1" || l.Windows != "2025" || l.InstanceType != "m5.xlarge" {
 		t.Fatalf("an EC2 lab: %+v", l)
 	}
+	// Without an instance profile, for an account that may not pass a role: someone attaches one after it starts.
+	c, err = Parse([]byte(strings.Replace(valid, "[scope]", "[target.lab]\n"+strings.Replace(ec2Lab, "instance_profile = \"ldap-cronin-lab\"\n", "", 1)+"[scope]", 1)))
+	if err != nil || c.Target.Lab.InstanceProfile != "" {
+		t.Fatalf("an EC2 lab without an instance profile: %v", err)
+	}
 }
 
-// ec2Lab is the least an EC2 lab needs.
+// ec2Lab is an EC2 lab with what it usually has (instance_profile may be left out).
 const ec2Lab = "platform = \"ec2\"\nregion = \"ap-northeast-1\"\nsubnet = \"subnet-0123\"\ninstance_profile = \"ldap-cronin-lab\"\n"
 
 func TestAutoProfileDefersAttributeRulesToTheResolvedProfile(t *testing.T) {

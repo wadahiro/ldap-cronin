@@ -327,9 +327,11 @@ const minDiskSize = 30
 
 func (e EC2Lab) runArgs(ami, userData string) []string {
 	args := []string{"ec2", "run-instances", "--image-id", ami, "--instance-type", e.instanceType(), "--subnet-id", e.Subnet,
-		"--iam-instance-profile", "Name=" + e.InstanceProfile, "--metadata-options", "HttpTokens=required",
-		"--user-data", "file://" + userData,
+		"--metadata-options", "HttpTokens=required", "--user-data", "file://" + userData,
 		"--tag-specifications", e.tagSpecifications()}
+	if e.InstanceProfile != "" {
+		args = append(args, "--iam-instance-profile", "Name="+e.InstanceProfile)
+	}
 	if len(e.SecurityGroups) > 0 {
 		args = append(append(args, "--security-group-ids"), e.SecurityGroups...)
 	}

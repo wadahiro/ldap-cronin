@@ -118,6 +118,12 @@ func (e EC2Lab) Up(ctx context.Context, r EC2Run, password string) (string, erro
 			return "", err
 		}
 		fmt.Fprintf(r.Log, "==> Instance %s: it makes itself the domain controller of %s (about 20 minutes, two restarts included)\n", id, e.Domain)
+		if e.InstanceProfile == "" {
+			// The user data needs no role: the domain controller is made meanwhile, and only the readiness check
+			// waits for the role.
+			fmt.Fprintf(r.Log, "==> It has no instance profile (instance_profile is not set): have one with AmazonSSMManagedInstanceCore attached to %s\n"+
+				"    (EC2 console: Actions > Security > Modify IAM role); lab up waits for Systems Manager to know it, which may take some minutes after\n", id)
+		}
 	}
 	if _, err := r.AWS.Run(ctx, e.awsArgs("ec2", "wait", "instance-running", "--instance-ids", id)...); err != nil {
 		return id, err
@@ -159,7 +165,7 @@ func (e EC2Lab) waitReady(ctx context.Context, r EC2Run, id string) error {
 		case err != nil && ctx.Err() != nil:
 			return ctx.Err()
 		case err != nil:
-			answer = "(" + notYet(err) + ")"
+			answer = "(" + e.notYet(err) + ")"
 		case answer == "READY":
 			fmt.Fprintf(r.Log, "==> %s is ready\n", id)
 			return nil
@@ -169,6 +175,9 @@ func (e EC2Lab) waitReady(ctx context.Context, r EC2Run, id string) error {
 			last = answer
 		}
 		if now().After(deadline) {
+			if e.InstanceProfile == "" && strings.Contains(last, "does not know the instance") {
+				return fmt.Errorf("%s was not known to Systems Manager within %s: attach it an instance profile with AmazonSSMManagedInstanceCore, then run lab up --config again, which waits for it", id, timeout)
+			}
 			return fmt.Errorf("%s did not say READY within %s: its C:\\ldap-cronin\\setup.log says why (Session Manager or Fleet Manager)", id, timeout)
 		}
 		sleep(readyInterval)
@@ -226,8 +235,10 @@ func (r EC2Run) sleepShort() {
 }
 
 // notYet says what an error asking the instance means, as long as it may be answered later.
-func notYet(err error) string {
+func (e EC2Lab) notYet(err error) string {
 	switch msg := err.Error(); {
+	case strings.Contains(msg, "InvalidInstanceId") && e.InstanceProfile == "":
+		return "Systems Manager does not know the instance yet: attach it an instance profile with AmazonSSMManagedInstanceCore, if no one has"
 	case strings.Contains(msg, "InvalidInstanceId"):
 		return "Systems Manager does not know the instance yet, or it restarts"
 	default:
