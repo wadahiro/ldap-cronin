@@ -393,14 +393,9 @@ func (s *Session) targetRefusals(ctx context.Context, dst directory.Directory) (
 }
 
 // noteLeftOut lists, one per line, the attributes targetHas left out and why.
-func (s *Session) noteLeftOut(w io.Writer, l leftOut) {
+func noteLeftOut(w io.Writer, l leftOut) {
 	if len(l.missing) > 0 {
-		// ldap-cronin schema carries AD's definitions only; a generic server takes its schema in its own configuration.
-		remedy := "ldap-cronin schema adds those of extensions"
-		if s.Job.Profile.SchemaCopy == nil {
-			remedy = "the target's configuration takes their schema; the OpenLDAP lab, lab up --schema-dir"
-		}
-		fmt.Fprintf(w, "not copied or compared: the target schema lacks %d attributes of the source's (%s):\n", len(l.missing), remedy)
+		fmt.Fprintf(w, "not copied or compared: the target schema lacks %d attributes of the source's (ldap-cronin schema adds those of extensions):\n", len(l.missing))
 		for _, n := range l.missing {
 			fmt.Fprintf(w, "  %s\n", n)
 		}

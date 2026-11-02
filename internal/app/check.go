@@ -265,7 +265,7 @@ func (s *Session) Check(ctx context.Context, o CheckOptions, out io.Writer) (int
 	if len(clashes) > 0 {
 		fmt.Fprintf(out, "clone refuses to start: %v\n", plan.ClashError(clashes))
 	}
-	s.noteLeftOut(out, left)
+	noteLeftOut(out, left)
 	if warning != "" {
 		fmt.Fprintf(out, "warning: %s\n", warning)
 	}
@@ -326,7 +326,7 @@ func (s *Session) Check(ctx context.Context, o CheckOptions, out io.Writer) (int
 			next("give the lab's schema the source's definitions: ldap-cronin lab up --config %s", o.Config)
 		} else if prof.SchemaCopy != nil {
 			next("give the target the source's definitions: ldap-cronin schema %s -apply", cfg)
-			fmt.Fprintf(out, "     (a test AD: ldap-cronin schema %s > schema.ldif, for a Schema Admin; it cannot be undone)\n", cfg)
+			fmt.Fprintf(out, "     (or ldap-cronin schema %s > schema.ldif, for whoever manages the target's schema; on AD it cannot be undone)\n", cfg)
 		} else {
 			next("give the target's schema the attributes it lacks (above)")
 		}

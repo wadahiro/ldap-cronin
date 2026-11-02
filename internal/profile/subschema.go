@@ -22,6 +22,8 @@ type attributeType struct {
 	sup    string
 	syntax string
 	single bool
+	// rules are its EQUALITY, ORDERING and SUBSTR matching rules.
+	rules []string
 	// serverOnly: NO-USER-MODIFICATION, or a USAGE other than userApplications (operational).
 	serverOnly bool
 }
@@ -120,6 +122,9 @@ func parseAttributeType(def string) (attributeType, bool) {
 	}
 	if v := d.fields["SYNTAX"]; len(v) > 0 {
 		t.syntax, _, _ = strings.Cut(v[0], "{") // the length bound: 1.3.6.1.4.1.1466.115.121.1.15{32768}
+	}
+	for _, k := range []string{"EQUALITY", "ORDERING", "SUBSTR"} {
+		t.rules = append(t.rules, d.fields[k]...)
 	}
 	usage := d.fields["USAGE"]
 	t.serverOnly = d.flags["NO-USER-MODIFICATION"] || len(usage) > 0 && !strings.EqualFold(usage[0], "userApplications")

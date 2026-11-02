@@ -425,3 +425,89 @@ func dialAt(t *testing.T, host string, port int) *ldapdir.Client {
 	t.Cleanup(c.Close)
 	return c
 }
+
+// A source's schema extension reaches an OpenLDAP target from a dump, as an AD's does: check names what the target
+// lacks, schema -apply adds it to the target's cn=config as the lab's admin, and clone then copies the extension's
+// attribute, which diff finds in place; schema again has nothing to add.
+func TestASchemaExtensionReachesOpenLDAPFromADump(t *testing.T) {
+	image := os.Getenv("E2E_LDAP_IMAGE")
+	if image == "" {
+		t.Skip("E2E_LDAP_IMAGE is not set (tests/e2e.sh builds it)")
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("no docker")
+	}
+	ctx := context.Background()
+	host := env("E2E_LAB_HOST", "localhost")
+	suffix := time.Now().UnixNano() % 1_000_000
+	srcName, dstName := fmt.Sprintf("olssrc%d", suffix), fmt.Sprintf("olsdst%d", suffix)
+	srcPort := startOpenLDAP(t, image, srcName, map[string]string{"10-acme.ldif": acmeSchema})
+	dstPort := startOpenLDAP(t, image, dstName, nil)
+	seed := exec.Command("docker", "exec", "-i", srcName, "ldapadd", "-x", "-H", "ldap://localhost", "-D", olAdmin, "-w", olPw)
+	seed.Stdin = strings.NewReader(`dn: ou=IDM,dc=example,dc=org
+objectClass: organizationalUnit
+ou: IDM
+
+dn: uid=dave,ou=IDM,dc=example,dc=org
+objectClass: inetOrgPerson
+objectClass: acmePerson
+cn: Dave
+sn: D
+uid: dave
+acmeEmployeeCode: E-42
+`)
+	if out, err := seed.CombinedOutput(); err != nil {
+		t.Fatalf("seed: %v\n%s", err, out)
+	}
+	src := dialAt(t, host, srcPort)
+	var dumped bytes.Buffer
+	if _, err := dump.Write(ctx, src, profile.LDAP, dump.Options{BaseDNs: []string{olClone}, Server: "ldap://openldap"}, &dumped); err != nil {
+		t.Fatal(err)
+	}
+	dumpPath := filepath.Join(t.TempDir(), "acme.ldif")
+	if err := os.WriteFile(dumpPath, dumped.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Parse([]byte(fmt.Sprintf("[source]\nldif = %q\n[target]\nurl = \"ldap://%s:%d\"\nbind_dn = %q\n[scope]\nprofile = \"ldap\"\nbase_dn = %q\n",
+		dumpPath, host, dstPort, olAdmin, olClone)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pw := func() (string, error) { return olPw, nil }
+	s, err := app.Open(ctx, cfg, app.Secrets{TargetBind: pw, UserPassword: func() (string, error) { return "Fixed-Passw0rd", nil }}, app.LDAP, &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+
+	var report bytes.Buffer
+	if _, err := s.Check(ctx, app.CheckOptions{Config: "c.toml"}, &report); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(report.String(), "acmeEmployeeCode") || !strings.Contains(report.String(), "ldap-cronin schema -config c.toml -apply") {
+		t.Fatalf("check must name the extension and the step:\n%s", report.String())
+	}
+	var out, log bytes.Buffer
+	if err := s.Schema(ctx, true, &out, &log); err != nil {
+		t.Fatalf("%v\n%s", err, log.String())
+	}
+	if !strings.Contains(log.String(), "acmeEmployeeCode") || !strings.Contains(log.String(), "acmePerson") || !strings.Contains(log.String(), ",cn=schema,cn=config") {
+		t.Fatalf("schema -apply:\n%s", log.String())
+	}
+	log.Reset()
+	if _, err := s.Clone(ctx, false, &log, &log); err != nil {
+		t.Fatalf("%v\n%s", err, log.String())
+	}
+	got, err := dialAt(t, host, dstPort).Get(ctx, "uid=dave,"+olClone, []string{"acmeEmployeeCode", "objectClass"})
+	if err != nil || got == nil || strings.Join(got.Values("acmeEmployeeCode"), "") != "E-42" {
+		t.Fatalf("dave: %+v %v\n%s", got, err, log.String())
+	}
+	var diffOut bytes.Buffer
+	if code, err := s.Diff(ctx, app.DiffOutput{}, &diffOut); err != nil || code != app.ExitSame {
+		t.Fatalf("diff: %d %v\n%s", code, err, diffOut.String())
+	}
+	log.Reset()
+	if err := s.Schema(ctx, false, &out, &log); err != nil || !strings.Contains(log.String(), "has every attribute and class") {
+		t.Fatalf("schema again: %v\n%s", err, log.String())
+	}
+}

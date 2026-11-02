@@ -65,6 +65,7 @@ var LDAP = Profile{
 	Refs:        subschema{},
 	SchemaAttrs: subschema{},
 	Writable:    subschema{},
+	SchemaCopy:  subschema{},
 	Root:        namingContextRoot{},
 	Account:     ldapAccount{},
 }

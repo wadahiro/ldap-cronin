@@ -67,7 +67,7 @@ func (s *Session) Clone(ctx context.Context, dryRun bool, out, log io.Writer) (*
 		if job, left, err = s.targetHas(ctx, dst); err != nil {
 			return nil, err
 		}
-		s.noteLeftOut(log, left)
+		noteLeftOut(log, left)
 		if opt.Marker != nil && s.Job.Profile.MarkerCheck != nil {
 			warning, err := s.Job.Profile.MarkerCheck.CheckMarker(ctx, dst, attr, identity.MarkerLen)
 			if err != nil {
@@ -146,7 +146,7 @@ func (s *Session) Diff(ctx context.Context, o DiffOutput, out io.Writer) (int, e
 	if err != nil {
 		return 0, err
 	}
-	s.noteLeftOut(s.Warn, left)
+	noteLeftOut(s.Warn, left)
 
 	res, closeRes, err := s.resolver(ctx, dst)
 	if err != nil {

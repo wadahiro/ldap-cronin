@@ -44,5 +44,18 @@ ou: $value" ;;
   echo "$LDAP_SUFFIX" > "$CREATED"
 fi
 
+# The admin manages cn=config too, so ldap-cronin schema -apply and lab up --config give the lab the source's schema
+# over LDAP, as they give a Samba lab its. On every start, so a lab created before gets it too.
+CONFIG_ADMIN="by dn.exact=\"cn=admin,$LDAP_SUFFIX\" manage"
+if ! ldapsearch "${EXTERNAL[@]}" -LLL -b "olcDatabase={0}config,cn=config" -s base olcAccess 2>/dev/null | tr -d '\n ' |
+  grep -qF "$(printf '%s' "$CONFIG_ADMIN" | tr -d ' ')"; then
+  ldapmodify "${EXTERNAL[@]}" >/tmp/config-admin.log 2>&1 <<LDIF || { cat /tmp/config-admin.log >&2; kill 1; exit 1; }
+dn: olcDatabase={0}config,cn=config
+changetype: modify
+add: olcAccess
+olcAccess: {0}to * $CONFIG_ADMIN by * break
+LDIF
+fi
+
 until ldapsearch "${ADMIN[@]}" -b "$LDAP_SUFFIX" -s base dn >/dev/null 2>&1; do sleep 0.5; done
 touch /tmp/ldap-ready
