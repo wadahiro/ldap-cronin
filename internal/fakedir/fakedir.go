@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -465,52 +466,52 @@ func project(e directory.Entry, attrs []string) directory.Entry {
 	return out
 }
 
-// matches interprets only the filters clone uses (objectClass and objectCategory=person), and a single equality
-// on any other attribute (identifiers, markers).
+// matches evaluates an RFC 4515 filter of the forms the tool builds: and, or, not, presence and equality. Equality
+// on objectClass is a class the entry holds, as a server takes it (case-insensitive, by name); objectCategory=person
+// and =computer are told from the classes, as the fake keeps no objectCategory of its own; any other equality is
+// equalityMatches (the escaped bytes of an identifier).
 func matches(e directory.Entry, filter string) bool {
-	classes := strings.ToLower(strings.Join(e.Values("objectClass"), ","))
-	lower := strings.ToLower(filter)
+	if len(filter) < 2 || filter[0] != '(' || filter[len(filter)-1] != ')' {
+		return false
+	}
+	inner := filter[1 : len(filter)-1]
 	switch {
-	case strings.HasPrefix(filter, "(!(|") && strings.HasSuffix(filter, ")"):
-		// The negation of the kinds' filters (plan.Unselected).
-		return !matches(e, filter[2:len(filter)-1])
-	case strings.HasPrefix(filter, "(|(&"):
-		for _, f := range terms(filter[2 : len(filter)-1]) {
+	case strings.HasPrefix(inner, "&"):
+		for _, f := range terms(inner[1:]) {
+			if !matches(e, f) {
+				return false
+			}
+		}
+		return true
+	case strings.HasPrefix(inner, "|"):
+		for _, f := range terms(inner[1:]) {
 			if matches(e, f) {
 				return true
 			}
 		}
 		return false
-	case strings.HasPrefix(filter, "(|(") && !strings.Contains(lower, "objectclass=") && !strings.Contains(lower, "objectcategory="):
-		// An OR of equality filters, as a mapping file builds for an object cloned more than once.
-		for _, f := range strings.SplitAfter(strings.TrimSuffix(strings.TrimPrefix(filter, "(|"), ")"), ")") {
-			if f != "" && equalityMatches(e, f) {
-				return true
-			}
-		}
-		return false
-	case strings.Count(filter, "(") == 1 && !strings.HasPrefix(lower, "(objectclass=") && !strings.HasPrefix(lower, "(objectcategory="):
-		return equalityMatches(e, filter)
-	case strings.Contains(filter, "attributeSchema"):
-		return strings.Contains(classes, "attributeschema")
-	case strings.Contains(filter, "classSchema"):
-		return strings.Contains(classes, "classschema")
-	case strings.Contains(filter, "groupOfNames"):
-		return strings.Contains(classes, "groupofnames") || strings.Contains(classes, "groupofuniquenames") || strings.Contains(classes, "posixgroup")
-	case strings.Contains(filter, "inetOrgPerson"):
-		return strings.Contains(classes, "inetorgperson")
-	case strings.Contains(filter, "organizationalUnit"):
-		return strings.Contains(classes, "organizationalunit")
-	case strings.Contains(filter, "objectCategory=computer"):
-		return strings.Contains(classes, "computer")
-	case strings.Contains(filter, "objectClass=contact"):
-		return strings.Contains(classes, "contact")
-	case strings.Contains(filter, "objectCategory=person"):
-		return strings.Contains(classes, "user") && !strings.Contains(classes, "computer")
-	case strings.Contains(filter, "objectClass=group"):
-		return strings.Contains(classes, "group")
+	case strings.HasPrefix(inner, "!"):
+		return !matches(e, inner[1:])
 	}
-	return true
+	name, value, ok := strings.Cut(inner, "=")
+	if !ok {
+		return false
+	}
+	classes := e.Values("objectClass")
+	holds := func(c string) bool {
+		return slices.ContainsFunc(classes, func(x string) bool { return strings.EqualFold(x, c) })
+	}
+	switch {
+	case value == "*":
+		return len(e.Values(name)) > 0
+	case strings.EqualFold(name, "objectClass"):
+		return holds(value)
+	case strings.EqualFold(name, "objectCategory") && strings.EqualFold(value, "person"):
+		return holds("user") && !holds("computer")
+	case strings.EqualFold(name, "objectCategory") && strings.EqualFold(value, "computer"):
+		return holds("computer")
+	}
+	return equalityMatches(e, filter)
 }
 
 // terms splits a run of parenthesized filters into its top-level terms.
