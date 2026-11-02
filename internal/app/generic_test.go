@@ -268,3 +268,53 @@ func acmeDump(t *testing.T, src *fakedir.Dir, root string) string {
 	}
 	return path
 }
+
+// withClassMay gives the subschema of d an attribute type more, which class's MAY names when named, as a production
+// that added its own attributes to a standard class has it.
+func withClassMay(d *fakedir.Dir, attr, oid, class string) {
+	sub := d.Lookup("cn=Subschema").Attrs
+	sub["attributeTypes"] = append(sub["attributeTypes"], "( "+oid+" NAME '"+attr+"' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 )")
+	if class == "" {
+		return
+	}
+	for i, c := range sub["objectClasses"] {
+		if strings.Contains(c, "NAME '"+class+"'") {
+			sub["objectClasses"][i] = strings.Replace(c, "MAY ( ", "MAY ( "+attr+" $ ", 1)
+		}
+	}
+}
+
+// The source's inetOrgPerson lets hold an attribute the target's does not, though the target defines it: clone
+// leaves it out with a note naming the kind and its classes, instead of every Add of a user holding it being refused,
+// and check says so; diff compares the rest.
+func TestAnAttributeTheTargetsClassDoesNotAllowIsLeftOut(t *testing.T) {
+	ctx := context.Background()
+	src, dst := acmeWorld(false)
+	withClassMay(src, "acmeLock", "1.3.6.1.4.1.99999.1.20", "inetOrgPerson")
+	withClassMay(dst, "acmeLock", "1.3.6.1.4.1.99999.1.20", "")
+	src.Lookup("uid=erin,ou=People,o=acme").Attrs["acmeLock"] = []string{"0"}
+	s := openGenericConfig(t, src, dst, "[source]\nurl = \"ldaps://src:636\"\nbind_dn = \"cn=a\"\n"+acmeTarget)
+	user, _ := s.Job.Kind(profile.KindUser)
+	if !profile.Set(user.Attrs)["acmelock"] {
+		t.Fatalf("the source's class lets hold it: %v", user.Attrs)
+	}
+	var report bytes.Buffer
+	if _, err := s.Check(ctx, CheckOptions{Config: "c.toml"}, &report); err != nil {
+		t.Fatal(err)
+	}
+	want := "the target's classes of the entries do not allow 1 attributes the source's do"
+	if !strings.Contains(report.String(), want) || !strings.Contains(report.String(), "acmeLock (user: top, person, organizationalPerson, inetOrgPerson)") {
+		t.Fatalf("check:\n%s", report.String())
+	}
+	var log bytes.Buffer
+	if _, err := s.Clone(ctx, false, &log, &log); err != nil {
+		t.Fatalf("%v\n%s", err, log.String())
+	}
+	if e := dst.Lookup("uid=erin,ou=People,o=acme"); e == nil || len(e.Values("acmeLock")) != 0 || !strings.Contains(log.String(), want) {
+		t.Fatalf("erin: %v\n%s", e, log.String())
+	}
+	var out bytes.Buffer
+	if code, err := s.Diff(ctx, DiffOutput{}, &out); err != nil || code != ExitSame {
+		t.Fatalf("diff: %d %v\n%s", code, err, out.String())
+	}
+}

@@ -189,8 +189,8 @@ func TestWritableOfASubschema(t *testing.T) {
 	if decoy := has("decoy"); !decoy["description"] || decoy["sn"] || decoy["secret"] || len(decoy) != 2 {
 		t.Errorf("decoy: %v", got["decoy"])
 	}
-	if _, _, err := (subschema{}).Writable(ctx, schemaDir{openLDAPTypes, openLDAPClasses}, []string{"nosuchClass"}); err == nil {
-		t.Error("a class the schema lacks must be an error")
+	if got, ok, err := (subschema{}).Writable(ctx, schemaDir{openLDAPTypes, openLDAPClasses}, []string{"nosuchClass"}); err != nil || !ok || got["nosuchClass"] != nil {
+		t.Errorf("a class the schema lacks lets hold nothing: %v %v %v", got, ok, err)
 	}
 	if _, ok, err := (subschema{}).Writable(ctx, namingContexts{}, []string{"person"}); ok || err != nil {
 		t.Errorf("no subschema: %v %v", ok, err)

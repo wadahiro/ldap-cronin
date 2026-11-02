@@ -55,4 +55,6 @@ Open:
   `objectClass`), and resolves them against the subschema (`MAY`, `MUST`, `SUP`, without `NO-USER-MODIFICATION`
   and operational usage), the kind's default list besides. `ldap-cronin schema` carries what the target's
   subschema lacks, by OID, into a new `olcSchemaConfig` entry of OpenLDAP's `cn=config` (the subschema subentry
-  where there is no `configContext`); the OpenLDAP lab's admin manages `cn=config` for it.
+  where there is no `configContext`); the OpenLDAP lab's admin manages `cn=config` for it. A class both have
+  whose source definition lets hold more is changed to the source's in its `cn=config` entry, or moved after what
+  it names, so that slapd still starts; until then clone leaves such attributes out with a note.

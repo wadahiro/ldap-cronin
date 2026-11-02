@@ -290,7 +290,8 @@ func (subschema) Writable(ctx context.Context, src directory.Directory, classes 
 			}
 		}
 		if _, ok := ocs[strings.ToLower(class)]; !ok {
-			return nil, false, fmt.Errorf("the source schema has no class %s", class)
+			// A class the schema lacks lets hold nothing: a target without it gives what the others allow.
+			continue
 		}
 		visited := map[string]bool{}
 		for queue := []string{class}; len(queue) > 0; queue = queue[1:] {

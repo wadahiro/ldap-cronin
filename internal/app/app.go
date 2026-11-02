@@ -96,6 +96,8 @@ type Session struct {
 	secrets Secrets
 	dial    Dialer
 	src     Conn
+	// held caches heldClasses by kind name.
+	held map[string][]string
 }
 
 // sourceConns is how many connections the source gets: one for the paged search clone or diff walks (it holds its
@@ -249,7 +251,7 @@ func (s *Session) writableByKind(ctx context.Context) (map[string][]string, bool
 		classes := []string{k.Class}
 		if k.Class == "" {
 			var err error
-			if classes, err = s.heldClasses(ctx, k); err != nil {
+			if classes, err = s.kindClasses(ctx, k); err != nil {
 				return nil, false, err
 			}
 		}
@@ -287,6 +289,22 @@ func (s *Session) writableByKind(ctx context.Context) (map[string][]string, bool
 	return out, true, nil
 }
 
+// kindClasses is heldClasses, read once per session.
+func (s *Session) kindClasses(ctx context.Context, k plan.Kind) ([]string, error) {
+	if c, ok := s.held[k.Name]; ok {
+		return c, nil
+	}
+	c, err := s.heldClasses(ctx, k)
+	if err != nil {
+		return nil, err
+	}
+	if s.held == nil {
+		s.held = map[string][]string{}
+	}
+	s.held[k.Name] = c
+	return c, nil
+}
+
 // heldClasses is every object class the entries of k in scope hold, as the first entry names it.
 func (s *Session) heldClasses(ctx context.Context, k plan.Kind) ([]string, error) {
 	seen := map[string]bool{}
@@ -312,6 +330,9 @@ type leftOut struct {
 	missing []string
 	// refused are the attributes the target will not have written over LDAP, as "name: why".
 	refused []string
+	// notAllowed are the attributes the target defines but whose classes, those the entries hold, do not let them
+	// hold, as "name (kind: classes)".
+	notAllowed []string
 }
 
 // targetHas narrows the attributes of every kind to those the target can be given. In mode = "all" that is those
@@ -332,8 +353,12 @@ func (s *Session) targetHas(ctx context.Context, dst directory.Directory) (plan.
 	if err != nil {
 		return job, leftOut{}, err
 	}
+	allowed, err := s.targetAllows(ctx, dst)
+	if err != nil {
+		return job, leftOut{}, err
+	}
 	var out leftOut
-	if has == nil && len(refused) == 0 {
+	if has == nil && len(refused) == 0 && allowed == nil {
 		return job, out, nil
 	}
 	job.Kinds = append([]plan.Kind(nil), job.Kinds...)
@@ -341,30 +366,89 @@ func (s *Session) targetHas(ctx context.Context, dst directory.Directory) (plan.
 	noted := map[string]bool{}
 	for i := range job.Kinds {
 		var keep []string
-		for _, a := range job.Kinds[i].Attrs {
+		k := job.Kinds[i]
+		for _, a := range k.Attrs {
 			key := strings.ToLower(a)
 			why, isRefused := refused[key]
 			missing := has != nil && !has[key]
-			if required[key] || (!isRefused && !missing) {
+			classes, limited := allowed[k.Name]
+			notAllowed := limited && !missing && classes.refused(key)
+			if required[key] || (!isRefused && !missing && !notAllowed) {
 				keep = append(keep, a)
 				continue
 			}
-			if noted[key] {
-				continue
+			switch {
+			case isRefused && !noted[key]:
+				out.refused = append(out.refused, a+": "+why)
+			case missing && !noted[key]:
+				out.missing = append(out.missing, a)
+			case notAllowed:
+				out.notAllowed = append(out.notAllowed, fmt.Sprintf("%s (%s: %s)", a, k.Name, strings.Join(classes.names, ", ")))
 			}
 			noted[key] = true
-			if isRefused {
-				out.refused = append(out.refused, a+": "+why)
-			} else {
-				out.missing = append(out.missing, a)
-			}
 		}
 		job.Kinds[i].Attrs = keep
 	}
-	for _, l := range [][]string{out.missing, out.refused} {
+	for _, l := range [][]string{out.missing, out.refused, out.notAllowed} {
 		sort.Slice(l, func(i, j int) bool { return strings.ToLower(l[i]) < strings.ToLower(l[j]) })
 	}
 	return job, out, nil
+}
+
+// kindAllows is what the classes of a kind's entries let them hold, on the source and on the target.
+type kindAllows struct {
+	names          []string        // the classes
+	source, target map[string]bool // lowercase
+}
+
+// refused reports whether the source's classes let the kind's entries hold key and the target's do not. An attribute
+// of the kind's default list that neither lets hold is no entry's to hold.
+func (a kindAllows) refused(key string) bool { return a.source[key] && !a.target[key] }
+
+// targetAllows is, per kind with no one class (generic LDAP), what the target's definitions of the classes its
+// entries hold let them hold. The source's may let them hold more (a production that added its own attributes to
+// inetOrgPerson's MAY): such an attribute is left out with a note, as one the target lacks is, instead of every Add
+// of an entry holding it being refused. ldap-cronin schema changes the class to the source's. nil when either schema
+// cannot say.
+func (s *Session) targetAllows(ctx context.Context, dst directory.Directory) (map[string]kindAllows, error) {
+	prof := s.Job.Profile
+	if prof.Writable == nil {
+		return nil, nil
+	}
+	out := map[string]kindAllows{}
+	for _, k := range s.Job.Kinds {
+		if k.Class != "" {
+			continue
+		}
+		classes, err := s.kindClasses(ctx, k)
+		if err != nil {
+			return nil, err
+		}
+		if len(classes) == 0 {
+			continue
+		}
+		a := kindAllows{names: classes}
+		for _, side := range []struct {
+			d   directory.Directory
+			set *map[string]bool
+		}{{s.Src, &a.source}, {dst, &a.target}} {
+			byClass, ok, err := prof.Writable.Writable(ctx, side.d, classes)
+			if err != nil || !ok {
+				return nil, err
+			}
+			*side.set = map[string]bool{}
+			for _, names := range byClass {
+				for _, n := range names {
+					(*side.set)[strings.ToLower(n)] = true
+				}
+			}
+		}
+		out[k.Name] = a
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
 }
 
 // targetSchema is the attributes the target's schema defines, by lowercase name; nil when it cannot say.
@@ -407,6 +491,12 @@ func noteLeftOut(w io.Writer, l leftOut) {
 	if len(l.refused) > 0 {
 		fmt.Fprintf(w, "not copied or compared: the target refuses %d attributes over LDAP:\n", len(l.refused))
 		for _, n := range l.refused {
+			fmt.Fprintf(w, "  %s\n", n)
+		}
+	}
+	if len(l.notAllowed) > 0 {
+		fmt.Fprintf(w, "not copied or compared: the target's classes of the entries do not allow %d attributes the source's do (ldap-cronin schema changes the classes to the source's):\n", len(l.notAllowed))
+		for _, n := range l.notAllowed {
 			fmt.Fprintf(w, "  %s\n", n)
 		}
 	}

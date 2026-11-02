@@ -875,8 +875,10 @@ func (r *runner) upsert(ctx context.Context, e directory.Entry, account profile.
 		}
 		if len(withRefs.Attrs) == len(add.Attrs) && r.hasRefs(e) {
 			// None of its references can be written, so the schema's required member cannot be given: like a reference
-			// to an object outside the scope, it is skipped with a warning instead of stopping the run.
-			r.warn("skip %s: the target requires a reference to create it, and none of its references can be written (%v)", e.DN, err)
+			// to an object outside the scope, it is skipped with a warning instead of stopping the run. The server's
+			// refusal comes first: the violation may be of another rule (an attribute its class does not allow), which
+			// a warning naming the references alone hid.
+			r.warn("skip %s: the target refuses to create it (%v); if a class it holds requires a reference at creation, none of its references can be written", e.DN, err)
 			r.mu.Lock()
 			r.skipped[dn.Normalize(e.DN)] = true
 			r.mu.Unlock()

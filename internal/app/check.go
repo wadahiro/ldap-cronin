@@ -282,7 +282,7 @@ func (s *Session) Check(ctx context.Context, o CheckOptions, out io.Writer) (int
 		}
 	}
 	// One empty line between the parts: after the notes when there were any.
-	if notes := len(blocking) > 0 || refusal != "" || len(clashes) > 0 || len(left.missing)+len(left.refused) > 0 || warning != "" || (changes != nil && !changes.Empty()); notes {
+	if notes := len(blocking) > 0 || refusal != "" || len(clashes) > 0 || len(left.missing)+len(left.refused)+len(left.notAllowed) > 0 || warning != "" || (changes != nil && !changes.Empty()); notes {
 		fmt.Fprintln(out)
 	}
 	if o.Attrs {

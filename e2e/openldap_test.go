@@ -601,3 +601,136 @@ member: uid=erin,ou=People,o=acme
 		t.Fatalf("diff against the dump: %d %v\n%s", code, err, out.String())
 	}
 }
+
+// olChangedInetOrgPerson changes the standard inetOrgPerson as a production may have: an attribute type of its own,
+// defined in the same cn=config entry, named in the class's MAY rather than in an auxiliary class.
+const olChangedInetOrgPerson = `dn: cn={3}inetorgperson,cn=schema,cn=config
+changetype: modify
+add: olcAttributeTypes
+olcAttributeTypes: ( 1.3.6.1.4.1.99999.1.30 NAME 'acmeLockFlag' EQUALITY integerMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE )
+-
+replace: olcObjectClasses
+olcObjectClasses: ( 2.16.840.1.113730.3.2.2 NAME 'inetOrgPerson' DESC 'RFC2798: Internet Organizational Person' SUP organizationalPerson STRUCTURAL MAY ( audio $ businessCategory $ carLicense $ departmentNumber $ displayName $ employeeNumber $ employeeType $ givenName $ homePhone $ homePostalAddress $ initials $ jpegPhoto $ labeledURI $ mail $ manager $ mobile $ o $ pager $ photo $ roomNumber $ secretary $ uid $ userCertificate $ x500uniqueIdentifier $ preferredLanguage $ userSMIMECertificate $ userPKCS12 $ acmeLockFlag ) )
+-
+`
+
+// A standard class the source changed reaches OpenLDAP: before the schema, clone leaves the attribute out with a note
+// and completes, whether the target lacks its type or has it (an earlier copy added it in an entry of its own) but
+// not in its inetOrgPerson; schema -apply changes the target's inetOrgPerson to the source's, moved after the entry
+// that defines the type; clone then copies the attribute, diff finds nothing, and the target still starts after a
+// restart, which a class naming an attribute loaded after it would stop.
+func TestAChangedStandardClassReachesOpenLDAP(t *testing.T) {
+	image := os.Getenv("E2E_LDAP_IMAGE")
+	if image == "" {
+		t.Skip("E2E_LDAP_IMAGE is not set (tests/e2e.sh builds it)")
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("no docker")
+	}
+	ctx := context.Background()
+	host := env("E2E_LAB_HOST", "localhost")
+	run := time.Now().UnixNano() % 1_000_000
+	srcName, dstName := fmt.Sprintf("olcsrc%d", run), fmt.Sprintf("olcdst%d", run)
+	srcPort := startOpenLDAP(t, image, srcName, map[string]string{"10-inetorgperson.ldif": olChangedInetOrgPerson})
+	dstPort := startOpenLDAP(t, image, dstName, nil)
+	seed := exec.Command("docker", "exec", "-i", srcName, "ldapadd", "-x", "-H", "ldap://localhost", "-D", olAdmin, "-w", olPw)
+	seed.Stdin = strings.NewReader(`dn: ou=IDM,dc=example,dc=org
+objectClass: organizationalUnit
+ou: IDM
+
+dn: uid=frank,ou=IDM,dc=example,dc=org
+objectClass: inetOrgPerson
+cn: Frank
+sn: F
+uid: frank
+acmeLockFlag: 1
+`)
+	if out, err := seed.CombinedOutput(); err != nil {
+		t.Fatalf("seed: %v\n%s", err, out)
+	}
+	cfg, err := config.Parse([]byte(fmt.Sprintf("[source]\nurl = \"ldap://%s:%d\"\nbind_dn = %q\n[target]\nurl = \"ldap://%s:%d\"\nbind_dn = %q\n[scope]\nbase_dn = %q\n",
+		host, srcPort, olAdmin, host, dstPort, olAdmin, olClone)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pw := func() (string, error) { return olPw, nil }
+	s, err := app.Open(ctx, cfg, app.Secrets{SourceBind: pw, TargetBind: pw, UserPassword: func() (string, error) { return "Fixed-Passw0rd", nil }}, app.LDAP, &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+	frank := "uid=frank," + olClone
+	flag := func() string {
+		t.Helper()
+		e, err := dialAt(t, host, dstPort).Get(ctx, frank, []string{"acmeLockFlag"})
+		if err != nil || e == nil {
+			t.Fatalf("frank: %v %v", e, err)
+		}
+		return strings.Join(e.Values("acmeLockFlag"), "")
+	}
+
+	// The target defines no acmeLockFlag yet: left out as an attribute the target lacks, the rest cloned.
+	var log bytes.Buffer
+	if _, err := s.Clone(ctx, false, &log, &log); err != nil {
+		t.Fatalf("clone before the schema: %v\n%s", err, log.String())
+	}
+	if flag() != "" || !strings.Contains(log.String(), "acmeLockFlag") {
+		t.Fatalf("before the schema:\n%s", log.String())
+	}
+	// The type alone, as an earlier copy carried it: the target's inetOrgPerson still refuses it.
+	types := exec.Command("docker", "exec", "-i", dstName, "ldapmodify", "-x", "-H", "ldap://localhost", "-D", olAdmin, "-w", olPw)
+	types.Stdin = strings.NewReader("dn: cn=ldap-cronin-earlier,cn=schema,cn=config\nchangetype: add\nobjectClass: olcSchemaConfig\ncn: ldap-cronin-earlier\n" +
+		"olcAttributeTypes: ( 1.3.6.1.4.1.99999.1.30 NAME 'acmeLockFlag' EQUALITY integerMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE )\n")
+	if out, err := types.CombinedOutput(); err != nil {
+		t.Fatalf("the earlier copy: %v\n%s", err, out)
+	}
+	log.Reset()
+	if _, err := s.Clone(ctx, false, &log, &log); err != nil {
+		t.Fatalf("clone with the type but not the class: %v\n%s", err, log.String())
+	}
+	if flag() != "" || !strings.Contains(log.String(), "do not allow 1 attributes the source's do") || !strings.Contains(log.String(), "acmeLockFlag (user: ") {
+		t.Fatalf("with the type but not the class:\n%s", log.String())
+	}
+	log.Reset()
+	var out bytes.Buffer
+	if err := s.Schema(ctx, true, &out, &log); err != nil {
+		t.Fatalf("schema -apply: %v\n%s", err, log.String())
+	}
+	if !strings.Contains(log.String(), "classes to change to the source's: 1\n  inetOrgPerson") || !strings.Contains(log.String(), "modify cn={3}inetorgperson,cn=schema,cn=config") ||
+		!strings.Contains(log.String(), "modify cn={4}ldap-cronin-earlier,cn=schema,cn=config") {
+		t.Fatalf("schema -apply:\n%s", log.String())
+	}
+	log.Reset()
+	if _, err := s.Clone(ctx, false, &log, &log); err != nil {
+		t.Fatalf("clone after the schema: %v\n%s", err, log.String())
+	}
+	if flag() != "1" {
+		t.Fatalf("acmeLockFlag after the schema:\n%s", log.String())
+	}
+	var diffOut bytes.Buffer
+	if code, err := s.Diff(ctx, app.DiffOutput{}, &diffOut); err != nil || code != app.ExitSame {
+		t.Fatalf("diff: %d %v\n%s", code, err, diffOut.String())
+	}
+	log.Reset()
+	if err := s.Schema(ctx, false, &out, &log); err != nil || !strings.Contains(log.String(), "has every attribute and class") {
+		t.Fatalf("schema again: %v\n%s", err, log.String())
+	}
+
+	// slapd loads cn=config again at a start: the changed class must find its attribute before it.
+	if out, err := exec.Command("docker", "restart", dstName).CombinedOutput(); err != nil {
+		t.Fatalf("restart: %v\n%s", err, out)
+	}
+	for i := 0; ; i++ {
+		if exec.Command("docker", "exec", dstName, "test", "-f", "/tmp/ldap-ready").Run() == nil {
+			break
+		}
+		if i == 60 {
+			logs, _ := exec.Command("docker", "logs", "--tail", "20", dstName).CombinedOutput()
+			t.Fatalf("the target did not start again:\n%s", logs)
+		}
+		time.Sleep(time.Second)
+	}
+	if flag() != "1" {
+		t.Fatal("acmeLockFlag after the restart")
+	}
+}
