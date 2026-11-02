@@ -24,7 +24,7 @@ base_dn = "ou=IDM,dc=example,dc=org"
 # operational = true       # also copy createTimestamp, modifyTimestamp, creatorsName, modifiersName
 ```
 
-The **root** is the top of the naming context that holds `base_dn`. It must exist on the target and is never created or changed. It is taken from `root_dn`, otherwise from the longest `namingContexts` value above `base_dn`, otherwise from the trailing `dc=` components of `base_dn`.
+The **root** is the top of the naming context that holds `base_dn`. It must exist on the target and is never created or changed. It is taken from `root_dn`, otherwise (from a dump) from the root the dump recorded, otherwise from the longest `namingContexts` value that is `base_dn` or above it, otherwise from the trailing `dc=` components of `base_dn`. So `base_dn = "o=acme"` takes the whole directory under that suffix; its root entry exists on the target already and is left as it is.
 
 ## How it behaves
 

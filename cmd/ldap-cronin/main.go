@@ -76,6 +76,7 @@ Flags (dump):
   -base-dn <dn>    What to dump: the entries under it, the root of its naming context and the entries in between, the
                    entries outside it its references name (and their parents), the schema; credentials never.
                    Repeat it for several OUs (none below another), as [scope] base_dn lists them
+  -root-dn <dn>    The top of its naming context, for a server whose root DSE names none to the bind account
   -o <file>        The dump (.gz: compressed). Written to a temporary file and renamed when complete
   -mask <a,b>      Attributes masked in the file itself (-mask-value, default ********)
   -from <file>     Read a dump instead of a server and write it again to -o with the attributes -mask adds masked
@@ -382,6 +383,7 @@ func runDump(ctx context.Context, args []string, log io.Writer) error {
 	bindDN := fs.String("bind-dn", "", "the DN to bind as (read access is enough)")
 	var baseDNs listFlag
 	fs.Var(&baseDNs, "base-dn", "what to dump (repeat it for several)")
+	rootDN := fs.String("root-dn", "", "the top of the base DNs' naming context, when the server's root DSE does not name it")
 	out := fs.String("o", "", "the dump file (.gz: compressed)")
 	from := fs.String("from", "", "a dump to read instead of a server, to write it again with more attributes masked (-mask)")
 	maskAttrs := fs.String("mask", "", "attributes masked in the dump, comma separated; kind:attribute masks it on that kind's entries only (user:mail)")
@@ -420,7 +422,7 @@ func runDump(ctx context.Context, args []string, log io.Writer) error {
 	_, err = app.Dump(ctx, app.DumpOptions{
 		Conn:    ldapdir.ConnConfig{URL: *url, BindDN: *bindDN, CAFile: *caFile, InsecureSkipVerify: *insecure, StartTLS: *startTLS, Timeout: *timeout},
 		BaseDNs: baseDNs, Out: *out, MaskValue: *maskValue, Masked: masked, Version: version, Progress: bar, Credentials: *withCredentials,
-		From: *from,
+		From: *from, RootDN: *rootDN,
 	}, secrets.SourceBind, display.Writer(log))
 	return err
 }

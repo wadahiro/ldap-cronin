@@ -79,6 +79,8 @@ func TestRootResolvers(t *testing.T) {
 		{"AD uses the trailing DC run", adRoot{}, namingContexts{}, "OU=IDM,DC=ad,DC=example,DC=com", "DC=ad,DC=example,DC=com"},
 		{"longest naming context", namingContextRoot{}, namingContexts{"dc=org", "dc=example,dc=org"}, "ou=IDM,dc=example,dc=org", "dc=example,dc=org"},
 		{"o= suffix from namingContexts", namingContextRoot{}, namingContexts{"o=acme"}, "ou=people,o=acme", "o=acme"},
+		{"base_dn that is an o= naming context", namingContextRoot{}, namingContexts{"dc=org", "o=acme"}, "O=Acme", "o=acme"},
+		{"base_dn that is a dc= naming context", namingContextRoot{}, namingContexts{"dc=org", "dc=example,dc=org"}, "dc=example,dc=org", "dc=example,dc=org"},
 		{"falls back to the DC run", namingContextRoot{}, namingContexts{}, "ou=IDM,dc=example,dc=org", "dc=example,dc=org"},
 	}
 	for _, c := range cases {

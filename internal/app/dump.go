@@ -33,6 +33,8 @@ type DumpOptions struct {
 	Masked    []string
 	Version   string
 	Progress  *progress.Bar
+	// RootDN is the top of the base DNs' naming context, when the server's root DSE does not name it (dump.Options).
+	RootDN string
 	// Credentials dumps the credentials the source returns (the profile's Secrets), for a clone with
 	// [attributes] credentials = "copy".
 	Credentials bool
@@ -69,7 +71,7 @@ func Dump(ctx context.Context, o DumpOptions, password func() (string, error), l
 		prof = prof.WithSecrets()
 	}
 	src := directory.ReadOnly{Directory: c.With(prof.Ranged)}
-	return writeDump(ctx, src, prof, o.Out, dump.Options{BaseDNs: o.BaseDNs, MaskValue: o.MaskValue, Masked: o.Masked,
+	return writeDump(ctx, src, prof, o.Out, dump.Options{BaseDNs: o.BaseDNs, RootDN: o.RootDN, MaskValue: o.MaskValue, Masked: o.Masked,
 		Server: o.Conn.URL, Version: o.Version, Now: time.Now, Progress: o.Progress}, log)
 }
 
@@ -77,8 +79,8 @@ func Dump(ctx context.Context, o DumpOptions, password func() (string, error), l
 // server then, so the new dump is the one dump would have written with those masks, of the same server and the same
 // moment (its dumped-at and server lines), which diff compares the target with.
 func redump(ctx context.Context, o DumpOptions, log io.Writer) (dump.Counts, error) {
-	if o.Conn.URL != "" || o.Conn.BindDN != "" {
-		return dump.Counts{}, errors.New("-from reads a dump: no -url or -bind-dn")
+	if o.Conn.URL != "" || o.Conn.BindDN != "" || o.RootDN != "" {
+		return dump.Counts{}, errors.New("-from reads a dump: no -url, -bind-dn or -root-dn (the dump's root is kept)")
 	}
 	if same, err := samePath(o.From, o.Out); err != nil || same {
 		if err == nil {
@@ -135,7 +137,8 @@ func redump(ctx context.Context, o DumpOptions, log io.Writer) (dump.Counts, err
 	if err != nil {
 		return dump.Counts{}, fmt.Errorf("%s: dumped-at %q: %w", o.From, m.DumpedAt, err)
 	}
-	return writeDump(ctx, directory.ReadOnly{Directory: d}, prof, o.Out, dump.Options{BaseDNs: bases, MaskValue: o.MaskValue, Masked: masked,
+	// The root the first dump recorded: one given there with -root-dn is in no root DSE the dump holds.
+	return writeDump(ctx, directory.ReadOnly{Directory: d}, prof, o.Out, dump.Options{BaseDNs: bases, RootDN: m.RootDN, MaskValue: o.MaskValue, Masked: masked,
 		Server: m.Server, Version: o.Version, Now: func() time.Time { return at }, Progress: o.Progress}, log)
 }
 

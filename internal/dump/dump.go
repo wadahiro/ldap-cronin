@@ -32,6 +32,9 @@ type Options struct {
 	// MaskValue and Masked mask attributes in the dump itself, so the file holds no value of them.
 	MaskValue string
 	Masked    []string
+	// RootDN is the top of the naming context of the base DNs, for a server whose root DSE does not name it to the
+	// reading account; "" finds it as clone does.
+	RootDN string
 	// Server is the URL the dump is read from, Version the tool's, for the header.
 	Server, Version string
 	Now             func() time.Time
@@ -68,9 +71,11 @@ func Write(ctx context.Context, src directory.Directory, prof profile.Profile, o
 	if err := plan.CheckBases(o.BaseDNs); err != nil {
 		return Counts{}, err
 	}
-	root, err := prof.Root.Root(ctx, src, o.BaseDNs[0])
-	if err != nil {
-		return Counts{}, err
+	root := o.RootDN
+	if root == "" {
+		if root, err = prof.Root.Root(ctx, src, o.BaseDNs[0]); err != nil {
+			return Counts{}, err
+		}
 	}
 	for _, b := range o.BaseDNs {
 		if !dn.Equal(b, root) && !dn.IsDescendant(b, root) {

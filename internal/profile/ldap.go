@@ -73,8 +73,9 @@ var LDAP = Profile{
 // RelaxOID is the relax control (draft-zeilenga-ldap-relax).
 const RelaxOID = "1.3.6.1.4.1.4203.666.5.12"
 
-// namingContextRoot is the longest namingContexts value above base_dn, falling back to the trailing DC= run; a
-// base_dn without either needs [scope] root_dn.
+// namingContextRoot is the longest namingContexts value that is base_dn or above it, falling back to the trailing DC=
+// run; a base_dn without either needs [scope] root_dn. A base_dn that is a naming context is its own root: the whole
+// directory under an o= suffix, which no DC= run names.
 type namingContextRoot struct{}
 
 func (namingContextRoot) Root(ctx context.Context, src directory.Directory, baseDN string) (string, error) {
@@ -85,7 +86,7 @@ func (namingContextRoot) Root(ctx context.Context, src directory.Directory, base
 	best := ""
 	if rootDSE != nil {
 		for _, nc := range rootDSE.Values("namingContexts") {
-			if dn.IsDescendant(baseDN, nc) && dn.Depth(nc) > dn.Depth(best) {
+			if (dn.Equal(baseDN, nc) || dn.IsDescendant(baseDN, nc)) && dn.Depth(nc) > dn.Depth(best) {
 				best = nc
 			}
 		}
@@ -94,7 +95,7 @@ func (namingContextRoot) Root(ctx context.Context, src directory.Directory, base
 		best = dn.DomainRoot(baseDN)
 	}
 	if best == "" {
-		return "", fmt.Errorf("cannot determine the naming context of base_dn %q: set [scope] root_dn", baseDN)
+		return "", fmt.Errorf("cannot determine the naming context of base_dn %q: set [scope] root_dn (dump: -root-dn)", baseDN)
 	}
 	return best, nil
 }

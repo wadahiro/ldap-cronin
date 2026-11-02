@@ -203,8 +203,8 @@ func containsFold(list []string, s string) bool {
 	return false
 }
 
-// A dump of a dump refuses what would make it say what it is not: a server besides the dump, a base DN the dump
-// lacks, another mask value, credentials the dump does not carry, and writing over the dump it reads.
+// A dump of a dump refuses what would make it say what it is not: a server besides the dump, another root, a base DN
+// the dump lacks, another mask value, credentials the dump does not carry, and writing over the dump it reads.
 func TestADumpOfADumpRefusesWhatItCannotBe(t *testing.T) {
 	_, first := redumpWorld(t)
 	out := filepath.Join(t.TempDir(), "new.ldif")
@@ -212,7 +212,8 @@ func TestADumpOfADumpRefusesWhatItCannotBe(t *testing.T) {
 		o    DumpOptions
 		want string
 	}{
-		"a server too":      {DumpOptions{Conn: ldapdir.ConnConfig{URL: "ldaps://src:636"}}, "no -url or -bind-dn"},
+		"a server too":      {DumpOptions{Conn: ldapdir.ConnConfig{URL: "ldaps://src:636"}}, "no -url, -bind-dn or -root-dn"},
+		"another root":      {DumpOptions{RootDN: "DC=other"}, "no -url, -bind-dn or -root-dn"},
 		"another base DN":   {DumpOptions{BaseDNs: []string{"OU=Elsewhere," + domain}}, "is not in"},
 		"another value":     {DumpOptions{MaskValue: "xxx"}, `masks with "********"`},
 		"credentials":       {DumpOptions{Credentials: true}, "carries no credentials"},

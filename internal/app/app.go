@@ -143,6 +143,10 @@ func Open(ctx context.Context, cfg *config.Config, secrets Secrets, dial Dialer,
 	}
 	if d, ok := conn.(*ldifdir.Dir); ok {
 		job.OldDump = !d.Meta().Holders
+		// The root the dump was taken with: one given to dump -root-dn is in no root DSE the dump holds.
+		if job.RootDN == "" {
+			job.RootDN = d.Meta().RootDN
+		}
 	}
 	s := &Session{Cfg: cfg, Job: job, Src: src.View(prof.Ranged), Warn: warn, secrets: secrets, dial: dial, src: src}
 	if cfg.AllFor(prof) {

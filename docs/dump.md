@@ -44,6 +44,11 @@ each), and every `base_dn` of the config must be in one of them. A reference fro
 the scope, not an entry outside it. `-base-dn 'OU=*,DC=...'` dumps every OU right under the domain but
 Domain Controllers (the containers beside them left out), and the header lists the OUs it stood for.
 
+The root of the naming context is found as `clone` finds it: on a generic server the longest `namingContexts` value
+that is `-base-dn` or above it (so `-base-dn 'o=acme'` dumps the whole directory under that suffix), otherwise the
+trailing `dc=` components. A server whose root DSE names no naming context to the bind account needs `-root-dn`;
+the header keeps it (`# root-dn:`), and a clone, diff or check from the dump takes it without `[scope] root_dn`.
+
 ## The file
 
 An LDIF file of content records (`ldapsearch` writes the same), compressed when its name ends in `.gz`. Comment
@@ -115,7 +120,8 @@ ldap-cronin dump -from prod.ldif.gz -o prod-masked.ldif.gz -mask displayName
   they are the only ones written (the summary counts each entry holding one as updated), and `diff` against the
   new dump then finds nothing. A journal of the first dump ([operations.md](operations.md#resuming-a-clone-from-a-dump))
   is dropped, as of another dump.
-- `-base-dn` narrows it to a part of the first dump's base DNs; without it, the new dump has all of them.
+- `-base-dn` narrows it to a part of the first dump's base DNs; without it, the new dump has all of them. The
+  first dump's root is kept (`-root-dn` is refused).
 - `-mask-value` must be the first dump's when that masked anything: a dump has one value for every masked attribute.
 - Credentials the first dump carries (`-with-credentials`) are left out unless `-with-credentials` is given again.
 - A masked value cannot be unmasked: keep the first dump only where its values may be, or remove it.

@@ -3,10 +3,13 @@ package app
 import (
 	"bytes"
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/wadahiro/ldap-cronin/internal/config"
+	"github.com/wadahiro/ldap-cronin/internal/dump"
 	"github.com/wadahiro/ldap-cronin/internal/fakedir"
 	"github.com/wadahiro/ldap-cronin/internal/profile"
 )
@@ -70,8 +73,14 @@ func genericSchema(d *fakedir.Dir, without ...string) {
 // openGeneric opens a session of the generic profile from src to dst with more after [scope].
 func openGeneric(t *testing.T, src, dst *fakedir.Dir, more string) *Session {
 	t.Helper()
-	cfg, err := config.Parse([]byte("[source]\nurl = \"ldaps://src:636\"\nbind_dn = \"cn=a\"\n[target]\nurl = \"ldaps://dst:636\"\nbind_dn = \"cn=a\"\n" +
-		"[scope]\nprofile = \"ldap\"\nbase_dn = \"" + gBase + "\"\n" + more))
+	return openGenericConfig(t, src, dst, "[source]\nurl = \"ldaps://src:636\"\nbind_dn = \"cn=a\"\n[target]\nurl = \"ldaps://dst:636\"\nbind_dn = \"cn=a\"\n"+
+		"[scope]\nprofile = \"ldap\"\nbase_dn = \""+gBase+"\"\n"+more)
+}
+
+// openGenericConfig opens a session of the config text, its source src (or the dump it names) and its target dst.
+func openGenericConfig(t *testing.T, src, dst *fakedir.Dir, text string) *Session {
+	t.Helper()
+	cfg, err := config.Parse([]byte(text))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,4 +182,89 @@ func TestAGenericServerExcludesFromEveryAttribute(t *testing.T) {
 	if attrs := profile.Set(user.Attrs); !s.Job.AllWritable || attrs["uidnumber"] || attrs["employeetype"] || !attrs["homedirectory"] {
 		t.Fatalf("%v %v", s.Job.AllWritable, user.Attrs)
 	}
+}
+
+// acmeWorld is a generic source whose naming context is o=acme, which no DC= run names, and a target holding that
+// root alone; hidden leaves o=acme out of the source's root DSE, as a server does to an account it shows none.
+func acmeWorld(hidden bool) (src, dst *fakedir.Dir) {
+	src = fakedir.New("o=acme")
+	genericSchema(src)
+	root := map[string][]string{"subschemaSubentry": {"cn=Subschema"}}
+	if !hidden {
+		root["namingContexts"] = []string{"o=acme"}
+	}
+	src.Put("", root)
+	src.Put("o=acme", map[string][]string{"objectClass": {"top", "organization"}, "o": {"acme"}})
+	src.Put("ou=People,o=acme", map[string][]string{"objectClass": {"top", "organizationalUnit"}, "ou": {"People"}})
+	src.Put("uid=erin,ou=People,o=acme", map[string][]string{"objectClass": {"top", "person", "organizationalPerson", "inetOrgPerson"},
+		"cn": {"Erin"}, "sn": {"E"}, "uid": {"erin"}, "mail": {"erin@example.org"}})
+	src.Put("cn=Ops,o=acme", map[string][]string{"objectClass": {"top", "groupOfNames"}, "cn": {"Ops"}, "member": {"uid=erin,ou=People,o=acme"}})
+	dst = fakedir.New("o=acme")
+	dst.IDPrefix = 0xd1
+	dst.Relax = profile.RelaxOID
+	genericSchema(dst)
+	dst.Put("", map[string][]string{"subschemaSubentry": {"cn=Subschema"}, "namingContexts": {"o=acme"}})
+	dst.Put("o=acme", map[string][]string{"objectClass": {"top", "organization"}, "o": {"acme"}})
+	return src, dst
+}
+
+const acmeTarget = "[target]\nurl = \"ldaps://dst:636\"\nbind_dn = \"cn=a\"\n[scope]\nprofile = \"ldap\"\nbase_dn = \"o=acme\"\n"
+
+// A base_dn that is the naming context itself, an o= one that no DC= run names, is its own root: clone takes
+// everything under it, dump writes it, and a session from the dump diffs clean.
+func TestABaseDNThatIsANamingContextIsItsOwnRoot(t *testing.T) {
+	ctx := context.Background()
+	src, dst := acmeWorld(false)
+	s := openGenericConfig(t, src, dst, "[source]\nurl = \"ldaps://src:636\"\nbind_dn = \"cn=a\"\n"+acmeTarget)
+	var log bytes.Buffer
+	if _, err := s.Clone(ctx, false, &log, &log); err != nil {
+		t.Fatalf("%v\n%s", err, log.String())
+	}
+	if dst.Lookup("uid=erin,ou=People,o=acme") == nil || dst.Lookup("cn=Ops,o=acme") == nil {
+		t.Fatalf("not cloned:\n%s", log.String())
+	}
+	var out bytes.Buffer
+	if code, err := s.Diff(ctx, DiffOutput{}, &out); err != nil || code != ExitSame {
+		t.Fatalf("diff: %d %v\n%s", code, err, out.String())
+	}
+	path := acmeDump(t, src, "")
+	fromDump := openGenericConfig(t, nil, dst, "[source]\nldif = \""+path+"\"\n"+acmeTarget)
+	if code, err := fromDump.Diff(ctx, DiffOutput{}, &out); err != nil || code != ExitSame {
+		t.Fatalf("diff against the dump: %d %v\n%s", code, err, out.String())
+	}
+}
+
+// A server that names no naming context to the reading account: dump says to give -root-dn, and with it writes a
+// dump whose root a session takes without [scope] root_dn.
+func TestADumpTakesTheRootItIsGiven(t *testing.T) {
+	ctx := context.Background()
+	src, dst := acmeWorld(true)
+	if _, err := dump.Write(ctx, src, profile.LDAP, dump.Options{BaseDNs: []string{"o=acme"}, Server: "ldaps://src:636"}, &bytes.Buffer{}); err == nil ||
+		!strings.Contains(err.Error(), "-root-dn") {
+		t.Fatalf("without -root-dn: %v", err)
+	}
+	path := acmeDump(t, src, "o=acme")
+	s := openGenericConfig(t, nil, dst, "[source]\nldif = \""+path+"\"\n"+acmeTarget)
+	var log bytes.Buffer
+	if _, err := s.Clone(ctx, false, &log, &log); err != nil {
+		t.Fatalf("%v\n%s", err, log.String())
+	}
+	var out bytes.Buffer
+	if code, err := s.Diff(ctx, DiffOutput{}, &out); err != nil || code != ExitSame {
+		t.Fatalf("diff: %d %v\n%s", code, err, out.String())
+	}
+}
+
+// acmeDump writes a dump of o=acme of src, with root as its -root-dn, and returns its path.
+func acmeDump(t *testing.T, src *fakedir.Dir, root string) string {
+	t.Helper()
+	var b bytes.Buffer
+	if _, err := dump.Write(context.Background(), src, profile.LDAP, dump.Options{BaseDNs: []string{"o=acme"}, RootDN: root, Server: "ldaps://src:636", Version: "test"}, &b); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "acme.ldif")
+	if err := os.WriteFile(path, b.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
