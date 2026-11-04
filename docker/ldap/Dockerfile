@@ -8,9 +8,9 @@ RUN apt-get update \
  && apt-get clean && rm -rf /var/lib/apt/lists/* \
  && rm -rf /etc/ldap/slapd.d/* /var/lib/ldap/*
 
-COPY entrypoint.sh ldap-init.sh seed.ldif /
+COPY entrypoint.sh ldap-init.sh ldap-tls.sh seed.ldif /
 COPY schema.d /schema.d
-RUN chmod +x /entrypoint.sh /ldap-init.sh
+RUN chmod +x /entrypoint.sh /ldap-init.sh /ldap-tls.sh
 
 EXPOSE 389 636
 ENTRYPOINT ["/usr/bin/tini", "--", "/entrypoint.sh"]

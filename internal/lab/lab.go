@@ -191,6 +191,8 @@ type UpOptions struct {
 	// Brief leaves out of the summary the configuration to use and the next steps: clone, which made the lab from
 	// its configuration, says them itself.
 	Brief bool
+	// LDAPSName is one more DNS name of the LDAPS certificate (SetLDAPSName).
+	LDAPSName string
 }
 
 func (l *Lab) checkDocker(ctx context.Context) error {
@@ -210,6 +212,9 @@ func (l *Lab) Up(ctx context.Context, o UpOptions) error {
 		return err
 	}
 	srv := l.srv()
+	if err := l.checkLDAPSName(o.LDAPSName); err != nil {
+		return err
+	}
 	if o.SchemaDir != "" {
 		if srv.SchemaDir == "" {
 			return fmt.Errorf("--schema-dir is for an OpenLDAP lab (--profile %s)", ProfileLDAP)
@@ -255,9 +260,48 @@ func (l *Lab) Up(ctx context.Context, o UpOptions) error {
 	if err := l.smokeTest(ctx, s); err != nil {
 		return err
 	}
+	if err := l.SetLDAPSName(ctx, o.LDAPSName); err != nil {
+		return err
+	}
 	l.summary(s, nb, generated, o)
 	return nil
 }
+
+// SetLDAPSName gives the lab's LDAPS certificate one more DNS name, besides the host's and localhost: the name a
+// client verifying the certificate connects by (a lab moved to another machine through a snapshot). The certificate
+// is in the data volume, so snapshots carry it; the same name again changes nothing. "" leaves it as it is.
+func (l *Lab) SetLDAPSName(ctx context.Context, name string) error {
+	if name == "" {
+		return nil
+	}
+	if err := l.checkLDAPSName(name); err != nil {
+		return err
+	}
+	srv := l.srv()
+	out, err := l.docker(ctx, "exec", l.container(), srv.TLSNames, name)
+	if err != nil {
+		return fmt.Errorf("the LDAPS certificate of %s (an image from before ldaps_name has no %s: take a snapshot, lab reset, and lab restore it with the new image): %w", l.container(), srv.TLSNames, err)
+	}
+	l.logf("%s", strings.TrimSpace(out))
+	return nil
+}
+
+// checkLDAPSName refuses a name the lab cannot give its certificate, before anything is done.
+func (l *Lab) checkLDAPSName(name string) error {
+	if name == "" {
+		return nil
+	}
+	if srv := l.srv(); srv.TLSNames == "" {
+		return fmt.Errorf("ldaps_name: the %s lab's certificate is the server's own; it is for the OpenLDAP lab and the EC2 lab", srv.Product)
+	}
+	if !ldapsNamePattern.MatchString(name) || !strings.Contains(name, ".") {
+		return fmt.Errorf("ldaps_name %q: a DNS name (ldap.test.example.com)", name)
+	}
+	return nil
+}
+
+// ldapsNamePattern is a DNS name, as the image's command takes it.
+var ldapsNamePattern = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$`)
 
 // netbios is the NetBIOS name of a Samba lab (empty for a server without one). It refuses Samba-only settings for
 // other servers.

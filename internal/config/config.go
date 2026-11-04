@@ -83,7 +83,8 @@ type Lab struct {
 	// InstanceProfile has AmazonSSMManagedInstanceCore. Empty launches the instance without one, for an account that
 	// may not pass a role (iam:PassRole): someone who may attaches one after it starts, which lab up waits for.
 	InstanceProfile string `toml:"instance_profile"`
-	// LDAPSName is one more DNS name of the lab's LDAPS certificate (its DC's and its domain's are always there).
+	// LDAPSName is one more DNS name of the lab's LDAPS certificate (on EC2 its DC's and its domain's are always
+	// there, on the OpenLDAP lab its host's and localhost).
 	LDAPSName string `toml:"ldaps_name"`
 	// LDAPPort (EC2) is the local port the instance's LDAP (389) is forwarded to too, for clients that do not use
 	// LDAPS (clone itself does). The instance listens on 389 whatever it is.
@@ -397,8 +398,10 @@ func (c *Config) validate() error {
 		return errors.New("[source.lab]: a lab is a target ([target.lab])")
 	}
 	if l := c.Target.Lab; l != nil {
+		// ldaps_name is the OpenLDAP lab's too (the Samba lab, whose certificate is Samba's, refuses it once the lab's
+		// kind is known).
 		ec2 := map[string]string{"region": l.Region, "subnet": l.Subnet, "instance_type": l.InstanceType, "windows": l.Windows,
-			"instance_profile": l.InstanceProfile, "ldaps_name": l.LDAPSName}
+			"instance_profile": l.InstanceProfile}
 		switch l.Platform {
 		case "", PlatformDocker:
 			for key, v := range ec2 {

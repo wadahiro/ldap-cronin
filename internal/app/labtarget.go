@@ -74,6 +74,10 @@ func (s *Session) LabUp(ctx context.Context, l *lab.Lab, o lab.UpOptions, log io
 	if err := l.CheckTargetURL(ctx, s.Cfg.Target.URL); err != nil {
 		return err
 	}
+	// Also on a lab made before, or restored from a snapshot of another name: the same name changes nothing.
+	if err := l.SetLDAPSName(ctx, lt.LDAPSName); err != nil {
+		return err
+	}
 	return s.labSchema(ctx, log)
 }
 

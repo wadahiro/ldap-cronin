@@ -228,3 +228,36 @@ func TestValidateSuffix(t *testing.T) {
 		}
 	}
 }
+
+// ldaps_name gives an OpenLDAP lab's certificate one more name, through the image's command once the lab runs: on up,
+// and on a restore, into a new container or the old one. A Samba lab, whose certificate is Samba's, and a name that
+// is no DNS name are refused before anything is done.
+func TestTheLDAPSCertificateTakesOneMoreName(t *testing.T) {
+	ctx := context.Background()
+	fx := ldapLab(t)
+	fx.upLDAP(UpOptions{LDAPSName: "ldap.test.example.com"})
+	if got := fx.d.callsMatching("exec t-ldap /ldap-tls.sh"); len(got) != 1 || !strings.HasSuffix(got[0], " ldap.test.example.com") {
+		t.Fatalf("calls: %v", fx.d.calls)
+	}
+	fx.d.volumeData["t-ldap-data"], fx.d.volumeData["t-ldap-config"] = "D", "C"
+	_, err := fx.l.Snapshot(ctx, SnapshotOptions{Name: "base"})
+	must(t, err)
+	fx.d.calls = nil
+	_, err = fx.l.RestoreWith(ctx, "base", RestoreOptions{LDAPSName: "ldap.other.example.com"})
+	must(t, err)
+	if got := fx.d.callsMatching("exec t-ldap /ldap-tls.sh ldap.other.example.com"); len(got) != 1 {
+		t.Fatalf("after the restore: %v", fx.d.calls)
+	}
+
+	bad := ldapLab(t)
+	if err := bad.l.Up(ctx, UpOptions{Image: ldapImage, LDAPSName: "not a name", Flags: Settings{Domain: "dc=example,dc=org", AdminPassword: "x"}}); err == nil ||
+		len(bad.d.callsMatching("run ")) != 0 {
+		t.Fatalf("a bad name: %v %v", err, bad.d.calls)
+	}
+	samba := newLabFixture(t)
+	samba.withBundle()
+	if err := samba.l.Up(ctx, UpOptions{LDAPSName: "ldap.test.example.com", Flags: Settings{Domain: "lab.test", AdminPassword: "x"}}); err == nil ||
+		!strings.Contains(err.Error(), "the server's own") || len(samba.d.callsMatching("run ")) != 0 {
+		t.Fatalf("a Samba lab: %v", err)
+	}
+}

@@ -47,6 +47,9 @@ type Server struct {
 	ContainerEnv func(s Settings, netbios string) []string
 	// SchemaDir is where the image loads deployment LDIFs from at creation; empty when not supported.
 	SchemaDir string
+	// TLSNames is the image's command that gives the LDAPS certificate more DNS names (ldaps_name); empty when the
+	// certificate is the server's own (Samba makes its).
+	TLSNames string
 }
 
 // Samba is the AD-compatible Samba4 lab.
@@ -84,6 +87,7 @@ var OpenLDAP = &Server{
 		return []string{"-e", "LDAP_SUFFIX=" + s.Domain}
 	},
 	SchemaDir: "/schema.d",
+	TLSNames:  "/ldap-tls.sh",
 }
 
 // Servers lists the lab servers.

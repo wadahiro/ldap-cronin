@@ -5,6 +5,7 @@ package e2e
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"fmt"
 	"os"
 	"os/exec"
@@ -69,8 +70,20 @@ func TestOpenLDAPLabWithRealDocker(t *testing.T) {
 	started := time.Now()
 	must(l.Up(ctx, lab.UpOptions{
 		Image: image, SchemaDir: schemaDir, WithSource: true, SourceLDAP: freePort(t), SourceLDAPS: srcLDAPS,
-		Flags: lab.Settings{Domain: suffix, AdminPassword: password, LDAPPort: freePort(t), LDAPSPort: ldaps},
+		Flags:     lab.Settings{Domain: suffix, AdminPassword: password, LDAPPort: freePort(t), LDAPSPort: ldaps},
+		LDAPSName: "ldap.lab-e2e.test",
 	}))
+	// The certificate names the host, localhost and the name given, served at once.
+	certNames := func(port int) []string {
+		t.Helper()
+		conn, err := tls.Dial("tcp", fmt.Sprintf("%s:%d", host, port), &tls.Config{InsecureSkipVerify: true})
+		must(err)
+		defer conn.Close()
+		return conn.ConnectionState().PeerCertificates[0].DNSNames
+	}
+	if got := strings.Join(certNames(ldaps), " "); got != "ldap1 localhost ldap.lab-e2e.test" {
+		t.Fatalf("the LDAPS certificate names %q", got)
+	}
 	t.Logf("up (lab and sample source): %.1fs", time.Since(started).Seconds())
 	dial := func(port int) *ldapdir.Client {
 		c, err := ldapdir.Dial(ldapdir.ConnConfig{URL: fmt.Sprintf("ldaps://%s:%d", host, port), BindDN: admin, Password: password, InsecureSkipVerify: true}, 4)
@@ -157,6 +170,10 @@ func TestOpenLDAPLabWithRealDocker(t *testing.T) {
 	}
 	if uuidOf(dial(dev2Port), alice) != aliceUUID {
 		t.Fatal("the other instance must hold the same data")
+	}
+	// The snapshot carries the certificate, as a lab moved to another machine needs.
+	if got := strings.Join(certNames(dev2Port), " "); got != "ldap1 localhost ldap.lab-e2e.test" {
+		t.Fatalf("the restored certificate names %q", got)
 	}
 
 	// The existing volume belongs to another suffix: up refuses without touching it.

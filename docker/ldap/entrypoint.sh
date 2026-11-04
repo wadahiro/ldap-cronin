@@ -20,8 +20,11 @@ fi
 mkdir -p /run/slapd "$DATA/data" "$DATA/tls"
 if [ ! -f "$CREATED" ]; then
   rm -rf "${CONF:?}"/* "$DATA/data"/*
+  # The names a client verifying it may connect by: the host and localhost; ldap-tls.sh adds more.
   openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -subj "/CN=$(hostname)" \
+    -addext "subjectAltName=DNS:$(hostname),DNS:localhost" \
     -keyout "$DATA/tls/key.pem" -out "$DATA/tls/cert.pem" 2>/dev/null
+  echo "$(hostname) localhost" > "$DATA/tls/names"
   hash=$(slappasswd -s "$LDAP_ADMIN_PASSWORD")
   modules="" overlays="" n=0
   for o in $LDAP_OVERLAYS; do

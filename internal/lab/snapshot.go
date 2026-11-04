@@ -372,6 +372,8 @@ type RestoreOptions struct {
 	LDAPPort      int // if omitted: the default lab uses .env or the default, and other instances pick a free port
 	LDAPSPort     int
 	AdminPassword string // if omitted: the server's password environment variable (SAMBA_ADMIN_PASSWORD, LDAP_ADMIN_PASSWORD), then .env
+	// LDAPSName is one more DNS name of the LDAPS certificate (Lab.SetLDAPSName), given once the lab runs again.
+	LDAPSName string
 }
 
 // Restore is RestoreWith without options.
@@ -383,13 +385,11 @@ func (l *Lab) Restore(ctx context.Context, name string) (SnapshotMeta, error) {
 // If the target container does not exist, it **creates and starts a new one** from the snapshot. By choosing another instance with --instance
 // and changing the ports, you can start a second lab in the snapshot's state alongside the running one.
 // Before restoring, it verifies the snapshot's checksums (if they are broken, the current data is left untouched).
-func (l *Lab) RestoreWith(ctx context.Context, name string, o RestoreOptions) (SnapshotMeta, error) {
-	var meta SnapshotMeta
+func (l *Lab) RestoreWith(ctx context.Context, name string, o RestoreOptions) (meta SnapshotMeta, err error) {
 	if err := l.checkDocker(ctx); err != nil {
 		return meta, err
 	}
 	if name == "" {
-		var err error
 		if name, err = l.choose(); err != nil {
 			return meta, err
 		}
@@ -397,13 +397,22 @@ func (l *Lab) RestoreWith(ctx context.Context, name string, o RestoreOptions) (S
 	if err := ValidateSnapshotName(name); err != nil {
 		return meta, err
 	}
-	meta, err := l.readMeta(name)
+	meta, err = l.readMeta(name)
 	if err != nil {
 		return meta, fmt.Errorf("snapshot %q not found (list them with lab snapshots): %w", name, err)
 	}
 	if err := l.adoptServer(meta); err != nil {
 		return meta, err
 	}
+	// Refused before anything is touched; given once the lab runs again, from a new container or the old one.
+	if err := l.checkLDAPSName(o.LDAPSName); err != nil {
+		return meta, err
+	}
+	defer func() {
+		if err == nil {
+			err = l.SetLDAPSName(ctx, o.LDAPSName)
+		}
+	}()
 	if err := l.verifySnapshot(meta); err != nil {
 		return meta, err
 	}

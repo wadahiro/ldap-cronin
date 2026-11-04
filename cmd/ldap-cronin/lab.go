@@ -56,6 +56,8 @@ Flags (up):
                             environment variable is recommended
   --schema-dir <dir>        OpenLDAP: LDIFs applied when the directory is created, in name order: schemas
                             (olcSchemaConfig entries) and cn=config changes (overlays, ACLs, indexes)
+  --ldaps-name <fqdn>       OpenLDAP: one more DNS name of the LDAPS certificate, besides the host's and localhost
+                            (with --config: [target.lab] ldaps_name)
   --netbios <name>          NetBIOS domain name (default: the uppercased first label of the domain name; up to 15 characters)
   --ldap-port <n>           Published LDAP port (default 12389; OpenLDAP 13389)
   --ldaps-port <n>          Published LDAPS port (default 12636; OpenLDAP 13636)
@@ -104,6 +106,8 @@ Flags (restore, when no target container exists and a new one is created):
   --ldap-port <n>           Published LDAP port (for other instances, a free port is chosen if omitted)
   --ldaps-port <n>          Published LDAPS port (same as above)
   --admin-password <pw>     Administrator password (the one in effect when the snapshot was taken; defaults to the environment variable, then .env)
+  --ldaps-name <fqdn>       OpenLDAP: one more DNS name of the LDAPS certificate, given once the lab runs (the snapshot's
+                            certificate is kept otherwise)
 
 The markers clone writes are part of the data, so diff's rename and move detection keeps working after a restore.
 
@@ -159,12 +163,14 @@ func runLab(ctx context.Context, args []string, out, errW io.Writer) error {
 		ldapPort  int
 		ldapsPort int
 		dryRun    bool
+		ldapsName string
 	)
 	switch sub {
 	case "up":
 		fs.StringVar(&realm, "realm", "", "")
 		fs.StringVar(&suffix, "suffix", "", "")
 		fs.StringVar(&up.SchemaDir, "schema-dir", "", "")
+		fs.StringVar(&up.LDAPSName, "ldaps-name", "", "")
 		fs.StringVar(&password, "admin-password", "", "")
 		fs.StringVar(&netbios, "netbios", "", "")
 		fs.IntVar(&ldapPort, "ldap-port", 0, "")
@@ -194,6 +200,7 @@ func runLab(ctx context.Context, args []string, out, errW io.Writer) error {
 	case "restore":
 		fs.StringVar(&cfgPath, "config", "", "")
 		fs.StringVar(&password, "admin-password", "", "")
+		fs.StringVar(&ldapsName, "ldaps-name", "", "")
 		fs.IntVar(&ldapPort, "ldap-port", 0, "")
 		fs.IntVar(&ldapsPort, "ldaps-port", 0, "")
 	case "down", "status", "snapshots", "snapshot-rm":
@@ -229,8 +236,8 @@ func runLab(ctx context.Context, args []string, out, errW io.Writer) error {
 		return labResetFromConfig(ctx, cfgPath, reset, out)
 	}
 	if cfgPath != "" {
-		if sub == "restore" && (password != "" || ldapPort != 0 || ldapsPort != 0) {
-			return errors.New("lab restore --config of an EC2 lab restores into its instance: --admin-password and the ports are for a docker lab")
+		if sub == "restore" && (password != "" || ldapPort != 0 || ldapsPort != 0 || ldapsName != "") {
+			return errors.New("lab restore --config of an EC2 lab restores into its instance: --admin-password, the ports and --ldaps-name are for a docker lab")
 		}
 		return labEC2FromConfig(ctx, sub, cfgPath, name, snap, out)
 	}
@@ -291,7 +298,7 @@ func runLab(ctx context.Context, args []string, out, errW io.Writer) error {
 		fmt.Fprint(out, lab.FormatSnapshots(list))
 		return nil
 	case "restore":
-		_, err = l.RestoreWith(ctx, name, lab.RestoreOptions{LDAPPort: ldapPort, LDAPSPort: ldapsPort, AdminPassword: password})
+		_, err = l.RestoreWith(ctx, name, lab.RestoreOptions{LDAPPort: ldapPort, LDAPSPort: ldapsPort, AdminPassword: password, LDAPSName: ldapsName})
 		return err
 	case "snapshot-rm":
 		if name == "" {
@@ -333,8 +340,8 @@ type labFlagsGiven struct {
 // labUpFromConfig is lab up --config: the lab [target.lab] names (its prefix and instance, unless given as flags),
 // made like the source of the config, its ports those of [target] url, its Administrator password the target's.
 func labUpFromConfig(ctx context.Context, fs *flag.FlagSet, c labCommon, cfgPath string, up lab.UpOptions, dryRun bool, given labFlagsGiven, out, errW io.Writer) error {
-	if given != (labFlagsGiven{}) || up.WithSource || c.profile != "" || up.SchemaDir != "" {
-		return errors.New("lab up --config takes the domain, the ports, the password and the kind of lab from the config ([source], [target] and [target.lab]): leave out --realm, --suffix, --admin-password, --netbios, --domain-sid, --domain-guid, --ldap-port, --ldaps-port, --profile, --schema-dir and --with-sample-source")
+	if given != (labFlagsGiven{}) || up.WithSource || c.profile != "" || up.SchemaDir != "" || up.LDAPSName != "" {
+		return errors.New("lab up --config takes the domain, the ports, the password and the kind of lab from the config ([source], [target] and [target.lab]): leave out --realm, --suffix, --admin-password, --netbios, --domain-sid, --domain-guid, --ldap-port, --ldaps-port, --profile, --schema-dir, --ldaps-name ([target.lab] ldaps_name) and --with-sample-source")
 	}
 	s, err := openSession(ctx, cfgPath)
 	if err != nil {
